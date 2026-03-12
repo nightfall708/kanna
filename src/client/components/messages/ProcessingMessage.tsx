@@ -4,9 +4,9 @@ import { AnimatedShinyText } from "../ui/animated-shiny-text"
 
 const STATUS_LABELS: Record<string, string> = {
   connecting: "Connecting...",
-  acquiring_sandbox: "Booting Sandbox...",
-  initializing: "Initializing Environment...",
-  starting: "Starting Claude Code...",
+  acquiring_sandbox: "Booting...",
+  initializing: "Initializing...",
+  starting: "Starting...",
   running: "Running...",
   waiting_for_user: "Waiting...",
   failed: "Failed",

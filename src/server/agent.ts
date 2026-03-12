@@ -3,6 +3,7 @@ import type { ClientCommand } from "../shared/protocol"
 import { SDK_CLIENT_APP } from "../shared/branding"
 import type { KannaStatus, PendingToolSnapshot } from "../shared/types"
 import { EventStore } from "./event-store"
+import { generateTitleForChat } from "./generate-title"
 
 const DEFAULT_MODEL = "opus"
 
@@ -143,7 +144,18 @@ export class AgentCoordinator {
 
     const existingMessages = this.store.getMessages(chatId)
     if (chat.title === "New Chat" && existingMessages.length === 0) {
+      // Immediate placeholder: truncated first message
       await this.store.renameChat(chatId, deriveChatTitle(command.content))
+
+      // Fire-and-forget: generate a better title with Haiku in parallel
+      void generateTitleForChat(command.content)
+        .then(async (title) => {
+          if (title) {
+            await this.store.renameChat(chatId!, title)
+            this.onStateChange()
+          }
+        })
+        .catch(() => undefined)
     }
 
     await this.store.appendMessage(chatId, toTranscriptEntry(buildUserPromptPayload(command.content), crypto.randomUUID()))
@@ -195,7 +207,7 @@ export class AgentCoordinator {
         settingSources: ["user", "project", "local"],
         env: {
           ...process.env,
-          CLAUDE_AGENT_SDK_CLIENT_APP: SDK_CLIENT_APP,
+          // CLAUDE_AGENT_SDK_CLIENT_APP: SDK_CLIENT_APP,
         },
       },
     })
