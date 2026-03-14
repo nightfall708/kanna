@@ -1,6 +1,27 @@
-# Kanna
+<p align="center">
+  <img src="assets/icon.png" alt="Kanna" width="80" />
+</p>
 
-A web-first chat UI for using Claude Code in style. Remote access coming soon.
+<h1 align="center">Kanna</h1>
+
+<p align="center">
+  <strong>A beautiful web UI for Claude Code.</strong>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/kanna-code"><img src="https://img.shields.io/npm/v/kanna-code.svg?style=flat&colorA=18181b&colorB=f472b6" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/kanna-code"><img src="https://img.shields.io/npm/dm/kanna-code.svg?style=flat&colorA=18181b&colorB=f472b6" alt="npm downloads" /></a>
+  <a href="https://github.com/jakemor/kanna/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/kanna-code.svg?style=flat&colorA=18181b&colorB=f472b6" alt="license" /></a>
+  <a href="https://github.com/jakemor/kanna"><img src="https://img.shields.io/github/stars/jakemor/kanna?style=flat&colorA=18181b&colorB=f472b6" alt="GitHub stars" /></a>
+</p>
+
+<br />
+
+<p align="center">
+  <img src="assets/screenshot.png" alt="Kanna screenshot" width="800" />
+</p>
+
+<br />
 
 ## Quickstart
 
@@ -8,15 +29,17 @@ A web-first chat UI for using Claude Code in style. Remote access coming soon.
 bun install -g kanna-code
 ```
 
-Then run from anywhere:
+Then run from any project directory:
 
 ```bash
 kanna
 ```
 
+That's it. Kanna opens in your browser at [`localhost:3210`](http://localhost:3210).
+
 ## Features
 
-- **Project-first sidebar** — chats grouped under projects, with status indicators (idle, running, waiting, failed)
+- **Project-first sidebar** — chats grouped under projects, with live status indicators (idle, running, waiting, failed)
 - **Local project discovery** — auto-discovers projects from `~/.claude/projects`
 - **Rich transcript rendering** — user messages, assistant responses, collapsible tool call groups, plan mode dialogs, and interactive prompts
 - **Plan mode** — review and approve agent plans before execution
@@ -45,33 +68,32 @@ Local File System (~/.kanna/data/, project dirs)
 
 ## Requirements
 
-- [Bun](https://bun.sh)
-- A working Claude Agent SDK environment
+- [Bun](https://bun.sh) v1.0+
+- A working [Claude Code](https://docs.anthropic.com/en/docs/claude-code) environment
 
 ## Install
 
+Install globally via bun:
+
 ```bash
+bun install -g kanna-code
+```
+
+Or clone and build from source:
+
+```bash
+git clone https://github.com/jakemor/kanna.git
+cd kanna
 bun install
-```
-
-## Run
-
-```bash
 bun run build
-bun run start
 ```
 
-Or use the CLI directly:
+## Usage
 
 ```bash
-kanna
-```
-
-Flags:
-
-```bash
-bun run start -- --no-open
-bun run start -- --port 4000
+kanna                  # start with defaults
+kanna --port 4000      # custom port
+kanna --no-open        # don't open browser
 ```
 
 Default URL: `http://localhost:3210`
@@ -126,7 +148,7 @@ src/
     └── branding.ts  App name, data directory paths
 ```
 
-## Data
+## Data Storage
 
 All state is stored locally at `~/.kanna/data/`:
 
@@ -139,3 +161,7 @@ All state is stored locally at `~/.kanna/data/`:
 | `snapshot.json`  | Compacted state snapshot for fast startup |
 
 Event logs are append-only JSONL. On startup, Kanna replays the log tail after the last snapshot, then compacts if the logs exceed 2 MB.
+
+## License
+
+[MIT](LICENSE)

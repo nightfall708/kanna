@@ -2,7 +2,19 @@
   "name": "kanna-code",
   "type": "module",
   "version": "0.1.3",
-  "description": "Local-only project chat UI",
+  "description": "A beautiful web UI for Claude Code",
+  "license": "MIT",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "ai",
+    "chat",
+    "ui",
+    "agent",
+    "anthropic",
+    "bun",
+    "react"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jakemor/kanna.git"
