@@ -261,7 +261,7 @@ export function ChatPage() {
         ) : null}
 
         <div
-          style={{ bottom: state.transcriptPaddingBottom - 36 }}
+          style={{ bottom: state.transcriptPaddingBottom - 75 }}
           className={cn(
             "absolute left-1/2 -translate-x-1/2 z-10 transition-all",
             state.showScrollButton
