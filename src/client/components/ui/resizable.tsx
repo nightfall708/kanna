@@ -24,6 +24,7 @@ const ResizablePanel = (props: PanelProps) => <Panel {...props} />
 const ResizableHandle = ({
   withHandle,
   orientation,
+  disabled,
   className,
   ...props
 }: SeparatorProps & {
@@ -34,6 +35,7 @@ const ResizableHandle = ({
 
   return (
     <Separator
+      disabled={disabled}
       className={cn(
         "relative flex items-center justify-center bg-transparent focus-visible:outline-none",
         orientation === "vertical"

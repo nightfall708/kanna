@@ -424,6 +424,7 @@ export function ChatPage() {
           <ResizableHandle
             withHandle
             orientation="horizontal"
+            disabled={!showRightSidebar}
             className={cn(!showRightSidebar && "pointer-events-none opacity-0")}
           />
           <ResizablePanel
