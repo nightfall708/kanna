@@ -10,6 +10,7 @@ import {
 } from "react"
 import { Button } from "./button"
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "./dialog"
+import { Input } from "./input"
 
 interface ConfirmDialogOptions {
   title: string
@@ -148,7 +149,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                   <DialogDescription>{dialogState.options.description}</DialogDescription>
                 ) : null}
                 {dialogState.kind === "prompt" ? (
-                  <input
+                  <Input
                     ref={inputRef}
                     type="text"
                     value={inputValue}
@@ -159,7 +160,6 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                         resolveConfirm()
                       }
                     }}
-                    className="w-full px-3 py-2 text-sm border border-border rounded-md bg-background outline-none"
                     placeholder={dialogState.options.placeholder}
                   />
                 ) : null}
