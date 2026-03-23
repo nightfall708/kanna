@@ -8,6 +8,7 @@ import {
   Monitor,
   Moon,
   MessageSquareQuote,
+  RefreshCw,
   Settings2,
   Sun,
 } from "lucide-react"
@@ -154,6 +155,17 @@ export function setCachedChangelog(releases: GithubRelease[]) {
     releases,
     expiresAt: Date.now() + CHANGELOG_CACHE_TTL_MS,
   }
+}
+
+export async function loadChangelog(options?: { force?: boolean; fetchImpl?: FetchReleases }) {
+  const cached = options?.force ? null : getCachedChangelog()
+  if (cached) {
+    return cached
+  }
+
+  const releases = await fetchGithubReleases(options?.fetchImpl)
+  setCachedChangelog(releases)
+  return releases
 }
 
 export function formatPublishedDate(value: string | null) {
@@ -361,6 +373,20 @@ export function SettingsPage() {
   const [editorCommandDraft, setEditorCommandDraft] = useState(editorCommandTemplate)
   const [keybindingDrafts, setKeybindingDrafts] = useState<Record<string, string>>({})
   const [keybindingsError, setKeybindingsError] = useState<string | null>(null)
+  const updateSnapshot = state.updateSnapshot
+  const updateStatusLabel = updateSnapshot?.status === "checking"
+    ? "Checking for updates…"
+    : updateSnapshot?.status === "updating"
+      ? "Installing update…"
+      : updateSnapshot?.status === "restart_pending"
+        ? "Restarting Kanna…"
+        : updateSnapshot?.status === "available"
+          ? `Update available${updateSnapshot.latestVersion ? `: ${updateSnapshot.latestVersion}` : ""}`
+          : updateSnapshot?.status === "up_to_date"
+            ? "Up to date"
+            : updateSnapshot?.status === "error"
+              ? "Update check failed"
+              : "Not checked yet"
 
   useEffect(() => {
     setScrollbackDraft(String(scrollbackLines))
@@ -392,22 +418,13 @@ export function SettingsPage() {
   useEffect(() => {
     if (selectedPage !== "changelog" || isConnecting) return
 
-    const cachedReleases = getCachedChangelog()
-    if (cachedReleases) {
-      setReleases(cachedReleases)
-      setChangelogError(null)
-      setChangelogStatus("success")
-      return
-    }
-
     let cancelled = false
     setChangelogStatus("loading")
     setChangelogError(null)
 
-    void fetchGithubReleases()
+    void loadChangelog()
       .then((nextReleases) => {
         if (cancelled) return
-        setCachedChangelog(nextReleases)
         setReleases(nextReleases)
         setChangelogStatus("success")
       })
@@ -491,9 +508,8 @@ export function SettingsPage() {
     setChangelogStatus("loading")
     setChangelogError(null)
 
-    void fetchGithubReleases()
+    void loadChangelog({ force: true })
       .then((nextReleases) => {
-        setCachedChangelog(nextReleases)
         setReleases(nextReleases)
         setChangelogStatus("success")
       })
@@ -573,6 +589,39 @@ export function SettingsPage() {
                         <span>Open in {state.editorLabel}</span>
                       </button>
                     ) : null}
+                    {selectedPage === "general" ? (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void state.handleCheckForUpdates({ force: true })
+                          }}
+                          disabled={updateSnapshot?.status === "checking" || updateSnapshot?.status === "updating"}
+                          className={cn(
+                            buttonVariants({ variant: "outline", size: "sm" }),
+                            "gap-2 rounded-lg"
+                          )}
+                        >
+                          <RefreshCw className={`h-4 w-4 ${updateSnapshot?.status === "checking" ? "animate-spin" : ""}`} />
+                          <span>Check for updates</span>
+                        </button>
+                        {updateSnapshot?.updateAvailable ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void state.handleInstallUpdate()
+                            }}
+                            disabled={updateSnapshot.status === "updating" || updateSnapshot.status === "restart_pending"}
+                            className={cn(
+                              buttonVariants({ variant: "default", size: "sm" }),
+                              "rounded-lg"
+                            )}
+                          >
+                            Update now
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="mt-1 text-sm text-muted-foreground">
                     {selectedSectionSubtitle}
@@ -583,9 +632,36 @@ export function SettingsPage() {
                   <>
                     <div className="border-b border-border">
                       <SettingsRow
+                        title="Application Update"
+                        description={(
+                          <>
+                            <span>{updateStatusLabel}.</span>
+                            {updateSnapshot?.lastCheckedAt ? (
+                              <span> Last checked {new Intl.DateTimeFormat(undefined, {
+                                month: "short",
+                                day: "numeric",
+                                hour: "numeric",
+                                minute: "2-digit",
+                              }).format(updateSnapshot.lastCheckedAt)}.</span>
+                            ) : null}
+                            {updateSnapshot?.error ? (
+                              <span> {updateSnapshot.error}</span>
+                            ) : null}
+                          </>
+                        )}
+                        bordered={false}
+                      >
+                        <div className="text-right text-sm text-foreground">
+                          <div>Current: {updateSnapshot?.currentVersion ?? appVersion}</div>
+                          <div className="text-xs text-muted-foreground">
+                            Latest: {updateSnapshot?.latestVersion ?? "Unknown"}
+                          </div>
+                        </div>
+                      </SettingsRow>
+
+                      <SettingsRow
                         title="Theme"
                         description="Choose between light, dark, or system appearance"
-                        bordered={false}
                       >
                         <SegmentedControl
                           value={theme}

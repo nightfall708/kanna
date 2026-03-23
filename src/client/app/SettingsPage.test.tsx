@@ -6,6 +6,7 @@ import {
   formatPublishedDate,
   getCachedChangelog,
   getKeybindingsSubtitle,
+  loadChangelog,
   resetSettingsPageChangelogCache,
   resolveSettingsSectionId,
   setCachedChangelog,
@@ -92,6 +93,20 @@ describe("changelog cache", () => {
     expect(getCachedChangelog()).toBeNull()
 
     Date.now = originalNow
+  })
+
+  test("force refresh bypasses the in-memory cache", async () => {
+    setCachedChangelog([SAMPLE_RELEASES[0]])
+
+    const releases = await loadChangelog({
+      force: true,
+      fetchImpl: async () => new Response(JSON.stringify([SAMPLE_RELEASES[1]]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    })
+
+    expect(releases).toEqual([SAMPLE_RELEASES[1]])
   })
 })
 

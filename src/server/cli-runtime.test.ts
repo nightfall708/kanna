@@ -13,10 +13,18 @@ afterEach(() => {
 
 function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
   const calls = {
-    startServer: [] as Array<{ port: number; openBrowser: boolean; strictPort: boolean }>,
+    startServer: [] as Array<{
+      port: number
+      openBrowser: boolean
+      strictPort: boolean
+      update: {
+        version: string
+        argv: string[]
+        command: string
+      }
+    }>,
     fetchLatestVersion: [] as string[],
     installLatest: [] as string[],
-    relaunch: [] as Array<{ command: string; args: string[] }>,
     openUrl: [] as string[],
     log: [] as string[],
     warn: [] as string[],
@@ -39,10 +47,6 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
     installLatest: (packageName) => {
       calls.installLatest.push(packageName)
       return true
-    },
-    relaunch: (command, args) => {
-      calls.relaunch.push({ command, args })
-      return 0
     },
     openUrl: (url) => {
       calls.openUrl.push(url)
@@ -116,8 +120,17 @@ describe("runCli", () => {
     expect(result.kind).toBe("started")
     expect(calls.fetchLatestVersion).toEqual(["kanna-code"])
     expect(calls.installLatest).toEqual([])
-    expect(calls.relaunch).toEqual([])
-    expect(calls.startServer).toEqual([{ port: 4000, openBrowser: false, strictPort: false }])
+    expect(calls.startServer).toHaveLength(1)
+    expect(calls.startServer[0]).toMatchObject({
+      port: 4000,
+      openBrowser: false,
+      strictPort: false,
+      update: {
+        version: "0.3.0",
+        argv: ["--port", "4000", "--no-open"],
+        command: "kanna",
+      },
+    })
     expect(calls.openUrl).toEqual([])
     expect(calls.log).toContain("[kanna] data dir: ~/.kanna/data")
   })
@@ -151,7 +164,7 @@ describe("runCli", () => {
     expect(calls.openUrl).toEqual(["http://localhost:4000"])
   })
 
-  test("installs and relaunches when a newer version is available", async () => {
+  test("returns restarting when a newer version is available", async () => {
     const { calls, deps } = createDeps({
       fetchLatestVersion: async (packageName) => {
         calls.fetchLatestVersion.push(packageName)
@@ -161,9 +174,8 @@ describe("runCli", () => {
 
     const result = await runCli(["--port", "4000", "--no-open"], deps)
 
-    expect(result).toEqual({ kind: "exited", code: 0 })
+    expect(result).toEqual({ kind: "restarting" })
     expect(calls.installLatest).toEqual(["kanna-code"])
-    expect(calls.relaunch).toEqual([{ command: "kanna", args: ["--port", "4000", "--no-open"] }])
     expect(calls.startServer).toEqual([])
   })
 
@@ -183,7 +195,6 @@ describe("runCli", () => {
 
     expect(result.kind).toBe("started")
     expect(calls.installLatest).toEqual(["kanna-code"])
-    expect(calls.relaunch).toEqual([])
     expect(calls.warn).toContain("[kanna] update failed, continuing current version")
   })
 
@@ -199,23 +210,6 @@ describe("runCli", () => {
 
     expect(result.kind).toBe("started")
     expect(calls.installLatest).toEqual([])
-    expect(calls.relaunch).toEqual([])
     expect(calls.warn).toContain("[kanna] update check failed, continuing current version")
-  })
-
-  test("preserves original argv when relaunching", async () => {
-    const { calls, deps } = createDeps({
-      fetchLatestVersion: async (packageName) => {
-        calls.fetchLatestVersion.push(packageName)
-        return "0.4.0"
-      },
-    })
-
-    await runCli(["--port", "4567", "--no-open"], deps)
-
-    expect(calls.relaunch[0]).toEqual({
-      command: "kanna",
-      args: ["--port", "4567", "--no-open"],
-    })
   })
 })

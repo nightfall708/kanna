@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
-import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry } from "../../shared/types"
+import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type UpdateSnapshot } from "../../shared/types"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
@@ -104,6 +104,7 @@ export interface KannaState {
   activeChatId: string | null
   sidebarData: SidebarData
   localProjects: LocalProjectsSnapshot | null
+  updateSnapshot: UpdateSnapshot | null
   chatSnapshot: ChatSnapshot | null
   keybindings: KeybindingsSnapshot | null
   connectionStatus: SocketStatus
@@ -135,6 +136,8 @@ export interface KannaState {
   handleCreateChat: (projectId: string) => Promise<void>
   handleOpenLocalProject: (localPath: string) => Promise<void>
   handleCreateProject: (project: ProjectRequest) => Promise<void>
+  handleCheckForUpdates: (options?: { force?: boolean }) => Promise<void>
+  handleInstallUpdate: () => Promise<void>
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
   handleCancel: () => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
@@ -163,6 +166,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
   const [sidebarData, setSidebarData] = useState<SidebarData>({ projectGroups: [] })
   const [localProjects, setLocalProjects] = useState<LocalProjectsSnapshot | null>(null)
+  const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | null>(null)
   const [chatSnapshot, setChatSnapshot] = useState<ChatSnapshot | null>(null)
   const [keybindings, setKeybindings] = useState<KeybindingsSnapshot | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<SocketStatus>("connecting")
@@ -199,6 +203,35 @@ export function useKannaState(activeChatId: string | null): KannaState {
       setCommandError(null)
     })
   }, [socket])
+
+  useEffect(() => {
+    return socket.subscribe<UpdateSnapshot>({ type: "update" }, (snapshot) => {
+      setUpdateSnapshot(snapshot)
+      setCommandError(null)
+    })
+  }, [socket])
+
+  useEffect(() => {
+    if (connectionStatus !== "connected") return
+    void socket.command<UpdateSnapshot>({ type: "update.check", force: true }).catch((error) => {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    })
+  }, [connectionStatus, socket])
+
+  useEffect(() => {
+    function handleWindowFocus() {
+      if (!updateSnapshot?.lastCheckedAt) return
+      if (Date.now() - updateSnapshot.lastCheckedAt <= 60 * 60 * 1000) return
+      void socket.command<UpdateSnapshot>({ type: "update.check" }).catch((error) => {
+        setCommandError(error instanceof Error ? error.message : String(error))
+      })
+    }
+
+    window.addEventListener("focus", handleWindowFocus)
+    return () => {
+      window.removeEventListener("focus", handleWindowFocus)
+    }
+  }, [socket, updateSnapshot?.lastCheckedAt])
 
   useEffect(() => {
     return socket.subscribe<KeybindingsSnapshot>({ type: "keybindings" }, (snapshot) => {
@@ -389,6 +422,28 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
   async function handleCreateProject(project: ProjectRequest) {
     await startChatFromIntent({ kind: "project_request", project })
+  }
+
+  async function handleCheckForUpdates(options?: { force?: boolean }) {
+    try {
+      await socket.command<UpdateSnapshot>({ type: "update.check", force: options?.force })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function handleInstallUpdate() {
+    try {
+      const result = await socket.command<{ ok: boolean; action: "restart" | "reload" }>({ type: "update.install" })
+      if (result.ok && result.action === "reload") {
+        window.location.reload()
+        return
+      }
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
   }
 
   async function handleSend(
@@ -600,6 +655,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     activeChatId,
     sidebarData,
     localProjects,
+    updateSnapshot,
     chatSnapshot,
     keybindings,
     connectionStatus,
@@ -631,6 +687,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleCreateChat,
     handleOpenLocalProject,
     handleCreateProject,
+    handleCheckForUpdates,
+    handleInstallUpdate,
     handleSend,
     handleCancel,
     handleDeleteChat,

@@ -10,9 +10,21 @@ export interface CliOptions {
   strictPort: boolean
 }
 
+export interface CliUpdateOptions {
+  version: string
+  fetchLatestVersion: (packageName: string) => Promise<string>
+  installLatest: (packageName: string) => boolean
+  argv: string[]
+  command: string
+}
+
 export interface StartedCli {
   kind: "started"
   stop: () => Promise<void>
+}
+
+export interface RestartingCli {
+  kind: "restarting"
 }
 
 export interface ExitedCli {
@@ -20,15 +32,14 @@ export interface ExitedCli {
   code: number
 }
 
-export type CliRunResult = StartedCli | ExitedCli
+export type CliRunResult = StartedCli | RestartingCli | ExitedCli
 
 export interface CliRuntimeDeps {
   version: string
   bunVersion: string
-  startServer: (options: CliOptions) => Promise<{ port: number; stop: () => Promise<void> }>
+  startServer: (options: CliOptions & { update: CliUpdateOptions }) => Promise<{ port: number; stop: () => Promise<void> }>
   fetchLatestVersion: (packageName: string) => Promise<string>
   installLatest: (packageName: string) => boolean
-  relaunch: (command: string, args: string[]) => number | null
   openUrl: (url: string) => void
   log: (message: string) => void
   warn: (message: string) => void
@@ -121,7 +132,7 @@ function normalizeVersion(version: string) {
     .filter((part) => Number.isFinite(part))
 }
 
-async function maybeSelfUpdate(argv: string[], deps: CliRuntimeDeps) {
+async function maybeSelfUpdate(_argv: string[], deps: CliRuntimeDeps) {
   if (process.env.KANNA_DISABLE_SELF_UPDATE === "1") {
     return null
   }
@@ -151,13 +162,7 @@ async function maybeSelfUpdate(argv: string[], deps: CliRuntimeDeps) {
   }
 
   deps.log(`${LOG_PREFIX} restarting into updated version`)
-  const exitCode = deps.relaunch(CLI_COMMAND, argv)
-  if (exitCode === null) {
-    deps.warn(`${LOG_PREFIX} restart failed, continuing current version`)
-    return null
-  }
-
-  return exitCode
+  return "restart"
 }
 
 export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliRunResult> {
@@ -176,12 +181,21 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     return { kind: "exited", code: 1 }
   }
 
-  const relaunchExitCode = await maybeSelfUpdate(argv, deps)
-  if (relaunchExitCode !== null) {
-    return { kind: "exited", code: relaunchExitCode }
+  const shouldRestart = await maybeSelfUpdate(argv, deps)
+  if (shouldRestart !== null) {
+    return { kind: "restarting" }
   }
 
-  const { port, stop } = await deps.startServer(parsedArgs.options)
+  const { port, stop } = await deps.startServer({
+    ...parsedArgs.options,
+    update: {
+      version: deps.version,
+      fetchLatestVersion: deps.fetchLatestVersion,
+      installLatest: deps.installLatest,
+      argv,
+      command: CLI_COMMAND,
+    },
+  })
   const url = `http://localhost:${port}`
   const launchUrl = url
 

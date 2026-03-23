@@ -2,6 +2,7 @@ import process from "node:process"
 import { spawn, type ChildProcess } from "node:child_process"
 import { LOG_PREFIX } from "../src/shared/branding"
 import { DEV_CLIENT_PORT, DEV_SERVER_PORT } from "../src/shared/ports"
+import { CLI_CHILD_ARGS_ENV_VAR, CLI_CHILD_COMMAND_ENV_VAR } from "../src/server/restart"
 
 const cwd = process.cwd()
 const forwardedArgs = process.argv.slice(2)
@@ -22,7 +23,19 @@ function spawnLabeledProcess(label: string, args: string[]) {
 }
 
 const client = spawnLabeledProcess("client", ["x", "vite", "--host", "0.0.0.0", "--port", String(DEV_CLIENT_PORT), "--strictPort"])
-const server = spawnLabeledProcess("server", ["run", "./scripts/dev-server.ts", "--no-open", "--port", String(DEV_SERVER_PORT), "--strict-port", ...forwardedArgs])
+const server = spawn(bunBin, ["run", "./scripts/dev-server.ts", "--no-open", "--port", String(DEV_SERVER_PORT), "--strict-port", ...forwardedArgs], {
+  cwd,
+  stdio: "inherit",
+  env: {
+    ...process.env,
+    [CLI_CHILD_COMMAND_ENV_VAR]: bunBin,
+    [CLI_CHILD_ARGS_ENV_VAR]: JSON.stringify(["run", "./scripts/dev-server.ts"]),
+  },
+})
+
+server.on("spawn", () => {
+  console.log(`${LOG_PREFIX.replace("]", ":server]")} started`)
+})
 
 const children = [client, server]
 let shuttingDown = false
