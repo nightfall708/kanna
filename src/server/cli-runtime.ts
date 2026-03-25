@@ -1,7 +1,7 @@
 import process from "node:process"
 import { spawnSync } from "node:child_process"
 import { hasCommand, spawnDetached } from "./process-utils"
-import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX, PACKAGE_NAME } from "../shared/branding"
+import { APP_NAME, CLI_COMMAND, getBasePath, getDataDirDisplay, LOG_PREFIX, PACKAGE_NAME } from "../shared/branding"
 import type { UpdateInstallErrorCode } from "../shared/types"
 import { PROD_SERVER_PORT } from "../shared/ports"
 import { CLI_SUPPRESS_OPEN_ONCE_ENV_VAR } from "./restart"
@@ -210,7 +210,8 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
       command: CLI_COMMAND,
     },
   })
-  const url = `http://localhost:${port}`
+  const basePath = getBasePath()
+  const url = `http://localhost:${port}${basePath === "/" ? "" : basePath}/`
   const launchUrl = url
 
   deps.log(`${LOG_PREFIX} listening on ${url}`)

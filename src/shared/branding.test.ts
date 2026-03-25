@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import {
+  getBasePath,
   getDataDir,
   getDataDirDisplay,
   getDataRootName,
   getKeybindingsFilePath,
   getKeybindingsFilePathDisplay,
   getRuntimeProfile,
+  normalizeBasePath,
 } from "./branding"
 
 describe("runtime profile helpers", () => {
@@ -27,5 +29,13 @@ describe("runtime profile helpers", () => {
     expect(getDataDirDisplay(env)).toBe("~/.kanna-dev/data")
     expect(getKeybindingsFilePath("/tmp/home", env)).toBe("/tmp/home/.kanna-dev/keybindings.json")
     expect(getKeybindingsFilePathDisplay(env)).toBe("~/.kanna-dev/keybindings.json")
+  })
+
+  test("normalizes the optional base path", () => {
+    expect(normalizeBasePath()).toBe("/")
+    expect(normalizeBasePath("/")).toBe("/")
+    expect(normalizeBasePath("kanna")).toBe("/kanna")
+    expect(normalizeBasePath("/kanna/")).toBe("/kanna")
+    expect(getBasePath({ KANNA_BASE_PATH: "/kanna/" })).toBe("/kanna")
   })
 })

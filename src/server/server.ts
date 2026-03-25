@@ -1,5 +1,5 @@
 import path from "node:path"
-import { APP_NAME, getRuntimeProfile } from "../shared/branding"
+import { APP_NAME, getBasePath, getRuntimeProfile } from "../shared/branding"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
@@ -66,6 +66,9 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   })
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
+  const basePath = getBasePath()
+  const wsPath = joinUrlPath(basePath, "/ws")
+  const healthPath = joinUrlPath(basePath, "/health")
 
   const MAX_PORT_ATTEMPTS = 20
   let actualPort = port
@@ -77,7 +80,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
         fetch(req, serverInstance) {
           const url = new URL(req.url)
 
-          if (url.pathname === "/ws") {
+          if (url.pathname === "/ws" || url.pathname === wsPath) {
             const upgraded = serverInstance.upgrade(req, {
               data: {
                 subscriptions: new Map(),
@@ -86,11 +89,20 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             return upgraded ? undefined : new Response("WebSocket upgrade failed", { status: 400 })
           }
 
-          if (url.pathname === "/health") {
+          if (url.pathname === "/health" || url.pathname === healthPath) {
             return Response.json({ ok: true, port: actualPort })
           }
 
-          return serveStatic(distDir, url.pathname)
+          if (basePath !== "/" && url.pathname === "/") {
+            return new Response(null, {
+              status: 302,
+              headers: {
+                Location: `${basePath}/`,
+              },
+            })
+          }
+
+          return serveStatic(distDir, url.pathname, basePath)
         },
         websocket: {
           open(ws) {
@@ -135,8 +147,33 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   }
 }
 
-async function serveStatic(distDir: string, pathname: string) {
-  const requestedPath = pathname === "/" ? "/index.html" : pathname
+function joinUrlPath(basePath: string, pathname: string) {
+  if (basePath === "/") {
+    return pathname
+  }
+
+  return `${basePath}${pathname}`
+}
+
+function stripBasePath(pathname: string, basePath: string) {
+  if (basePath === "/") {
+    return pathname
+  }
+
+  if (pathname === basePath) {
+    return "/"
+  }
+
+  if (pathname.startsWith(`${basePath}/`)) {
+    return pathname.slice(basePath.length)
+  }
+
+  return pathname
+}
+
+async function serveStatic(distDir: string, pathname: string, basePath: string) {
+  const requestedPathname = stripBasePath(pathname, basePath)
+  const requestedPath = requestedPathname === "/" ? "/index.html" : requestedPathname
   const filePath = path.join(distDir, requestedPath)
   const indexPath = path.join(distDir, "index.html")
 

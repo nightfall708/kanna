@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
-import { APP_NAME } from "../../shared/branding"
+import { APP_NAME, normalizeBasePath } from "../../shared/branding"
 import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type UpdateInstallResult, type UpdateSnapshot } from "../../shared/types"
 import { useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
@@ -22,7 +22,9 @@ export function getNewestRemainingChatId(projectGroups: SidebarData["projectGrou
 
 function wsUrl() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-  return `${protocol}//${window.location.host}/ws`
+  const basePath = normalizeBasePath(import.meta.env.BASE_URL)
+  const wsPath = basePath === "/" ? "/ws" : `${basePath}/ws`
+  return `${protocol}//${window.location.host}${wsPath}`
 }
 
 function useKannaSocket() {

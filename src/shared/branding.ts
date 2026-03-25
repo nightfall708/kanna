@@ -4,6 +4,7 @@ export const DATA_ROOT_NAME = ".kanna"
 export const DEV_DATA_ROOT_NAME = ".kanna-dev"
 export const PACKAGE_NAME = "kanna-code"
 export const RUNTIME_PROFILE_ENV_VAR = "KANNA_RUNTIME_PROFILE"
+export const BASE_PATH_ENV_VAR = "KANNA_BASE_PATH"
 // Read version from package.json — JSON import works in both Bun and Vite
 import pkg from "../../package.json"
 export const SDK_CLIENT_APP = `kanna/${pkg.version}`
@@ -25,6 +26,21 @@ function getRuntimeEnv(): RuntimeEnv {
 
 export function getRuntimeProfile(env: RuntimeEnv = getRuntimeEnv()): RuntimeProfile {
   return env?.[RUNTIME_PROFILE_ENV_VAR]?.trim().toLowerCase() === "dev" ? "dev" : "prod"
+}
+
+export function normalizeBasePath(basePath?: string | null) {
+  const trimmed = basePath?.trim() ?? ""
+  if (!trimmed || trimmed === "/") {
+    return "/"
+  }
+
+  const withLeadingSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`
+  const withoutTrailingSlash = withLeadingSlash.replace(/\/+$/, "")
+  return withoutTrailingSlash || "/"
+}
+
+export function getBasePath(env: RuntimeEnv = getRuntimeEnv()) {
+  return normalizeBasePath(env?.[BASE_PATH_ENV_VAR])
 }
 
 export function getDataRootName(env: RuntimeEnv = getRuntimeEnv()) {
