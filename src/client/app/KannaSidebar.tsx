@@ -116,13 +116,10 @@ export function KannaSidebar({
       chat={chat}
       activeChatId={activeChatId}
       nowMs={nowMs}
-      onSelectChat={(chatId) => {
-        navigate(`/chat/${chatId}`)
-        onClose()
-      }}
+      onSelectChat={(chatId) => navigate(`/chat/${chatId}`)}
       onDeleteChat={() => onDeleteChat(chat)}
     />
-  ), [activeChatId, navigate, nowMs, onClose, onDeleteChat])
+  ), [activeChatId, navigate, nowMs, onDeleteChat])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {

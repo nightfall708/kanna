@@ -27,7 +27,6 @@ interface Props {
   disabled: boolean
   canCancel?: boolean
   chatId?: string | null
-  shouldAutoFocus?: boolean
   activeProvider: AgentProvider | null
   availableProviders: ProviderCatalogEntry[]
 }
@@ -114,7 +113,6 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   disabled,
   canCancel,
   chatId,
-  shouldAutoFocus = false,
   activeProvider,
   availableProviders,
 }, forwardedRef) {
@@ -171,9 +169,8 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
   }, [autoResize])
 
   useEffect(() => {
-    if (!shouldAutoFocus) return
     textareaRef.current?.focus()
-  }, [chatId, shouldAutoFocus])
+  }, [chatId])
 
   useEffect(() => {
     if (activeProvider === null) {
@@ -335,7 +332,7 @@ const ChatInputInner = forwardRef<HTMLTextAreaElement, Props>(function ChatInput
           ref={setTextareaRefs}
           placeholder="Build something..."
           value={value}
-          autoFocus={shouldAutoFocus}
+          autoFocus
           {...{ [CHAT_INPUT_ATTRIBUTE]: "" }}
           rows={1}
           onChange={(event) => {

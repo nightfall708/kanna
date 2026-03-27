@@ -27,8 +27,3 @@ Thumbs.db
 
 # vite
 vite.config.ts.timestamp-*
-
-# Dolt database files (added by bd init)
-.beads/
-.dolt/
-*.db

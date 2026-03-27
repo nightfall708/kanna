@@ -4,7 +4,6 @@ import {
   getNewestRemainingChatId,
   getUiUpdateRestartReconnectAction,
   resolveComposeIntent,
-  shouldAutoFollowTranscript,
   shouldPinTranscriptToBottom,
 } from "./useKannaState"
 import type { ChatSnapshot, SidebarData } from "../../shared/types"
@@ -201,19 +200,5 @@ describe("getActiveChatSnapshot", () => {
     }
 
     expect(getActiveChatSnapshot(snapshot, "chat-new")).toBeNull()
-  })
-})
-
-describe("shouldAutoFollowTranscript", () => {
-  test("returns true when the transcript is still pinned to the bottom", () => {
-    expect(shouldAutoFollowTranscript(0)).toBe(true)
-  })
-
-  test("returns true when the transcript is only slightly above the bottom", () => {
-    expect(shouldAutoFollowTranscript(23)).toBe(true)
-  })
-
-  test("returns false when the reader has scrolled away from the bottom", () => {
-    expect(shouldAutoFollowTranscript(24)).toBe(false)
   })
 })

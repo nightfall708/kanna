@@ -41,7 +41,7 @@ export type ComposerState =
 
 type PersistedChatPreferencesState = Pick<
   ChatPreferencesState,
-  "defaultProvider" | "providerDefaults" | "composerState" | "transcriptAutoScroll"
+  "defaultProvider" | "providerDefaults" | "composerState"
 > & Partial<{
   liveProvider: AgentProvider
   livePreferences: ChatProviderPreferences
@@ -224,7 +224,6 @@ interface ChatPreferencesState {
   defaultProvider: DefaultProviderPreference
   providerDefaults: ChatProviderPreferences
   composerState: ComposerState
-  transcriptAutoScroll: boolean
   setDefaultProvider: (provider: DefaultProviderPreference) => void
   setProviderDefaultModel: (provider: AgentProvider, model: string) => void
   setProviderDefaultModelOptions: <TProvider extends AgentProvider>(
@@ -236,14 +235,13 @@ interface ChatPreferencesState {
   setComposerModel: (model: string) => void
   setComposerModelOptions: (modelOptions: Partial<ClaudeModelOptions> | Partial<CodexModelOptions>) => void
   setComposerPlanMode: (planMode: boolean) => void
-  setTranscriptAutoScroll: (enabled: boolean) => void
   resetComposerFromProvider: (provider: AgentProvider) => void
   initializeComposerForNewChat: () => void
 }
 
 export function migrateChatPreferencesState(
   persistedState: Partial<PersistedChatPreferencesState> | undefined
-): Pick<ChatPreferencesState, "defaultProvider" | "providerDefaults" | "composerState" | "transcriptAutoScroll"> {
+): Pick<ChatPreferencesState, "defaultProvider" | "providerDefaults" | "composerState"> {
   const providerDefaults = normalizeProviderDefaults(persistedState?.providerDefaults)
 
   return {
@@ -255,7 +253,6 @@ export function migrateChatPreferencesState(
       persistedState?.liveProvider,
       persistedState?.livePreferences
     ),
-    transcriptAutoScroll: persistedState?.transcriptAutoScroll ?? true,
   }
 }
 
@@ -270,7 +267,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         modelOptions: { ...DEFAULT_CLAUDE_MODEL_OPTIONS },
         planMode: false,
       },
-      transcriptAutoScroll: true,
       setDefaultProvider: (defaultProvider) => set({ defaultProvider }),
       setProviderDefaultModel: (provider, model) =>
         set((state) => ({
@@ -390,7 +386,6 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
             planMode,
           },
         })),
-      setTranscriptAutoScroll: (transcriptAutoScroll) => set({ transcriptAutoScroll }),
       resetComposerFromProvider: (provider) =>
         set((state) => ({
           composerState: composerFromProviderDefaults(provider, state.providerDefaults),
