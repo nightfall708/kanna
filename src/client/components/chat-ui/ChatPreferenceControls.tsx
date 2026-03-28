@@ -1,5 +1,5 @@
 import { useState, type ComponentType, type SVGProps } from "react"
-import { Box, Brain, Gauge, ListTodo, LockOpen, Sparkles, SquareMenu, SquareMinus } from "lucide-react"
+import { Box, Brain, Gauge, ListTodo, LockOpen, SquareMenu, SquareMinus } from "lucide-react"
 import {
   CLAUDE_CONTEXT_WINDOW_OPTIONS,
   CLAUDE_REASONING_OPTIONS,
@@ -48,15 +48,6 @@ function OpenAIIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
 export const PROVIDER_ICONS: Record<AgentProvider, IconComponent> = {
   claude: AnthropicIcon,
   codex: OpenAIIcon,
-}
-
-export const MODEL_ICON_BY_ID: Record<string, typeof Box> = {
-  opus: Box,
-  sonnet: Box,
-  haiku: Box,
-  "gpt-5.4": Box,
-  "gpt-5.3-codex": Box,
-  "gpt-5.3-codex-spark": Box,
 }
 
 export function PopoverMenuItem({
@@ -179,7 +170,7 @@ export function ChatPreferenceControls({
 }: ChatPreferenceControlsProps) {
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
   const ProviderIcon = PROVIDER_ICONS[selectedProvider]
-  const ModelIcon = MODEL_ICON_BY_ID[model] ?? Box
+  const ModelIcon = Box
   const showPlanMode = includePlanMode && providerConfig?.supportsPlanMode && onPlanModeChange
   const claudeModelOptions = selectedProvider === "claude" ? modelOptions as ClaudeModelOptions : null
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
@@ -226,7 +217,7 @@ export function ChatPreferenceControls({
         )}
       >
         {(close) => providerConfig.models.map((candidate) => {
-          const Icon = MODEL_ICON_BY_ID[candidate.id] ?? Sparkles
+          const Icon = Box
           return (
             <PopoverMenuItem
               key={candidate.id}
