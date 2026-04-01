@@ -138,6 +138,16 @@ export function createWsRouter({
     }
   }
 
+  function broadcastError(message: string) {
+    for (const ws of sockets) {
+      send(ws, {
+        v: PROTOCOL_VERSION,
+        type: "error",
+        message,
+      })
+    }
+  }
+
   function pushTerminalSnapshot(terminalId: string) {
     for (const ws of sockets) {
       for (const [id, topic] of ws.data.subscriptions.entries()) {
@@ -182,6 +192,8 @@ export function createWsRouter({
       }
     }
   }) ?? (() => {})
+
+  agent.setBackgroundErrorReporter?.(broadcastError)
 
   async function handleCommand(ws: ServerWebSocket<ClientState>, message: Extract<ClientEnvelope, { type: "command" }>) {
     const { command, id } = message
@@ -374,6 +386,7 @@ export function createWsRouter({
       void handleCommand(ws, parsed)
     },
     dispose() {
+      agent.setBackgroundErrorReporter?.(null)
       disposeTerminalEvents()
       disposeKeybindingEvents()
       disposeUpdateEvents()

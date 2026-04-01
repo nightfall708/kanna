@@ -176,6 +176,43 @@ describe("ws-router", () => {
     })
   })
 
+  test("broadcasts background title-generation errors to connected clients", () => {
+    let reportBackgroundError: ((message: string) => void) | null = null
+    const router = createWsRouter({
+      store: { state: createEmptyState() } as never,
+      agent: {
+        getActiveStatuses: () => new Map(),
+        setBackgroundErrorReporter: (reporter: ((message: string) => void) | null) => {
+          reportBackgroundError = reporter
+        },
+      } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    reportBackgroundError?.("[title-generation] chat chat-1 failed")
+
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "error",
+        message: "[title-generation] chat chat-1 failed",
+      },
+    ])
+  })
+
   test("subscribes to keybindings snapshots and writes keybindings through the router", async () => {
     const initialSnapshot: KeybindingsSnapshot = DEFAULT_KEYBINDINGS_SNAPSHOT
     const keybindings = {
