@@ -4,6 +4,7 @@ import { APP_NAME, getRuntimeProfile } from "../shared/branding"
 import type { ChatAttachment } from "../shared/types"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
+import { DiffStore } from "./diff-store"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
 import { getMachineDisplayName } from "./machine-name"
@@ -68,8 +69,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
   const store = new EventStore()
+  const diffStore = new DiffStore(store.dataDir)
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
+  await diffStore.initialize()
   await store.migrateLegacyTranscripts(options.onMigrationProgress)
   let discoveredProjects: DiscoveredProject[] = []
 
@@ -101,6 +104,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   })
   router = createWsRouter({
     store,
+    diffStore,
     agent,
     terminals,
     keybindings,
@@ -191,6 +195,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   return {
     port: actualPort,
     store,
+    diffStore,
     updateManager,
     stop: shutdown,
   }

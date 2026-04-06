@@ -468,6 +468,17 @@ export interface ContextWindowUsageSnapshot {
   compactsAutomatically: boolean
 }
 
+export interface ChatDiffFile {
+  path: string
+  changeType: "added" | "deleted" | "modified"
+  patch: string
+}
+
+export interface ChatDiffSnapshot {
+  status: "unknown" | "ready" | "no_repo"
+  files: ChatDiffFile[]
+}
+
 export interface ContextWindowUpdatedEntry extends TranscriptEntryBase {
   kind: "context_window_updated"
   usage: ContextWindowUsageSnapshot
@@ -636,6 +647,7 @@ export interface ChatRuntime {
 export interface ChatSnapshot {
   runtime: ChatRuntime
   messages: TranscriptEntry[]
+  diffs: ChatDiffSnapshot
   availableProviders: ProviderCatalogEntry[]
 }
 

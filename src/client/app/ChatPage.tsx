@@ -35,6 +35,7 @@ const EMPTY_STATE_TYPING_INTERVAL_MS = 19
 const CHAT_NAVBAR_OFFSET_PX = 72
 const SCROLL_BUTTON_BOTTOM_PX = 120
 const TRANSCRIPT_TOC_BREAKPOINT_PX = 1200
+const DIFF_REFRESH_INTERVAL_MS = 5_000
 
 export interface TranscriptTocItem {
   id: string
@@ -105,7 +106,11 @@ export function ChatPage() {
   const [fixedTerminalHeight, setFixedTerminalHeight] = useState(0)
   const [isPageFileDragActive, setIsPageFileDragActive] = useState(false)
   const [layoutWidth, setLayoutWidth] = useState(0)
+  const [diffRenderMode, setDiffRenderMode] = useState<"unified" | "split">("unified")
+  const [wrapDiffLines, setWrapDiffLines] = useState(false)
   const pageFileDragDepthRef = useRef(0)
+  const terminalDiffRefreshTimeoutRef = useRef<number | null>(null)
+  const wasProcessingRef = useRef(false)
   const projectId = state.runtime?.projectId ?? null
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
   const terminalLayout = projectTerminalLayout ?? DEFAULT_PROJECT_TERMINAL_LAYOUT
@@ -167,6 +172,26 @@ export function ChatPage() {
     enabled: state.hasSelectedProject && state.runtime?.status !== "waiting_for_user",
     canCancel: state.canCancel,
   })
+
+  function refreshDiffs() {
+    if (!state.activeChatId || !showRightSidebar) {
+      return
+    }
+    void state.socket.command({ type: "chat.refreshDiffs", chatId: state.activeChatId }).catch(() => {})
+  }
+
+  function scheduleTerminalDiffRefresh() {
+    if (!state.activeChatId || !showRightSidebar) {
+      return
+    }
+    if (terminalDiffRefreshTimeoutRef.current !== null) {
+      window.clearTimeout(terminalDiffRefreshTimeoutRef.current)
+    }
+    terminalDiffRefreshTimeoutRef.current = window.setTimeout(() => {
+      terminalDiffRefreshTimeoutRef.current = null
+      refreshDiffs()
+    }, 1_000)
+  }
 
   function hasDraggedFiles(event: React.DragEvent) {
     return hasFileDragTypes(event.dataTransfer?.types ?? [])
@@ -289,6 +314,70 @@ export function ChatPage() {
     window.addEventListener("resize", handleResize)
     return () => window.removeEventListener("resize", handleResize)
   }, [state.updateScrollState])
+
+  useEffect(() => {
+    if (!state.activeChatId || !showRightSidebar) {
+      return
+    }
+
+    const intervalId = window.setInterval(() => {
+      refreshDiffs()
+    }, DIFF_REFRESH_INTERVAL_MS)
+
+    return () => window.clearInterval(intervalId)
+  }, [showRightSidebar, state.activeChatId, state.socket])
+
+  useEffect(() => {
+    if (!state.activeChatId || !showRightSidebar) {
+      return
+    }
+
+    refreshDiffs()
+  }, [showRightSidebar, state.activeChatId, state.socket])
+
+  useEffect(() => {
+    if (!state.activeChatId || !showRightSidebar) {
+      return
+    }
+
+    function handleDiffRefresh() {
+      if (document.visibilityState !== "visible") return
+      refreshDiffs()
+    }
+
+    window.addEventListener("focus", handleDiffRefresh)
+    document.addEventListener("visibilitychange", handleDiffRefresh)
+
+    return () => {
+      window.removeEventListener("focus", handleDiffRefresh)
+      document.removeEventListener("visibilitychange", handleDiffRefresh)
+    }
+  }, [showRightSidebar, state.activeChatId, state.socket])
+
+  useEffect(() => {
+    if (showRightSidebar && wasProcessingRef.current && !state.isProcessing) {
+      refreshDiffs()
+    }
+    wasProcessingRef.current = state.isProcessing
+  }, [showRightSidebar, state.activeChatId, state.isProcessing, state.socket])
+
+  useEffect(() => {
+    return () => {
+      if (terminalDiffRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(terminalDiffRefreshTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (showRightSidebar) {
+      return
+    }
+    if (terminalDiffRefreshTimeoutRef.current !== null) {
+      window.clearTimeout(terminalDiffRefreshTimeoutRef.current)
+      terminalDiffRefreshTimeoutRef.current = null
+    }
+  }, [showRightSidebar, state.activeChatId])
 
   useEffect(() => {
     const element = layoutRootRef.current
@@ -623,6 +712,7 @@ export function ChatPage() {
                         minColumnWidth={minColumnWidth}
                         splitTerminalShortcut={resolvedKeybindings.bindings.addSplitTerminal}
                         focusRequestVersion={terminalFocusRequestVersion}
+                        onTerminalCommandSent={scheduleTerminalDiffRefresh}
                         onRemoveTerminal={(currentProjectId, terminalId) => {
                           void state.socket.command({ type: "terminal.close", terminalId }).catch(() => {})
                           removeTerminal(currentProjectId, terminalId)
@@ -638,7 +728,7 @@ export function ChatPage() {
             )}
           </ResizablePanel>
           <ResizableHandle
-            withHandle
+            withHandle={false}
             orientation="horizontal"
             disabled={!showRightSidebar}
             className={cn(!showRightSidebar && "pointer-events-none opacity-0")}
@@ -661,6 +751,14 @@ export function ChatPage() {
               } as CSSProperties}
             >
               <RightSidebar
+                diffs={state.chatDiffSnapshot ?? { status: "unknown", files: [] }}
+                diffRenderMode={diffRenderMode}
+                wrapLines={wrapDiffLines}
+                onOpenFile={(path) => {
+                  void state.handleOpenLocalLink({ path })
+                }}
+                onDiffRenderModeChange={setDiffRenderMode}
+                onWrapLinesChange={setWrapDiffLines}
                 onClose={() => toggleRightSidebar(projectId)}
               />
             </div>
@@ -711,6 +809,7 @@ export function ChatPage() {
                   minColumnWidth={minColumnWidth}
                   splitTerminalShortcut={resolvedKeybindings.bindings.addSplitTerminal}
                   focusRequestVersion={terminalFocusRequestVersion}
+                  onTerminalCommandSent={scheduleTerminalDiffRefresh}
                   onRemoveTerminal={(currentProjectId, terminalId) => {
                     void state.socket.command({ type: "terminal.close", terminalId }).catch(() => {})
                     removeTerminal(currentProjectId, terminalId)

@@ -1,4 +1,5 @@
 import type {
+  ChatDiffSnapshot,
   ChatRuntime,
   ChatSnapshot,
   KannaStatus,
@@ -100,7 +101,8 @@ export function deriveChatSnapshot(
   activeStatuses: Map<string, KannaStatus>,
   drainingChatIds: Set<string>,
   chatId: string,
-  getMessages: (chatId: string) => ChatSnapshot["messages"]
+  getMessages: (chatId: string) => ChatSnapshot["messages"],
+  getDiffs: (chatId: string) => ChatDiffSnapshot
 ): ChatSnapshot | null {
   const chat = state.chatsById.get(chatId)
   if (!chat || chat.deletedAt) return null
@@ -122,6 +124,7 @@ export function deriveChatSnapshot(
   return {
     runtime,
     messages: getMessages(chat.id),
+    diffs: getDiffs(chat.id),
     availableProviders: [...SERVER_PROVIDERS],
   }
 }

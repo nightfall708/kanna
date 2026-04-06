@@ -202,6 +202,7 @@ describe("getActiveChatSnapshot", () => {
         sessionToken: null,
       },
       messages: [],
+      diffs: { status: "unknown", files: [] },
       availableProviders: [],
     }
 
@@ -222,6 +223,7 @@ describe("getActiveChatSnapshot", () => {
         sessionToken: null,
       },
       messages: [],
+      diffs: { status: "unknown", files: [] },
       availableProviders: [],
     }
 

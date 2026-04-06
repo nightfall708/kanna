@@ -75,6 +75,7 @@ export type ClientCommand =
       effort?: string
       planMode?: boolean
     }
+  | { type: "chat.refreshDiffs"; chatId: string }
   | { type: "chat.cancel"; chatId: string }
   | { type: "chat.stopDraining"; chatId: string }
   | { type: "chat.respondTool"; chatId: string; toolUseId: string; result: unknown }

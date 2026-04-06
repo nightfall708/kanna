@@ -19,4 +19,21 @@ describe("ResizableHandle", () => {
     expect(html).toContain('data-separator="disabled"')
     expect(html).toContain('aria-disabled="true"')
   })
+
+  test("stays visually transparent when no handle is requested", () => {
+    const html = renderToStaticMarkup(
+      <ResizablePanelGroup orientation="horizontal">
+        <ResizablePanel id="left" defaultSize="50%">
+          <div>left</div>
+        </ResizablePanel>
+        <ResizableHandle orientation="horizontal" />
+        <ResizablePanel id="right" defaultSize="50%">
+          <div>right</div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    )
+
+    expect(html).toContain("bg-transparent")
+    expect(html).not.toContain("before:bg-border")
+  })
 })

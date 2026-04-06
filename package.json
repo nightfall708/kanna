@@ -45,6 +45,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.39",
+    "@pierre/diffs": "^1.1.12",
     "@radix-ui/react-context-menu": "^2.2.16",
     "@radix-ui/react-select": "^2.2.6",
     "@xterm/addon-fit": "^0.11.0",

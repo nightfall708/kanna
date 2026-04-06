@@ -20,6 +20,7 @@ interface Props {
   onAddTerminal: (projectId: string, afterTerminalId?: string) => void
   onRemoveTerminal: (projectId: string, terminalId: string) => void
   onTerminalLayout: (projectId: string, sizes: number[]) => void
+  onTerminalCommandSent?: () => void
 }
 
 export function TerminalWorkspace({
@@ -34,6 +35,7 @@ export function TerminalWorkspace({
   onAddTerminal,
   onRemoveTerminal,
   onTerminalLayout,
+  onTerminalCommandSent,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const paneRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -171,6 +173,7 @@ export function TerminalWorkspace({
                     connectionStatus={connectionStatus}
                     clearVersion={clearVersionsByTerminalId[terminalPane.id] ?? 0}
                     focusRequestVersion={index === 0 ? focusRequestVersion : 0}
+                    onCommandSent={onTerminalCommandSent}
                     onPathChange={(path) => setPathsByTerminalId((current) => {
                       if (current[terminalPane.id] === path) return current
                       return {

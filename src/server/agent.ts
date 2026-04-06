@@ -717,18 +717,19 @@ export class AgentCoordinator {
       await this.store.renameChat(args.chatId, optimisticTitle)
     }
 
-    if (args.appendUserPrompt) {
-      await this.store.appendMessage(
-        args.chatId,
-        timestamped({ kind: "user_prompt", content: args.content, attachments: args.attachments }, Date.now())
-      )
-    }
-    await this.store.recordTurnStarted(args.chatId)
-
     const project = this.store.getProject(chat.projectId)
     if (!project) {
       throw new Error("Project not found")
     }
+
+    if (args.appendUserPrompt) {
+      const userPromptEntry = timestamped(
+        { kind: "user_prompt", content: args.content, attachments: args.attachments },
+        Date.now()
+      )
+      await this.store.appendMessage(args.chatId, userPromptEntry)
+    }
+    await this.store.recordTurnStarted(args.chatId)
 
     if (shouldGenerateTitle) {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")

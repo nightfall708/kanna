@@ -13,6 +13,56 @@ import { processTranscriptMessages } from "../lib/parseTranscript"
 import { canCancelStatus, getLatestToolIds, isProcessingStatus } from "./derived"
 import { KannaSocket, type SocketStatus } from "./socket"
 
+function sameRuntime(left: ChatSnapshot["runtime"] | null | undefined, right: ChatSnapshot["runtime"] | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.chatId === right.chatId
+    && left.projectId === right.projectId
+    && left.localPath === right.localPath
+    && left.title === right.title
+    && left.status === right.status
+    && left.isDraining === right.isDraining
+    && left.provider === right.provider
+    && left.planMode === right.planMode
+    && left.sessionToken === right.sessionToken
+}
+
+function sameTranscriptEntries(left: ChatSnapshot["messages"] | null | undefined, right: ChatSnapshot["messages"] | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.length !== right.length) return false
+  return left.every((entry, index) => entry._id === right[index]?._id)
+}
+
+function sameProviders(left: ProviderCatalogEntry[] | null | undefined, right: ProviderCatalogEntry[] | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.length !== right.length) return false
+  return left.every((provider, index) => provider.id === right[index]?.id)
+}
+
+function sameDiffs(left: ChatSnapshot["diffs"] | null | undefined, right: ChatSnapshot["diffs"] | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.status !== right.status) return false
+  if (left.files.length !== right.files.length) return false
+  return left.files.every((file, index) => {
+    const other = right.files[index]
+    return Boolean(other)
+      && file.path === other.path
+      && file.changeType === other.changeType
+      && file.patch === other.patch
+  })
+}
+
+function sameChatSnapshotCore(left: ChatSnapshot | null, right: ChatSnapshot | null) {
+  if (left === right) return true
+  if (!left || !right) return false
+  return sameRuntime(left.runtime, right.runtime)
+    && sameTranscriptEntries(left.messages, right.messages)
+    && sameProviders(left.availableProviders, right.availableProviders)
+}
+
 export function getNewestRemainingChatId(projectGroups: SidebarData["projectGroups"], activeChatId: string): string | null {
   const projectGroup = projectGroups.find((group) => group.chats.some((chat) => chat.chatId === activeChatId))
   if (!projectGroup) return null
@@ -171,6 +221,7 @@ export interface KannaState {
   localProjects: LocalProjectsSnapshot | null
   updateSnapshot: UpdateSnapshot | null
   chatSnapshot: ChatSnapshot | null
+  chatDiffSnapshot: ChatSnapshot["diffs"] | null
   keybindings: KeybindingsSnapshot | null
   connectionStatus: SocketStatus
   sidebarReady: boolean
@@ -236,6 +287,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [localProjects, setLocalProjects] = useState<LocalProjectsSnapshot | null>(null)
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | null>(null)
   const [chatSnapshot, setChatSnapshot] = useState<ChatSnapshot | null>(null)
+  const [chatDiffSnapshot, setChatDiffSnapshot] = useState<ChatSnapshot["diffs"] | null>(null)
   const [keybindings, setKeybindings] = useState<KeybindingsSnapshot | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<SocketStatus>("connecting")
   const [sidebarReady, setSidebarReady] = useState(false)
@@ -343,12 +395,14 @@ export function useKannaState(activeChatId: string | null): KannaState {
     if (!activeChatId) {
       logKannaState("clearing chat snapshot for non-chat route")
       setChatSnapshot(null)
+      setChatDiffSnapshot(null)
       setChatReady(true)
       return
     }
 
     logKannaState("subscribing to chat", { activeChatId })
     setChatSnapshot(null)
+    setChatDiffSnapshot(null)
     setChatReady(false)
     return socket.subscribe<ChatSnapshot | null>({ type: "chat", chatId: activeChatId }, (snapshot) => {
       logKannaState("chat snapshot received", {
@@ -357,7 +411,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
         snapshotProvider: snapshot?.runtime.provider ?? null,
         snapshotStatus: snapshot?.runtime.status ?? null,
       })
-      setChatSnapshot(snapshot)
+      setChatSnapshot((current) => sameChatSnapshotCore(current, snapshot) ? current : snapshot)
+      setChatDiffSnapshot((current) => sameDiffs(current, snapshot?.diffs ?? null) ? current : (snapshot?.diffs ?? null))
       setChatReady(true)
       setCommandError(null)
     })
@@ -863,6 +918,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     localProjects,
     updateSnapshot,
     chatSnapshot,
+    chatDiffSnapshot,
     keybindings,
     connectionStatus,
     sidebarReady,

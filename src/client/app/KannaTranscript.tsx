@@ -1,4 +1,4 @@
-import React, { useMemo } from "react"
+import React, { memo, useMemo } from "react"
 import type { AskUserQuestionItem, ProcessedToolCall } from "../components/messages/types"
 import type { AskUserQuestionAnswerMap, HydratedTranscriptMessage } from "../../shared/types"
 import { UserMessage } from "../components/messages/UserMessage"
@@ -74,7 +74,7 @@ interface KannaTranscriptProps {
   onExitPlanModeConfirm: (toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) => void
 }
 
-export function KannaTranscript({
+function KannaTranscriptImpl({
   messages,
   isLoading,
   localPath,
@@ -190,3 +190,5 @@ export function KannaTranscript({
     </OpenLocalLinkProvider>
   )
 }
+
+export const KannaTranscript = memo(KannaTranscriptImpl)

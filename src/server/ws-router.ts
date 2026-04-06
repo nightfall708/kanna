@@ -4,6 +4,7 @@ import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../share
 import { isClientEnvelope } from "../shared/protocol"
 import type { AgentCoordinator } from "./agent"
 import type { DiscoveredProject } from "./discovery"
+import { DiffStore } from "./diff-store"
 import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
@@ -18,6 +19,7 @@ export interface ClientState {
 
 interface CreateWsRouterArgs {
   store: EventStore
+  diffStore?: Pick<DiffStore, "getSnapshot" | "refreshSnapshot">
   agent: AgentCoordinator
   terminals: TerminalManager
   keybindings: KeybindingsManager
@@ -33,6 +35,7 @@ function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
 
 export function createWsRouter({
   store,
+  diffStore,
   agent,
   terminals,
   keybindings,
@@ -42,6 +45,10 @@ export function createWsRouter({
   updateManager,
 }: CreateWsRouterArgs) {
   const sockets = new Set<ServerWebSocket<ClientState>>()
+  const resolvedDiffStore = diffStore ?? {
+    getSnapshot: () => ({ status: "unknown", files: [] as const }),
+    refreshSnapshot: async () => false,
+  }
 
   function createEnvelope(id: string, topic: SubscriptionTopic): ServerEnvelope {
     if (topic.type === "sidebar") {
@@ -121,7 +128,14 @@ export function createWsRouter({
       id,
       snapshot: {
         type: "chat",
-        data: deriveChatSnapshot(store.state, agent.getActiveStatuses(), agent.getDrainingChatIds(), topic.chatId, (chatId) => store.getMessages(chatId)),
+        data: deriveChatSnapshot(
+          store.state,
+          agent.getActiveStatuses(),
+          agent.getDrainingChatIds(),
+          topic.chatId,
+          (chatId) => store.getMessages(chatId),
+          (chatId) => resolvedDiffStore.getSnapshot(chatId)
+        ),
       },
     }
   }
@@ -299,6 +313,22 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           break
         }
+        case "chat.refreshDiffs": {
+          const chat = store.getChat(command.chatId)
+          if (!chat) {
+            throw new Error("Chat not found")
+          }
+          const project = store.getProject(chat.projectId)
+          if (!project) {
+            throw new Error("Project not found")
+          }
+          const changed = await resolvedDiffStore.refreshSnapshot(command.chatId, project.localPath)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          if (changed) {
+            broadcastSnapshots()
+          }
+          return
+        }
         case "chat.cancel": {
           await agent.cancel(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
@@ -350,6 +380,11 @@ export function createWsRouter({
       broadcastSnapshots()
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
+      console.error("[ws-router] command failed", {
+        id,
+        type: command.type,
+        message: messageText,
+      })
       send(ws, { v: PROTOCOL_VERSION, type: "error", id, message: messageText })
     }
   }

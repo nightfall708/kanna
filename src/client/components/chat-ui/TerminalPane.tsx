@@ -15,6 +15,7 @@ interface Props {
   clearVersion?: number
   focusRequestVersion?: number
   onPathChange?: (path: string | null) => void
+  onCommandSent?: () => void
 }
 
 const TERMINAL_THEME_LIGHT: ITheme = {
@@ -223,6 +224,7 @@ export function TerminalPane({
   clearVersion = 0,
   focusRequestVersion = 0,
   onPathChange,
+  onCommandSent,
 }: Props) {
   const { resolvedTheme } = useTheme()
   const containerRef = useRef<HTMLDivElement>(null)
@@ -243,6 +245,9 @@ export function TerminalPane({
     }).catch((commandError) => {
       setError(commandError instanceof Error ? commandError.message : String(commandError))
     })
+    if (data.includes("\r") || data.includes("\n")) {
+      onCommandSent?.()
+    }
   }
   const sendResize = (cols: number, rows: number) => {
     void socket.command({
@@ -336,7 +341,7 @@ export function TerminalPane({
       terminal.dispose()
       terminalRef.current = null
     }
-  }, [scrollback, socket, terminalId, terminalTheme])
+  }, [onCommandSent, scrollback, socket, terminalId, terminalTheme])
 
   useEffect(() => {
     const terminal = terminalRef.current
