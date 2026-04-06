@@ -120,6 +120,18 @@ function refreshTerminal(terminal: Terminal) {
   terminal.refresh(0, Math.max(0, terminal.rows - 1))
 }
 
+function sameTerminalMetadata(
+  left: Pick<TerminalSnapshot, "cwd" | "shell" | "status" | "exitCode"> | null,
+  right: Pick<TerminalSnapshot, "cwd" | "shell" | "status" | "exitCode"> | null
+) {
+  if (left === right) return true
+  if (!left || !right) return false
+  return left.cwd === right.cwd
+    && left.shell === right.shell
+    && left.status === right.status
+    && left.exitCode === right.exitCode
+}
+
 function isMacPlatform(platform: string) {
   return /mac/i.test(platform)
 }
@@ -230,6 +242,7 @@ export function TerminalPane({
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const replayStateRef = useRef<string | null>(null)
+  const onCommandSentRef = useRef<Props["onCommandSent"]>(onCommandSent)
   const hasCreatedRef = useRef(false)
   const createAttemptRef = useRef(0)
   const lastAppliedSnapshotKeyRef = useRef<string | null>(null)
@@ -246,7 +259,7 @@ export function TerminalPane({
       setError(commandError instanceof Error ? commandError.message : String(commandError))
     })
     if (data.includes("\r") || data.includes("\n")) {
-      onCommandSent?.()
+      onCommandSentRef.current?.()
     }
   }
   const sendResize = (cols: number, rows: number) => {
@@ -270,6 +283,10 @@ export function TerminalPane({
       setTimeout(sync, 0)
     })
   }
+
+  useEffect(() => {
+    onCommandSentRef.current = onCommandSent
+  }, [onCommandSent])
 
   useEffect(() => {
     const terminal = new Terminal(getTerminalOptions(scrollback, terminalTheme))
@@ -341,7 +358,7 @@ export function TerminalPane({
       terminal.dispose()
       terminalRef.current = null
     }
-  }, [onCommandSent, scrollback, socket, terminalId, terminalTheme])
+  }, [scrollback, socket, terminalId, terminalTheme])
 
   useEffect(() => {
     const terminal = terminalRef.current
@@ -396,7 +413,13 @@ export function TerminalPane({
   useEffect(() => {
     const applySnapshot = (snapshot: TerminalSnapshot) => {
       const terminal = terminalRef.current
-      if (!terminal) return
+      if (!terminal) return false
+      const nextMetadata = {
+        cwd: snapshot.cwd,
+        shell: snapshot.shell,
+        status: snapshot.status,
+        exitCode: snapshot.exitCode,
+      } satisfies Pick<TerminalSnapshot, "cwd" | "shell" | "status" | "exitCode">
       const snapshotKey = JSON.stringify({
         cwd: snapshot.cwd,
         shell: snapshot.shell,
@@ -408,22 +431,12 @@ export function TerminalPane({
         serializedState: snapshot.serializedState,
       })
       if (lastAppliedSnapshotKeyRef.current === snapshotKey) {
-        setMetadata({
-          cwd: snapshot.cwd,
-          shell: snapshot.shell,
-          status: snapshot.status,
-          exitCode: snapshot.exitCode,
-        })
+        setMetadata((current) => sameTerminalMetadata(current, nextMetadata) ? current : nextMetadata)
         replayStateRef.current = snapshot.serializedState || null
-        return
+        return false
       }
       lastAppliedSnapshotKeyRef.current = snapshotKey
-      setMetadata({
-        cwd: snapshot.cwd,
-        shell: snapshot.shell,
-        status: snapshot.status,
-        exitCode: snapshot.exitCode,
-      })
+      setMetadata((current) => sameTerminalMetadata(current, nextMetadata) ? current : nextMetadata)
       replayStateRef.current = snapshot.serializedState || null
       terminal.options.scrollback = snapshot.scrollback
       terminal.reset()
@@ -431,6 +444,7 @@ export function TerminalPane({
         terminal.write(snapshot.serializedState)
       }
       refreshTerminal(terminal)
+      return true
     }
 
     const ensureSession = () => {
@@ -496,8 +510,9 @@ export function TerminalPane({
         }
         hasCreatedRef.current = true
         setError(null)
-        applySnapshot(snapshot)
-        scheduleResizeSync()
+        if (applySnapshot(snapshot)) {
+          scheduleResizeSync()
+        }
       },
       onEvent: (event) => {
         const terminal = terminalRef.current

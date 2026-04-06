@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { ArrowDown, Flower, Upload } from "lucide-react"
 import { useOutletContext } from "react-router-dom"
 import type { HydratedTranscriptMessage } from "../../shared/types"
@@ -15,7 +15,6 @@ import { actionMatchesEvent, getResolvedKeybindings } from "../lib/keybindings"
 import { cn } from "../lib/utils"
 import {
   DEFAULT_PROJECT_RIGHT_SIDEBAR_LAYOUT,
-  RIGHT_SIDEBAR_MAX_SIZE_PERCENT,
   RIGHT_SIDEBAR_MIN_SIZE_PERCENT,
   useRightSidebarStore,
 } from "../stores/rightSidebarStore"
@@ -93,6 +92,20 @@ export function scrollTranscriptMessageIntoView(
 
 export function hasFileDragTypes(types: Iterable<string>) {
   return Array.from(types).includes("Files")
+}
+
+function isAbsoluteLocalPath(value: string) {
+  return value.startsWith("/")
+    || value === "~"
+    || value.startsWith("~/")
+    || /^[A-Za-z]:[\\/]/u.test(value)
+}
+
+function joinProjectRelativePath(projectPath: string, filePath: string) {
+  const separator = projectPath.includes("\\") && !projectPath.includes("/") ? "\\" : "/"
+  const normalizedProjectPath = projectPath.replace(/[\\/]+$/u, "")
+  const normalizedFilePath = filePath.replace(/^[\\/]+/u, "")
+  return `${normalizedProjectPath}${separator}${normalizedFilePath}`
 }
 
 export function ChatPage() {
@@ -173,14 +186,14 @@ export function ChatPage() {
     canCancel: state.canCancel,
   })
 
-  function refreshDiffs() {
+  const refreshDiffs = useCallback(() => {
     if (!state.activeChatId || !showRightSidebar) {
       return
     }
     void state.socket.command({ type: "chat.refreshDiffs", chatId: state.activeChatId }).catch(() => {})
-  }
+  }, [showRightSidebar, state.activeChatId, state.socket])
 
-  function scheduleTerminalDiffRefresh() {
+  const scheduleTerminalDiffRefresh = useCallback(() => {
     if (!state.activeChatId || !showRightSidebar) {
       return
     }
@@ -191,7 +204,15 @@ export function ChatPage() {
       terminalDiffRefreshTimeoutRef.current = null
       refreshDiffs()
     }, 1_000)
-  }
+  }, [refreshDiffs, showRightSidebar, state.activeChatId])
+
+  const handleOpenDiffFile = useCallback((filePath: string) => {
+    const projectPath = state.runtime?.localPath ?? state.navbarLocalPath ?? null
+    const resolvedPath = !projectPath || isAbsoluteLocalPath(filePath)
+      ? filePath
+      : joinProjectRelativePath(projectPath, filePath)
+    void state.handleOpenLocalLink({ path: resolvedPath })
+  }, [state.handleOpenLocalLink, state.navbarLocalPath, state.runtime?.localPath])
 
   function hasDraggedFiles(event: React.DragEvent) {
     return hasFileDragTypes(event.dataTransfer?.types ?? [])
@@ -325,7 +346,7 @@ export function ChatPage() {
     }, DIFF_REFRESH_INTERVAL_MS)
 
     return () => window.clearInterval(intervalId)
-  }, [showRightSidebar, state.activeChatId, state.socket])
+  }, [refreshDiffs, showRightSidebar, state.activeChatId])
 
   useEffect(() => {
     if (!state.activeChatId || !showRightSidebar) {
@@ -333,7 +354,7 @@ export function ChatPage() {
     }
 
     refreshDiffs()
-  }, [showRightSidebar, state.activeChatId, state.socket])
+  }, [refreshDiffs, showRightSidebar, state.activeChatId])
 
   useEffect(() => {
     if (!state.activeChatId || !showRightSidebar) {
@@ -352,14 +373,14 @@ export function ChatPage() {
       window.removeEventListener("focus", handleDiffRefresh)
       document.removeEventListener("visibilitychange", handleDiffRefresh)
     }
-  }, [showRightSidebar, state.activeChatId, state.socket])
+  }, [refreshDiffs, showRightSidebar, state.activeChatId])
 
   useEffect(() => {
     if (showRightSidebar && wasProcessingRef.current && !state.isProcessing) {
       refreshDiffs()
     }
     wasProcessingRef.current = state.isProcessing
-  }, [showRightSidebar, state.activeChatId, state.isProcessing, state.socket])
+  }, [refreshDiffs, showRightSidebar, state.activeChatId, state.isProcessing])
 
   useEffect(() => {
     return () => {
@@ -410,7 +431,7 @@ export function ChatPage() {
       return rightSidebarLayout.size
     }
 
-    return Math.min(RIGHT_SIDEBAR_MAX_SIZE_PERCENT, Math.max(RIGHT_SIDEBAR_MIN_SIZE_PERCENT, size))
+    return Math.max(RIGHT_SIDEBAR_MIN_SIZE_PERCENT, size)
   }
 
   const chatCard = (
@@ -664,7 +685,7 @@ export function ChatPage() {
           <ResizablePanel
             id="workspace"
             defaultSize={`${100 - rightSidebarLayout.size}%`}
-            minSize="50%"
+            minSize="20%"
             className="min-h-0 min-w-0"
           >
             {shouldRenderTerminalLayout ? (
@@ -736,7 +757,6 @@ export function ChatPage() {
           <ResizablePanel
             id="rightSidebar"
             defaultSize={`${rightSidebarLayout.size}%`}
-            maxSize={`${RIGHT_SIDEBAR_MAX_SIZE_PERCENT}%`}
             className="min-h-0 min-w-0"
             elementRef={sidebarPanelRef}
           >
@@ -754,9 +774,7 @@ export function ChatPage() {
                 diffs={state.chatDiffSnapshot ?? { status: "unknown", files: [] }}
                 diffRenderMode={diffRenderMode}
                 wrapLines={wrapDiffLines}
-                onOpenFile={(path) => {
-                  void state.handleOpenLocalLink({ path })
-                }}
+                onOpenFile={handleOpenDiffFile}
                 onDiffRenderModeChange={setDiffRenderMode}
                 onWrapLinesChange={setWrapDiffLines}
                 onClose={() => toggleRightSidebar(projectId)}

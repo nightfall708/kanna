@@ -137,13 +137,13 @@ function RightSidebarImpl({
               <p className="text-sm text-muted-foreground">No file changes.</p>
             </div>
           ) : (
-            <div className="">
+            <div className="p-1.5 pr-0 space-y-1.5">
               {diffs.files.map((file) => {
                 const counts = getPatchCounts(file.patch)
                 const isCollapsed = collapsedPaths[file.path] ?? true
 
                 return (
-                <div key={file.path} className="border-b border-border/60 border-r border-border/60 ">
+                <div key={file.path} className="overflow-hidden rounded-lg border border-border">
                   <div
                     role="button"
                     tabIndex={0}
@@ -154,21 +154,21 @@ function RightSidebarImpl({
                       setCollapsedPaths((current) => ({ ...current, [file.path]: !isCollapsed }))
                     }}
                     className={cn(
-                      "px-4 sticky top-0 z-10 flex cursor-pointer items-center justify-between gap-3 bg-background py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                      "group/header sticky top-0 z-10 flex cursor-pointer items-center justify-between gap-3 bg-background pl-3 pr-2.5 py-1.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
                       !isCollapsed && "border-b border-border/50"
                     )}
                   >
                     <div className="flex min-w-0 items-center gap-1.5">
-                      <span className="min-w-0 truncate" title={file.path}>{file.path}</span>
+                      <div className="min-w-0 truncate">{file.path}</div>
                       <button
                         type="button"
                         aria-label={`Open ${file.path} in editor`}
-                        title={`Open ${file.path} in editor`}
+                        title={file.path}
                         onClick={(event) => {
                           event.stopPropagation()
                           onOpenFile(file.path)
                         }}
-                        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-sm opacity-70 transition-colors hover:opacity-100"
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 transition-[opacity,color,background-color] group-hover/header:opacity-70 hover:bg-accent hover:text-foreground focus-visible:opacity-100"
                       >
                         <ExternalLink className="h-3 w-3 shrink-0" />
                       </button>
@@ -182,7 +182,7 @@ function RightSidebarImpl({
                           </span>
                         ) : null}
                       </span>
-                      {isCollapsed ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
+                      {isCollapsed ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronUp className="h-3.5 w-3.5 shrink-0" />}
                     </div>
                   </div>
                   {!isCollapsed ? (
