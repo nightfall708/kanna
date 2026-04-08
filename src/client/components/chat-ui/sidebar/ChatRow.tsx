@@ -1,3 +1,4 @@
+import { memo } from "react"
 import { Archive, Loader2 } from "lucide-react"
 import type { SidebarChatRow } from "../../../../shared/types"
 import { AnimatedShinyText } from "../../ui/animated-shiny-text"
@@ -15,7 +16,7 @@ interface Props {
   onDeleteChat: (chatId: string) => void
 }
 
-export function ChatRow({
+function ChatRowImpl({
   chat,
   activeChatId,
   nowMs,
@@ -23,14 +24,15 @@ export function ChatRow({
   onDeleteChat,
 }: Props) {
   const ageLabel = formatSidebarAgeLabel(chat.lastMessageAt, nowMs)
+  const normalizedChatId = normalizeChatId(chat.chatId)
 
   return (
     <div
       key={chat._id}
-      data-chat-id={normalizeChatId(chat.chatId)}
+      data-chat-id={normalizedChatId}
       className={cn(
         "group flex items-center gap-2 pl-2.5 pr-0.5 py-0.5 rounded-lg cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
-        activeChatId === normalizeChatId(chat.chatId) ? "bg-muted hover:bg-muted border-border" : "border-border/0 dark:hover:border-slate-400/10 "
+        activeChatId === normalizedChatId ? "bg-muted hover:bg-muted border-border" : "border-border/0 dark:hover:border-slate-400/10 "
       )}
       onClick={() => onSelectChat(chat.chatId)}
     >
@@ -90,3 +92,5 @@ export function ChatRow({
     </div>
   )
 }
+
+export const ChatRow = memo(ChatRowImpl)

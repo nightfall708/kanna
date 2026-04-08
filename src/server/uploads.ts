@@ -108,6 +108,10 @@ export function inferAttachmentContentType(fileName: string, fallbackType?: stri
   return fallbackType || DEFAULT_BINARY_MIME_TYPE
 }
 
+export function inferProjectFileContentType(fileName: string, fallbackType?: string): string {
+  return inferAttachmentContentType(fileName, fallbackType)
+}
+
 export async function deleteProjectUpload(args: {
   localPath: string
   storedName: string

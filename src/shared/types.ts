@@ -171,6 +171,16 @@ export function resolveClaudeApiModelId(modelId: string, contextWindow?: ClaudeC
   return contextWindow === "1m" ? `${modelId}[1m]` : modelId
 }
 
+export function resolveClaudeContextWindowTokens(contextWindow: ClaudeContextWindow): number {
+  switch (contextWindow) {
+    case "1m":
+      return 1_000_000
+    case "200k":
+    default:
+      return 200_000
+  }
+}
+
 export type KannaStatus =
   | "idle"
   | "starting"
@@ -440,6 +450,170 @@ export interface StatusEntry extends TranscriptEntryBase {
   status: string
 }
 
+export interface ContextWindowUsageSnapshot {
+  usedTokens: number
+  totalProcessedTokens?: number
+  maxTokens?: number
+  inputTokens?: number
+  cachedInputTokens?: number
+  outputTokens?: number
+  reasoningOutputTokens?: number
+  lastUsedTokens?: number
+  lastInputTokens?: number
+  lastCachedInputTokens?: number
+  lastOutputTokens?: number
+  lastReasoningOutputTokens?: number
+  toolUses?: number
+  durationMs?: number
+  compactsAutomatically: boolean
+}
+
+export interface ChatDiffFile {
+  path: string
+  changeType: "added" | "deleted" | "modified" | "renamed"
+  isUntracked: boolean
+  patch: string
+  mimeType?: string
+  size?: number
+}
+
+export interface ChatBranchHistoryEntry {
+  sha: string
+  summary: string
+  description: string
+  authorName?: string
+  authoredAt: string
+  tags: string[]
+  githubUrl?: string
+}
+
+export interface ChatBranchHistorySnapshot {
+  entries: ChatBranchHistoryEntry[]
+}
+
+export type ChatBranchListEntryKind = "local" | "remote" | "pull_request"
+
+export interface ChatBranchListEntry {
+  id: string
+  kind: ChatBranchListEntryKind
+  name: string
+  displayName: string
+  updatedAt?: string
+  description?: string
+  remoteRef?: string
+  prNumber?: number
+  prTitle?: string
+  headRefName?: string
+  headLabel?: string
+  headRepoCloneUrl?: string
+  isCrossRepository?: boolean
+}
+
+export interface ChatBranchListResult {
+  currentBranchName?: string
+  defaultBranchName?: string
+  recent: ChatBranchListEntry[]
+  local: ChatBranchListEntry[]
+  remote: ChatBranchListEntry[]
+  pullRequests: ChatBranchListEntry[]
+  pullRequestsStatus: "available" | "unavailable" | "error"
+  pullRequestsError?: string
+}
+
+export interface ChatDiffSnapshot {
+  status: "unknown" | "ready" | "no_repo"
+  branchName?: string
+  defaultBranchName?: string
+  originRepoSlug?: string
+  hasUpstream?: boolean
+  aheadCount?: number
+  behindCount?: number
+  lastFetchedAt?: string
+  files: ChatDiffFile[]
+  branchHistory?: ChatBranchHistorySnapshot
+}
+
+export interface ChatSyncSuccess {
+  ok: true
+  action: "fetch" | "pull" | "publish"
+  branchName?: string
+  aheadCount?: number
+  behindCount?: number
+  snapshotChanged: boolean
+}
+
+export interface ChatSyncFailure {
+  ok: false
+  action: "fetch" | "pull" | "publish"
+  title: string
+  message: string
+  detail?: string
+  snapshotChanged?: boolean
+}
+
+export type ChatSyncResult = ChatSyncSuccess | ChatSyncFailure
+
+export type DiffCommitMode = "commit_and_push" | "commit_only"
+
+export interface ChatCheckoutBranchSuccess {
+  ok: true
+  branchName?: string
+  snapshotChanged: boolean
+}
+
+export interface ChatCheckoutBranchFailure {
+  ok: false
+  cancelled?: boolean
+  title: string
+  message: string
+  detail?: string
+  snapshotChanged?: boolean
+}
+
+export type ChatCheckoutBranchResult = ChatCheckoutBranchSuccess | ChatCheckoutBranchFailure
+
+export interface ChatCreateBranchSuccess {
+  ok: true
+  branchName: string
+  snapshotChanged: boolean
+}
+
+export interface ChatCreateBranchFailure {
+  ok: false
+  title: string
+  message: string
+  detail?: string
+  snapshotChanged?: boolean
+}
+
+export type ChatCreateBranchResult = ChatCreateBranchSuccess | ChatCreateBranchFailure
+
+export interface DiffCommitSuccess {
+  ok: true
+  mode: DiffCommitMode
+  branchName?: string
+  pushed: boolean
+  snapshotChanged: boolean
+}
+
+export interface DiffCommitFailure {
+  ok: false
+  mode: DiffCommitMode
+  phase: "commit" | "push"
+  title: string
+  message: string
+  detail?: string
+  localCommitCreated?: boolean
+  snapshotChanged?: boolean
+}
+
+export type DiffCommitResult = DiffCommitSuccess | DiffCommitFailure
+
+export interface ContextWindowUpdatedEntry extends TranscriptEntryBase {
+  kind: "context_window_updated"
+  usage: ContextWindowUsageSnapshot
+}
+
 export interface CompactBoundaryEntry extends TranscriptEntryBase {
   kind: "compact_boundary"
 }
@@ -466,6 +640,7 @@ export type TranscriptEntry =
   | ToolResultEntry
   | ResultEntry
   | StatusEntry
+  | ContextWindowUpdatedEntry
   | CompactBoundaryEntry
   | CompactSummaryEntry
   | ContextClearedEntry
@@ -579,6 +754,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "assistant_text"; text: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "result"; success: boolean; cancelled?: boolean; result: string; durationMs: number; costUsd?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "status"; status: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "context_window_updated"; usage: ContextWindowUsageSnapshot; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "compact_boundary"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "compact_summary"; summary: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "context_cleared"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
@@ -598,10 +774,24 @@ export interface ChatRuntime {
   sessionToken: string | null
 }
 
+export interface ChatHistorySnapshot {
+  hasOlder: boolean
+  olderCursor: string | null
+  recentLimit: number
+}
+
 export interface ChatSnapshot {
   runtime: ChatRuntime
   messages: TranscriptEntry[]
+  history: ChatHistorySnapshot
+  diffs: ChatDiffSnapshot
   availableProviders: ProviderCatalogEntry[]
+}
+
+export interface ChatHistoryPage {
+  messages: TranscriptEntry[]
+  hasOlder: boolean
+  olderCursor: string | null
 }
 
 export interface KannaSnapshot {

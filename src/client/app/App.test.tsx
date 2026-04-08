@@ -1,10 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import {
-  getChatNotificationSnapshot,
-  getChatSoundBurstCount,
-  getNotificationTitleCount,
-  shouldRedirectToChangelog,
-} from "./App"
+import { shouldRedirectToChangelog } from "./App"
+import { getChatNotificationSnapshot, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
 import { isBrowserUnfocused, shouldPlayChatSound } from "../lib/chatSounds"
 
 describe("shouldRedirectToChangelog", () => {

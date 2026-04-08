@@ -1,4 +1,5 @@
 import type {
+  ChatDiffSnapshot,
   ChatRuntime,
   ChatSnapshot,
   KannaStatus,
@@ -17,6 +18,10 @@ export function deriveStatus(chat: ChatRecord, activeStatus?: KannaStatus): Kann
   return "idle"
 }
 
+function getSidebarChatSortTimestamp(chat: ChatRecord) {
+  return chat.lastMessageAt ?? chat.createdAt
+}
+
 export function deriveSidebarData(
   state: StoreState,
   activeStatuses: Map<string, KannaStatus>
@@ -28,7 +33,7 @@ export function deriveSidebarData(
   const projectGroups: SidebarProjectGroup[] = projects.map((project) => {
     const chats: SidebarChatRow[] = [...state.chatsById.values()]
       .filter((chat) => chat.projectId === project.id && !chat.deletedAt)
-      .sort((a, b) => (b.lastMessageAt ?? b.updatedAt) - (a.lastMessageAt ?? a.updatedAt))
+      .sort((a, b) => getSidebarChatSortTimestamp(b) - getSidebarChatSortTimestamp(a))
       .map((chat) => ({
         _id: chat.id,
         _creationTime: chat.createdAt,
@@ -73,7 +78,7 @@ export function deriveLocalProjectsSnapshot(
   for (const project of [...state.projectsById.values()].filter((entry) => !entry.deletedAt)) {
     const chats = [...state.chatsById.values()].filter((chat) => chat.projectId === project.id && !chat.deletedAt)
     const lastOpenedAt = chats.reduce(
-      (latest, chat) => Math.max(latest, chat.lastMessageAt ?? chat.updatedAt ?? 0),
+      (latest, chat) => Math.max(latest, getSidebarChatSortTimestamp(chat)),
       project.updatedAt
     )
 
@@ -100,7 +105,8 @@ export function deriveChatSnapshot(
   activeStatuses: Map<string, KannaStatus>,
   drainingChatIds: Set<string>,
   chatId: string,
-  getMessages: (chatId: string) => ChatSnapshot["messages"]
+  getMessages: (chatId: string) => Pick<ChatSnapshot, "messages" | "history">,
+  getDiffs: (chatId: string) => ChatDiffSnapshot
 ): ChatSnapshot | null {
   const chat = state.chatsById.get(chatId)
   if (!chat || chat.deletedAt) return null
@@ -119,9 +125,13 @@ export function deriveChatSnapshot(
     sessionToken: chat.sessionToken,
   }
 
+  const transcript = getMessages(chat.id)
+
   return {
     runtime,
-    messages: getMessages(chat.id),
+    messages: transcript.messages,
+    history: transcript.history,
+    diffs: getDiffs(chat.id),
     availableProviders: [...SERVER_PROVIDERS],
   }
 }

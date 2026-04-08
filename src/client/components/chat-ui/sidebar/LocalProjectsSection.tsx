@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useRef } from "react"
+import { memo, type ReactNode, useMemo, useRef } from "react"
 import { ChevronRight, FolderOpen, Loader2, SquarePen } from "lucide-react"
 import {
   DndContext,
@@ -60,7 +60,7 @@ interface SortableProjectGroupProps {
   startingLocalPath?: string | null
 }
 
-function SortableProjectGroup({
+const SortableProjectGroup = memo(function SortableProjectGroup({
   group,
   editorLabel,
   collapsedSections,
@@ -197,9 +197,9 @@ function SortableProjectGroup({
       )}
     </div>
   )
-}
+})
 
-export function LocalProjectsSection({
+const LocalProjectsSectionImpl = function LocalProjectsSection({
   projectGroups,
   editorLabel,
   collapsedSections,
@@ -288,3 +288,5 @@ export function LocalProjectsSection({
     </DndContext>
   )
 }
+
+export const LocalProjectsSection = memo(LocalProjectsSectionImpl)

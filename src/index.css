@@ -290,6 +290,14 @@
     background: transparent !important;
   }
 
+  diffs-container {
+    --diffs-bg: hsl(var(--background)) !important;
+    --diffs-light-bg: hsl(var(--background)) !important;
+    --diffs-dark-bg: hsl(var(--background)) !important;
+    --diffs-gap-block: 0px !important;
+    --diffs-bg-separator: hsl(var(--background)) !important;
+  }
+
   [data-panel][data-terminal-open] {
     overflow: hidden;
   }

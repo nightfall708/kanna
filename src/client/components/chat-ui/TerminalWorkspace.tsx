@@ -1,4 +1,4 @@
-import { Fragment, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Eraser, Plus, X } from "lucide-react"
 import type { SocketStatus, KannaSocket } from "../../app/socket"
 import { Button } from "../ui/button"
@@ -20,9 +20,146 @@ interface Props {
   onAddTerminal: (projectId: string, afterTerminalId?: string) => void
   onRemoveTerminal: (projectId: string, terminalId: string) => void
   onTerminalLayout: (projectId: string, sizes: number[]) => void
+  onTerminalCommandSent?: () => void
 }
 
-export function TerminalWorkspace({
+interface TerminalWorkspacePaneProps {
+  projectId: string
+  terminalId: string
+  size: number
+  isLast: boolean
+  minTerminalWidth: number
+  path: string | null
+  socket: KannaSocket
+  scrollback: number
+  connectionStatus: SocketStatus
+  clearVersion: number
+  focusRequestVersion: number
+  splitTerminalShortcut?: string[]
+  onAddTerminal: (projectId: string, afterTerminalId?: string) => void
+  onRemoveTerminal: (projectId: string, terminalId: string) => void
+  onClearTerminal: (terminalId: string) => void
+  onPathChange: (terminalId: string, path: string | null) => void
+  onCommandSent?: () => void
+  setPaneElement: (terminalId: string, element: HTMLDivElement | null) => void
+}
+
+const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
+  projectId,
+  terminalId,
+  size,
+  isLast,
+  minTerminalWidth,
+  path,
+  socket,
+  scrollback,
+  connectionStatus,
+  clearVersion,
+  focusRequestVersion,
+  splitTerminalShortcut,
+  onAddTerminal,
+  onRemoveTerminal,
+  onClearTerminal,
+  onPathChange,
+  onCommandSent,
+  setPaneElement,
+}: TerminalWorkspacePaneProps) {
+  const handleSetPaneElement = useCallback((element: HTMLDivElement | null) => {
+    setPaneElement(terminalId, element)
+  }, [setPaneElement, terminalId])
+
+  const handleClearTerminal = useCallback(() => {
+    onClearTerminal(terminalId)
+    onPathChange(terminalId, null)
+  }, [onClearTerminal, onPathChange, terminalId])
+
+  const handleAddTerminal = useCallback(() => {
+    onAddTerminal(projectId, terminalId)
+  }, [onAddTerminal, projectId, terminalId])
+
+  const handleRemoveTerminal = useCallback(() => {
+    onRemoveTerminal(projectId, terminalId)
+  }, [onRemoveTerminal, projectId, terminalId])
+
+  const handlePathChange = useCallback((nextPath: string | null) => {
+    onPathChange(terminalId, nextPath)
+  }, [onPathChange, terminalId])
+
+  return (
+    <Fragment>
+      <ResizablePanel
+        id={terminalId}
+        defaultSize={`${size}%`}
+        minSize={`${minTerminalWidth}px`}
+        className="min-h-0 overflow-hidden"
+        style={{ minWidth: minTerminalWidth }}
+      >
+        <div
+          ref={handleSetPaneElement}
+          className="flex h-full min-h-0 min-w-0 flex-col border-r border-border bg-transparent last:border-r-0"
+          style={{ minWidth: minTerminalWidth }}
+        >
+          <div className="flex items-center gap-2 px-3 pr-2 pt-2 pb-1">
+            <div className="min-w-0 flex-1 text-left">
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="shrink-0 text-sm font-medium">Terminal</div>
+                <div className="min-w-0 truncate text-xs text-muted-foreground">
+                  {path ?? ""}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Clear terminal"
+                onClick={handleClearTerminal}
+              >
+                <Eraser className="size-3.5" />
+              </Button>
+              <HotkeyTooltip>
+                <HotkeyTooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Add terminal to the right"
+                    onClick={handleAddTerminal}
+                  >
+                    <Plus className="size-3.5" />
+                  </Button>
+                </HotkeyTooltipTrigger>
+                <HotkeyTooltipContent side="bottom" shortcut={splitTerminalShortcut} />
+              </HotkeyTooltip>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Archive terminal"
+                onClick={handleRemoveTerminal}
+              >
+                <X className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+
+          <TerminalPane
+            projectId={projectId}
+            terminalId={terminalId}
+            socket={socket}
+            scrollback={scrollback}
+            connectionStatus={connectionStatus}
+            clearVersion={clearVersion}
+            focusRequestVersion={focusRequestVersion}
+            onCommandSent={onCommandSent}
+            onPathChange={handlePathChange}
+          />
+        </div>
+      </ResizablePanel>
+      {!isLast ? <ResizableHandle withHandle orientation="horizontal" /> : null}
+    </Fragment>
+  )
+})
+
+function TerminalWorkspaceImpl({
   projectId,
   layout,
   socket,
@@ -34,6 +171,7 @@ export function TerminalWorkspace({
   onAddTerminal,
   onRemoveTerminal,
   onTerminalLayout,
+  onTerminalCommandSent,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const paneRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -65,6 +203,33 @@ export function TerminalWorkspace({
     () => layout.terminals.map((terminal) => terminal.id).join(":"),
     [layout.terminals]
   )
+  const handleSetPaneElement = useCallback((terminalId: string, element: HTMLDivElement | null) => {
+    paneRefs.current[terminalId] = element
+  }, [])
+
+  const handlePathChange = useCallback((terminalId: string, path: string | null) => {
+    setPathsByTerminalId((current) => {
+      if (current[terminalId] === path) return current
+      return {
+        ...current,
+        [terminalId]: path,
+      }
+    })
+  }, [])
+
+  const handleClearTerminal = useCallback((terminalId: string) => {
+    setClearVersionsByTerminalId((current) => ({
+      ...current,
+      [terminalId]: (current[terminalId] ?? 0) + 1,
+    }))
+  }, [])
+
+  const handleLayoutChanged = useCallback((nextLayout: Record<string, number>) => {
+    onTerminalLayout(
+      projectId,
+      layout.terminals.map((terminal) => nextLayout[terminal.id] ?? terminal.size),
+    )
+  }, [layout.terminals, onTerminalLayout, projectId])
 
   useLayoutEffect(() => {
     const previousIds = previousTerminalIdsRef.current
@@ -97,92 +262,30 @@ export function TerminalWorkspace({
             key={panelGroupKey}
             orientation="horizontal"
             className="h-full min-h-0"
-            onLayoutChanged={(nextLayout) => onTerminalLayout(
-              projectId,
-              layout.terminals.map((terminal) => nextLayout[terminal.id] ?? terminal.size)
-            )}
+            onLayoutChanged={handleLayoutChanged}
           >
             {layout.terminals.map((terminalPane, index) => (
-              <Fragment key={terminalPane.id}>
-                <ResizablePanel
-                  id={terminalPane.id}
-                  defaultSize={`${terminalPane.size}%`}
-                  minSize={`${minTerminalWidth}px`}
-                  className="min-h-0 overflow-hidden"
-                  style={{ minWidth: minTerminalWidth }}
-                >
-                <div
-                  ref={(element) => {
-                    paneRefs.current[terminalPane.id] = element
-                  }}
-                  className="flex h-full min-h-0 min-w-0 flex-col border-r border-border bg-transparent last:border-r-0"
-                  style={{ minWidth: minTerminalWidth }}
-                >
-                  <div className="flex items-center gap-2 px-3 pr-2 pt-2 pb-1">
-                    <div className="min-w-0 flex-1 text-left">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <div className="shrink-0 text-sm font-medium">Terminal</div>
-                        <div className="min-w-0 truncate text-xs text-muted-foreground">
-                          {pathsByTerminalId[terminalPane.id] ?? ""}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="Clear terminal"
-                        onClick={() => setClearVersionsByTerminalId((current) => ({
-                          ...current,
-                          [terminalPane.id]: (current[terminalPane.id] ?? 0) + 1,
-                        }))}
-                      >
-                        <Eraser className="size-3.5" />
-                      </Button>
-                      <HotkeyTooltip>
-                        <HotkeyTooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label="Add terminal to the right"
-                            onClick={() => onAddTerminal(projectId, terminalPane.id)}
-                          >
-                            <Plus className="size-3.5" />
-                          </Button>
-                        </HotkeyTooltipTrigger>
-                        <HotkeyTooltipContent side="bottom" shortcut={splitTerminalShortcut} />
-                      </HotkeyTooltip>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="Archive terminal"
-                        onClick={() => onRemoveTerminal(projectId, terminalPane.id)}
-                      >
-                        <X className="size-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-
-                  <TerminalPane
-                    projectId={projectId}
-                    terminalId={terminalPane.id}
-                    socket={socket}
-                    scrollback={scrollback}
-                    connectionStatus={connectionStatus}
-                    clearVersion={clearVersionsByTerminalId[terminalPane.id] ?? 0}
-                    focusRequestVersion={index === 0 ? focusRequestVersion : 0}
-                    onPathChange={(path) => setPathsByTerminalId((current) => {
-                      if (current[terminalPane.id] === path) return current
-                      return {
-                        ...current,
-                        [terminalPane.id]: path,
-                      }
-                    })}
-                  />
-                </div>
-                </ResizablePanel>
-                {index < layout.terminals.length - 1 ? <ResizableHandle withHandle orientation="horizontal" /> : null}
-              </Fragment>
+              <TerminalWorkspacePane
+                key={terminalPane.id}
+                projectId={projectId}
+                terminalId={terminalPane.id}
+                size={terminalPane.size}
+                isLast={index === layout.terminals.length - 1}
+                minTerminalWidth={minTerminalWidth}
+                path={pathsByTerminalId[terminalPane.id] ?? null}
+                socket={socket}
+                scrollback={scrollback}
+                connectionStatus={connectionStatus}
+                clearVersion={clearVersionsByTerminalId[terminalPane.id] ?? 0}
+                focusRequestVersion={index === 0 ? focusRequestVersion : 0}
+                splitTerminalShortcut={splitTerminalShortcut}
+                onAddTerminal={onAddTerminal}
+                onRemoveTerminal={onRemoveTerminal}
+                onClearTerminal={handleClearTerminal}
+                onPathChange={handlePathChange}
+                onCommandSent={onTerminalCommandSent}
+                setPaneElement={handleSetPaneElement}
+              />
             ))}
           </ResizablePanelGroup>
         </div>
@@ -190,3 +293,5 @@ export function TerminalWorkspace({
     </div>
   )
 }
+
+export const TerminalWorkspace = memo(TerminalWorkspaceImpl)

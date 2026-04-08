@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Flower, Loader2, PanelLeft, X, Menu, Plus, Settings } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
@@ -32,7 +32,7 @@ interface KannaSidebarProps {
   onInstallUpdate: () => void
 }
 
-export function KannaSidebar({
+function KannaSidebarImpl({
   data,
   activeChatId,
   connectionStatus,
@@ -362,3 +362,5 @@ export function KannaSidebar({
     </>
   )
 }
+
+export const KannaSidebar = memo(KannaSidebarImpl)

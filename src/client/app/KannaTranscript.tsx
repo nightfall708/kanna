@@ -1,4 +1,4 @@
-import React, { useMemo } from "react"
+import React, { memo, useMemo } from "react"
 import type { AskUserQuestionItem, ProcessedToolCall } from "../components/messages/types"
 import type { AskUserQuestionAnswerMap, HydratedTranscriptMessage } from "../../shared/types"
 import { UserMessage } from "../components/messages/UserMessage"
@@ -21,9 +21,36 @@ import { CHAT_SELECTION_ZONE_ATTRIBUTE } from "./chatFocusPolicy"
 
 const SPECIAL_TOOL_NAMES = new Set(["AskUserQuestion", "ExitPlanMode", "TodoWrite"])
 
-type RenderItem =
+export type TranscriptRenderItem =
   | { type: "single"; message: HydratedTranscriptMessage; index: number }
   | { type: "tool-group"; messages: HydratedTranscriptMessage[]; startIndex: number }
+
+export interface ResolvedSingleTranscriptRow {
+  kind: "single"
+  id: string
+  message: HydratedTranscriptMessage
+  index: number
+  isLoading: boolean
+  localPath?: string
+  isFirstSystem: boolean
+  isFirstAccount: boolean
+  isLatestAskUserQuestion: boolean
+  isLatestExitPlanMode: boolean
+  isLatestTodoWrite: boolean
+  hideResult: boolean
+  isFinalStatus: boolean
+}
+
+export interface ResolvedToolGroupTranscriptRow {
+  kind: "tool-group"
+  id: string
+  startIndex: number
+  messages: HydratedTranscriptMessage[]
+  isLoading: boolean
+  localPath?: string
+}
+
+export type ResolvedTranscriptRow = ResolvedSingleTranscriptRow | ResolvedToolGroupTranscriptRow
 
 function isCollapsibleToolCall(message: HydratedTranscriptMessage) {
   if (message.kind !== "tool") return false
@@ -31,8 +58,8 @@ function isCollapsibleToolCall(message: HydratedTranscriptMessage) {
   return !SPECIAL_TOOL_NAMES.has(toolName)
 }
 
-function groupMessages(messages: HydratedTranscriptMessage[]): RenderItem[] {
-  const result: RenderItem[] = []
+export function buildTranscriptRenderItems(messages: HydratedTranscriptMessage[]): TranscriptRenderItem[] {
+  const result: TranscriptRenderItem[] = []
   let index = 0
 
   while (index < messages.length) {
@@ -60,6 +87,338 @@ function groupMessages(messages: HydratedTranscriptMessage[]): RenderItem[] {
   return result
 }
 
+function getTranscriptRenderItemId(item: TranscriptRenderItem) {
+  if (item.type === "single") {
+    return item.message.id
+  }
+
+  const firstId = item.messages[0]?.id ?? item.startIndex
+  const lastId = item.messages[item.messages.length - 1]?.id ?? item.startIndex
+  return `tool-group:${firstId}:${lastId}:${item.messages.length}`
+}
+
+function shouldRenderTranscriptSingleRow(
+  message: HydratedTranscriptMessage,
+  {
+    isFirstSystem,
+    isFirstAccount,
+    isLatestTodoWrite,
+    hideResult,
+    isFinalStatus,
+  }: {
+    isFirstSystem: boolean
+    isFirstAccount: boolean
+    isLatestTodoWrite: boolean
+    hideResult: boolean
+    isFinalStatus: boolean
+  }
+) {
+  if (message.hidden) return false
+
+  switch (message.kind) {
+    case "system_init":
+      return isFirstSystem
+    case "account_info":
+      return isFirstAccount
+    case "tool":
+      return message.toolKind !== "todo_write" || isLatestTodoWrite
+    case "result":
+      return !hideResult && (!message.success || message.durationMs > 60000)
+    case "context_window_updated":
+      return false
+    case "status":
+      return isFinalStatus
+    default:
+      return true
+  }
+}
+
+function sameStringArray(left: string[] | undefined, right: string[] | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.length !== right.length) return false
+  return left.every((value, index) => value === right[index])
+}
+
+function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptMessage) {
+  if (left === right) return true
+  if (left.kind !== right.kind || left.id !== right.id || left.hidden !== right.hidden) return false
+
+  switch (left.kind) {
+    case "user_prompt":
+      return left.content === (right.kind === "user_prompt" ? right.content : null)
+        && left.attachments?.length === (right.kind === "user_prompt" ? right.attachments?.length : null)
+    case "system_init":
+      return right.kind === "system_init"
+        && left.provider === right.provider
+        && left.model === right.model
+        && sameStringArray(left.tools, right.tools)
+        && sameStringArray(left.agents, right.agents)
+        && sameStringArray(left.slashCommands, right.slashCommands)
+        && left.debugRaw === right.debugRaw
+    case "account_info":
+      return right.kind === "account_info" && JSON.stringify(left.accountInfo) === JSON.stringify(right.accountInfo)
+    case "assistant_text":
+      return right.kind === "assistant_text" && left.text === right.text
+    case "tool":
+      return right.kind === "tool"
+        && left.toolKind === right.toolKind
+        && left.toolName === right.toolName
+        && left.toolId === right.toolId
+        && left.isError === right.isError
+        && JSON.stringify(left.input) === JSON.stringify(right.input)
+        && JSON.stringify(left.result) === JSON.stringify(right.result)
+        && JSON.stringify(left.rawResult) === JSON.stringify(right.rawResult)
+    case "result":
+      return right.kind === "result"
+        && left.success === right.success
+        && left.cancelled === right.cancelled
+        && left.result === right.result
+        && left.durationMs === right.durationMs
+        && left.costUsd === right.costUsd
+    case "status":
+      return right.kind === "status" && left.status === right.status
+    case "compact_summary":
+      return right.kind === "compact_summary" && left.summary === right.summary
+    case "context_window_updated":
+      return right.kind === "context_window_updated" && JSON.stringify(left.usage) === JSON.stringify(right.usage)
+    case "compact_boundary":
+    case "context_cleared":
+    case "interrupted":
+      return true
+    case "unknown":
+      return right.kind === "unknown" && left.json === right.json
+  }
+}
+
+interface TranscriptSingleRowProps {
+  message: HydratedTranscriptMessage
+  index: number
+  isLoading: boolean
+  localPath?: string
+  isFirstSystem: boolean
+  isFirstAccount: boolean
+  isLatestAskUserQuestion: boolean
+  isLatestExitPlanMode: boolean
+  isLatestTodoWrite: boolean
+  hideResult: boolean
+  isFinalStatus: boolean
+  onAskUserQuestionSubmit: (
+    toolUseId: string,
+    questions: AskUserQuestionItem[],
+    answers: AskUserQuestionAnswerMap
+  ) => void
+  onExitPlanModeConfirm: (toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) => void
+}
+
+const TranscriptSingleRow = memo(function TranscriptSingleRow({
+  message,
+  index,
+  isLoading,
+  localPath,
+  isFirstSystem,
+  isFirstAccount,
+  isLatestAskUserQuestion,
+  isLatestExitPlanMode,
+  isLatestTodoWrite,
+  hideResult,
+  isFinalStatus,
+  onAskUserQuestionSubmit,
+  onExitPlanModeConfirm,
+}: TranscriptSingleRowProps) {
+  let rendered: React.ReactNode = null
+
+  if (!shouldRenderTranscriptSingleRow(message, {
+    isFirstSystem,
+    isFirstAccount,
+    isLatestTodoWrite,
+    hideResult,
+    isFinalStatus,
+  })) {
+    return null
+  }
+
+  if (message.kind === "user_prompt") {
+    rendered = <UserMessage key={message.id} content={message.content} attachments={message.attachments} />
+  } else {
+    switch (message.kind) {
+      case "unknown":
+        rendered = <RawJsonMessage key={message.id} json={message.json} />
+        break
+      case "system_init":
+        rendered = isFirstSystem ? <SystemMessage key={message.id} message={message} rawJson={message.debugRaw} /> : null
+        break
+      case "account_info":
+        rendered = isFirstAccount ? <AccountInfoMessage key={message.id} message={message} /> : null
+        break
+      case "assistant_text":
+        rendered = <TextMessage key={message.id} message={message} />
+        break
+      case "tool":
+        if (message.toolKind === "ask_user_question") {
+          rendered = (
+            <AskUserQuestionMessage
+              key={message.id}
+              message={message}
+              onSubmit={onAskUserQuestionSubmit}
+              isLatest={isLatestAskUserQuestion}
+            />
+          )
+          break
+        }
+        if (message.toolKind === "exit_plan_mode") {
+          rendered = (
+            <ExitPlanModeMessage
+              key={message.id}
+              message={message}
+              onConfirm={onExitPlanModeConfirm}
+              isLatest={isLatestExitPlanMode}
+            />
+          )
+          break
+        }
+        if (message.toolKind === "todo_write") {
+          rendered = isLatestTodoWrite ? <TodoWriteMessage key={message.id} message={message} /> : null
+          break
+        }
+        rendered = <ToolCallMessage key={message.id} message={message} isLoading={isLoading} localPath={localPath} />
+        break
+      case "result":
+        rendered = hideResult ? null : <ResultMessage key={message.id} message={message} />
+        break
+      case "context_window_updated":
+        rendered = null
+        break
+      case "interrupted":
+        rendered = <InterruptedMessage key={message.id} message={message} />
+        break
+      case "compact_boundary":
+        rendered = <CompactBoundaryMessage key={message.id} />
+        break
+      case "context_cleared":
+        rendered = <ContextClearedMessage key={message.id} />
+        break
+      case "compact_summary":
+        rendered = <CompactSummaryMessage key={message.id} message={message} />
+        break
+      case "status":
+        rendered = isFinalStatus ? <StatusMessage key={message.id} message={message} /> : null
+        break
+    }
+  }
+
+  if (!rendered) return null
+  return (
+    <div
+      id={`msg-${message.id}`}
+      className="group relative"
+      data-index={index}
+      {...{ [CHAT_SELECTION_ZONE_ATTRIBUTE]: "" }}
+    >
+      {rendered}
+    </div>
+  )
+}, (prev, next) => (
+  prev.index === next.index
+  && prev.isLoading === next.isLoading
+  && prev.localPath === next.localPath
+  && prev.isFirstSystem === next.isFirstSystem
+  && prev.isFirstAccount === next.isFirstAccount
+  && prev.isLatestAskUserQuestion === next.isLatestAskUserQuestion
+  && prev.isLatestExitPlanMode === next.isLatestExitPlanMode
+  && prev.isLatestTodoWrite === next.isLatestTodoWrite
+  && prev.hideResult === next.hideResult
+  && prev.isFinalStatus === next.isFinalStatus
+  && prev.onAskUserQuestionSubmit === next.onAskUserQuestionSubmit
+  && prev.onExitPlanModeConfirm === next.onExitPlanModeConfirm
+  && sameMessage(prev.message, next.message)
+))
+
+interface TranscriptToolGroupProps {
+  startIndex: number
+  messages: HydratedTranscriptMessage[]
+  isLoading: boolean
+  localPath?: string
+}
+
+const TranscriptToolGroup = memo(function TranscriptToolGroup({
+  startIndex,
+  messages,
+  isLoading,
+  localPath,
+}: TranscriptToolGroupProps) {
+  return (
+    <div
+      className="group relative"
+      {...{ [CHAT_SELECTION_ZONE_ATTRIBUTE]: "" }}
+    >
+      <CollapsedToolGroup messages={messages} isLoading={isLoading} localPath={localPath} />
+    </div>
+  )
+}, (prev, next) => (
+  prev.startIndex === next.startIndex
+  && prev.isLoading === next.isLoading
+  && prev.localPath === next.localPath
+  && prev.messages.length === next.messages.length
+  && prev.messages.every((message, index) => sameMessage(message, next.messages[index]!))
+))
+
+export function buildResolvedTranscriptRows(
+  messages: HydratedTranscriptMessage[],
+  {
+    isLoading,
+    localPath,
+    latestToolIds,
+  }: {
+    isLoading: boolean
+    localPath?: string
+    latestToolIds: Record<string, string | null>
+  }
+): ResolvedTranscriptRow[] {
+  const renderItems = buildTranscriptRenderItems(messages)
+  const firstSystemIndex = messages.findIndex((entry) => entry.kind === "system_init")
+  const firstAccountIndex = messages.findIndex((entry) => entry.kind === "account_info")
+  const rows: ResolvedTranscriptRow[] = []
+
+  for (const item of renderItems) {
+    if (item.type === "tool-group") {
+      rows.push({
+        kind: "tool-group",
+        id: getTranscriptRenderItemId(item),
+        startIndex: item.startIndex,
+        messages: item.messages,
+        isLoading: isLoading && item.messages.some((message) => message.kind === "tool" && message.result === undefined),
+        localPath,
+      })
+      continue
+    }
+
+    const previousMessage = messages[item.index - 1]
+    const nextMessage = messages[item.index + 1]
+    const row: ResolvedSingleTranscriptRow = {
+      kind: "single",
+      id: getTranscriptRenderItemId(item),
+      message: item.message,
+      index: item.index,
+      isLoading: item.message.kind === "tool" && item.message.result === undefined && isLoading,
+      localPath,
+      isFirstSystem: firstSystemIndex === item.index,
+      isFirstAccount: firstAccountIndex === item.index,
+      isLatestAskUserQuestion: item.message.id === latestToolIds.AskUserQuestion,
+      isLatestExitPlanMode: item.message.id === latestToolIds.ExitPlanMode,
+      isLatestTodoWrite: item.message.id === latestToolIds.TodoWrite,
+      hideResult: nextMessage?.kind === "context_cleared" || previousMessage?.kind === "context_cleared",
+      isFinalStatus: item.index === messages.length - 1,
+    }
+
+    if (shouldRenderTranscriptSingleRow(row.message, row)) {
+      rows.push(row)
+    }
+  }
+
+  return rows
+}
+
 interface KannaTranscriptProps {
   messages: HydratedTranscriptMessage[]
   isLoading: boolean
@@ -74,7 +433,83 @@ interface KannaTranscriptProps {
   onExitPlanModeConfirm: (toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) => void
 }
 
-export function KannaTranscript({
+interface KannaTranscriptRowProps {
+  row: ResolvedTranscriptRow
+  onAskUserQuestionSubmit: (
+    toolUseId: string,
+    questions: AskUserQuestionItem[],
+    answers: AskUserQuestionAnswerMap
+  ) => void
+  onExitPlanModeConfirm: (toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) => void
+}
+
+export const KannaTranscriptRow = memo(function KannaTranscriptRow({
+  row,
+  onAskUserQuestionSubmit,
+  onExitPlanModeConfirm,
+}: KannaTranscriptRowProps) {
+  if (row.kind === "tool-group") {
+    return (
+      <TranscriptToolGroup
+        startIndex={row.startIndex}
+        messages={row.messages}
+        isLoading={row.isLoading}
+        localPath={row.localPath}
+      />
+    )
+  }
+
+  return (
+    <TranscriptSingleRow
+      message={row.message}
+      index={row.index}
+      isLoading={row.isLoading}
+      localPath={row.localPath}
+      isFirstSystem={row.isFirstSystem}
+      isFirstAccount={row.isFirstAccount}
+      isLatestAskUserQuestion={row.isLatestAskUserQuestion}
+      isLatestExitPlanMode={row.isLatestExitPlanMode}
+      isLatestTodoWrite={row.isLatestTodoWrite}
+      hideResult={row.hideResult}
+      isFinalStatus={row.isFinalStatus}
+      onAskUserQuestionSubmit={onAskUserQuestionSubmit}
+      onExitPlanModeConfirm={onExitPlanModeConfirm}
+    />
+  )
+}, (prev, next) => {
+  if (prev.onAskUserQuestionSubmit !== next.onAskUserQuestionSubmit) return false
+  if (prev.onExitPlanModeConfirm !== next.onExitPlanModeConfirm) return false
+  if (prev.row.kind !== next.row.kind) return false
+  if (prev.row.id !== next.row.id) return false
+
+  if (prev.row.kind === "tool-group" && next.row.kind === "tool-group") {
+    const previousRow = prev.row
+    const nextRow = next.row
+    return previousRow.startIndex === nextRow.startIndex
+      && previousRow.isLoading === nextRow.isLoading
+      && previousRow.localPath === nextRow.localPath
+      && previousRow.messages.length === nextRow.messages.length
+      && previousRow.messages.every((message, index) => sameMessage(message, nextRow.messages[index]!))
+  }
+
+  if (prev.row.kind === "single" && next.row.kind === "single") {
+    return prev.row.index === next.row.index
+      && prev.row.isLoading === next.row.isLoading
+      && prev.row.localPath === next.row.localPath
+      && prev.row.isFirstSystem === next.row.isFirstSystem
+      && prev.row.isFirstAccount === next.row.isFirstAccount
+      && prev.row.isLatestAskUserQuestion === next.row.isLatestAskUserQuestion
+      && prev.row.isLatestExitPlanMode === next.row.isLatestExitPlanMode
+      && prev.row.isLatestTodoWrite === next.row.isLatestTodoWrite
+      && prev.row.hideResult === next.row.hideResult
+      && prev.row.isFinalStatus === next.row.isFinalStatus
+      && sameMessage(prev.row.message, next.row.message)
+  }
+
+  return false
+})
+
+function KannaTranscriptImpl({
   messages,
   isLoading,
   localPath,
@@ -83,108 +518,28 @@ export function KannaTranscript({
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
 }: KannaTranscriptProps) {
-  const renderItems = useMemo(() => groupMessages(messages), [messages])
-
-  function renderMessage(message: HydratedTranscriptMessage, index: number): React.ReactNode {
-    if (message.kind === "user_prompt") {
-      return <UserMessage key={message.id} content={message.content} attachments={message.attachments} />
-    }
-
-    switch (message.kind) {
-      case "unknown":
-        return <RawJsonMessage key={message.id} json={message.json} />
-      case "system_init": {
-        const isFirst = messages.findIndex((entry) => entry.kind === "system_init") === index
-        return isFirst ? <SystemMessage key={message.id} message={message} rawJson={message.debugRaw} /> : null
-      }
-      case "account_info": {
-        const isFirst = messages.findIndex((entry) => entry.kind === "account_info") === index
-        return isFirst ? <AccountInfoMessage key={message.id} message={message} /> : null
-      }
-      case "assistant_text":
-        return <TextMessage key={message.id} message={message} />
-      case "tool":
-        if (message.toolKind === "ask_user_question") {
-          return (
-            <AskUserQuestionMessage
-              key={message.id}
-              message={message}
-              onSubmit={onAskUserQuestionSubmit}
-              isLatest={message.id === latestToolIds.AskUserQuestion}
-            />
-          )
-        }
-        if (message.toolKind === "exit_plan_mode") {
-          return (
-            <ExitPlanModeMessage
-              key={message.id}
-              message={message}
-              onConfirm={onExitPlanModeConfirm}
-              isLatest={message.id === latestToolIds.ExitPlanMode}
-            />
-          )
-        }
-        if (message.toolKind === "todo_write") {
-          if (message.id !== latestToolIds.TodoWrite) return null
-          return <TodoWriteMessage key={message.id} message={message} />
-        }
-        return (
-          <ToolCallMessage
-            key={message.id}
-            message={message}
-            isLoading={isLoading}
-            localPath={localPath}
-          />
-        )
-      case "result": {
-        const nextMessage = messages[index + 1]
-        const previousMessage = messages[index - 1]
-        if (nextMessage?.kind === "context_cleared" || previousMessage?.kind === "context_cleared") {
-          return null
-        }
-        return <ResultMessage key={message.id} message={message} />
-      }
-      case "interrupted":
-        return <InterruptedMessage key={message.id} message={message} />
-      case "compact_boundary":
-        return <CompactBoundaryMessage key={message.id} />
-      case "context_cleared":
-        return <ContextClearedMessage key={message.id} />
-      case "compact_summary":
-        return <CompactSummaryMessage key={message.id} message={message} />
-      case "status":
-        return index === messages.length - 1 ? <StatusMessage key={message.id} message={message} /> : null
-    }
-  }
+  const rows = useMemo(() => buildResolvedTranscriptRows(messages, {
+    isLoading,
+    localPath,
+    latestToolIds,
+  }), [isLoading, latestToolIds, localPath, messages])
 
   return (
     <OpenLocalLinkProvider onOpenLocalLink={onOpenLocalLink}>
-      {renderItems.map((item) => {
-        if (item.type === "tool-group") {
-          return (
-            <div
-              key={`group-${item.startIndex}`}
-              className="group relative"
-              {...{ [CHAT_SELECTION_ZONE_ATTRIBUTE]: "" }}
-            >
-              <CollapsedToolGroup messages={item.messages} isLoading={isLoading} localPath={localPath} />
-            </div>
-          )
-        }
-
-        const rendered = renderMessage(item.message, item.index)
-        if (!rendered) return null
-        return (
-          <div
-            key={item.message.id}
-            id={`msg-${item.message.id}`}
-            className="group relative"
-            {...{ [CHAT_SELECTION_ZONE_ATTRIBUTE]: "" }}
-          >
-            {rendered}
-          </div>
-        )
-      })}
+      {rows.map((row) => (
+        <div
+          key={row.id}
+          className="mx-auto max-w-[800px] pb-5"
+        >
+          <KannaTranscriptRow
+            row={row}
+            onAskUserQuestionSubmit={onAskUserQuestionSubmit}
+            onExitPlanModeConfirm={onExitPlanModeConfirm}
+          />
+        </div>
+      ))}
     </OpenLocalLinkProvider>
   )
 }
+
+export const KannaTranscript = memo(KannaTranscriptImpl)

@@ -4,6 +4,7 @@ import { APP_NAME, getRuntimeProfile } from "../shared/branding"
 import type { ChatAttachment } from "../shared/types"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
+import { DiffStore } from "./diff-store"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
 import { getMachineDisplayName } from "./machine-name"
@@ -11,7 +12,7 @@ import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
 import { createWsRouter, type ClientState } from "./ws-router"
-import { deleteProjectUpload, inferAttachmentContentType, persistProjectUpload } from "./uploads"
+import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload } from "./uploads"
 import { getProjectUploadDir } from "./paths"
 
 const MAX_UPLOAD_FILES = 10
@@ -68,8 +69,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
   const store = new EventStore()
+  const diffStore = new DiffStore(store.dataDir)
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
+  await diffStore.initialize()
   await store.migrateLegacyTranscripts(options.onMigrationProgress)
   let discoveredProjects: DiscoveredProject[] = []
 
@@ -101,6 +104,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   })
   router = createWsRouter({
     store,
+    diffStore,
     agent,
     terminals,
     keybindings,
@@ -127,6 +131,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             const upgraded = serverInstance.upgrade(req, {
               data: {
                 subscriptions: new Map(),
+                snapshotSignatures: new Map(),
               },
             })
             return upgraded ? undefined : new Response("WebSocket upgrade failed", { status: 400 })
@@ -149,6 +154,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
           const attachmentContentResponse = await handleAttachmentContent(req, url, store)
           if (attachmentContentResponse) {
             return attachmentContentResponse
+          }
+
+          const projectFileContentResponse = await handleProjectFileContent(req, url, store)
+          if (projectFileContentResponse) {
+            return projectFileContentResponse
           }
 
           return serveStatic(distDir, url.pathname)
@@ -191,6 +201,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   return {
     port: actualPort,
     store,
+    diffStore,
     updateManager,
     stop: shutdown,
   }
@@ -285,6 +296,54 @@ async function handleAttachmentContent(req: Request, url: URL, store: EventStore
   return new Response(file, {
     headers: {
       "Content-Type": inferAttachmentContentType(storedName, file.type),
+    },
+  })
+}
+
+async function handleProjectFileContent(req: Request, url: URL, store: EventStore) {
+  const match = url.pathname.match(/^\/api\/projects\/([^/]+)\/files\/([^/]+)\/content$/)
+  if (!match) {
+    return null
+  }
+
+  if (req.method !== "GET") {
+    return new Response(null, {
+      status: 405,
+      headers: {
+        Allow: "GET",
+      },
+    })
+  }
+
+  const project = store.getProject(match[1])
+  if (!project) {
+    return Response.json({ error: "Project not found" }, { status: 404 })
+  }
+
+  const relativePath = path.posix.normalize(decodeURIComponent(match[2]).replaceAll("\\", "/"))
+  if (!relativePath || relativePath === "." || relativePath.startsWith("../") || relativePath.includes("/../") || path.posix.isAbsolute(relativePath)) {
+    return Response.json({ error: "Invalid project file path" }, { status: 400 })
+  }
+
+  const filePath = path.resolve(project.localPath, relativePath)
+  const projectRoot = path.resolve(project.localPath)
+  if (filePath !== projectRoot && !filePath.startsWith(`${projectRoot}${path.sep}`)) {
+    return Response.json({ error: "Invalid project file path" }, { status: 400 })
+  }
+
+  const file = Bun.file(filePath)
+  try {
+    const info = await stat(filePath)
+    if (!info.isFile()) {
+      return Response.json({ error: "File not found" }, { status: 404 })
+    }
+  } catch {
+    return Response.json({ error: "File not found" }, { status: 404 })
+  }
+
+  return new Response(file, {
+    headers: {
+      "Content-Type": inferProjectFileContentType(relativePath, file.type),
     },
   })
 }

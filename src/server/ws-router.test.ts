@@ -38,7 +38,7 @@ const DEFAULT_UPDATE_SNAPSHOT: UpdateSnapshot = {
 }
 
 describe("ws-router", () => {
-  test("acks system.ping without broadcasting snapshots", () => {
+  test("acks system.ping without broadcasting snapshots", async () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
       agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
@@ -58,7 +58,7 @@ describe("ws-router", () => {
     const ws = new FakeWebSocket()
 
     ws.data.subscriptions.set("sub-1", { type: "sidebar" })
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -77,7 +77,7 @@ describe("ws-router", () => {
     ])
   })
 
-  test("acks terminal.input without rebroadcasting terminal snapshots", () => {
+  test("acks terminal.input without rebroadcasting terminal snapshots", async () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
       agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
@@ -98,7 +98,7 @@ describe("ws-router", () => {
     const ws = new FakeWebSocket()
 
     ws.data.subscriptions.set("sub-terminal", { type: "terminal", terminalId: "terminal-1" })
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -121,7 +121,7 @@ describe("ws-router", () => {
     ])
   })
 
-  test("subscribes and unsubscribes chat topics", () => {
+  test("subscribes and unsubscribes chat topics", async () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,
       agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
@@ -140,7 +140,7 @@ describe("ws-router", () => {
     })
     const ws = new FakeWebSocket()
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -160,7 +160,7 @@ describe("ws-router", () => {
       },
     })
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -173,6 +173,92 @@ describe("ws-router", () => {
       v: PROTOCOL_VERSION,
       type: "ack",
       id: "chat-sub-1",
+    })
+  })
+
+  test("loads older chat history pages", async () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      unread: false,
+      provider: null,
+      planMode: false,
+      sessionToken: null,
+      lastTurnOutcome: null,
+    })
+
+    const router = createWsRouter({
+      store: {
+        state,
+        getMessagesPageBefore: () => ({
+          messages: [{
+            _id: "msg-1",
+            kind: "assistant_text",
+            createdAt: 1,
+            text: "older message",
+          }],
+          hasOlder: false,
+          olderCursor: null,
+        }),
+        getChat: () => state.chatsById.get("chat-1") ?? null,
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "history-1",
+        command: {
+          type: "chat.loadHistory",
+          chatId: "chat-1",
+          beforeCursor: "idx:100",
+          limit: 100,
+        },
+      })
+    )
+
+    expect(ws.sent[0]).toEqual({
+      v: PROTOCOL_VERSION,
+      type: "ack",
+      id: "history-1",
+      result: {
+        messages: [{
+          _id: "msg-1",
+          kind: "assistant_text",
+          createdAt: 1,
+          text: "older message",
+        }],
+        hasOlder: false,
+        olderCursor: null,
+      },
     })
   })
 
@@ -386,7 +472,7 @@ describe("ws-router", () => {
     })
     const ws = new FakeWebSocket()
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -406,7 +492,7 @@ describe("ws-router", () => {
       },
     })
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -490,7 +576,7 @@ describe("ws-router", () => {
     })
     const ws = new FakeWebSocket()
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -510,7 +596,7 @@ describe("ws-router", () => {
       },
     })
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -539,7 +625,7 @@ describe("ws-router", () => {
       },
     })
 
-    router.handleMessage(
+    await router.handleMessage(
       ws as never,
       JSON.stringify({
         v: 1,
@@ -563,6 +649,190 @@ describe("ws-router", () => {
         userTitle: "Update not live yet",
         userMessage: "This update is still propagating. Try again in a few minutes.",
       },
+    })
+  })
+
+  test("routes discard diff file commands through the diff store and rebroadcasts chat snapshots", async () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      unread: false,
+      provider: null,
+      planMode: false,
+      sessionToken: null,
+      lastTurnOutcome: null,
+    })
+
+    const discardCalls: Array<{ chatId: string; projectPath: string; path: string }> = []
+    const diffStore = {
+      getSnapshot: () => ({ status: "ready" as const, files: [], defaultBranchName: "main", originRepoSlug: "acme/repo", aheadCount: 0, behindCount: 0, lastFetchedAt: undefined }),
+      refreshSnapshot: async () => false,
+      syncBranch: async () => ({ ok: true as const, action: "fetch" as const, snapshotChanged: false }),
+      generateCommitMessage: async () => ({ subject: "", body: "" }),
+      commitFiles: async () => ({ ok: true as const, mode: "commit_only" as const, pushed: false, snapshotChanged: false }),
+      discardFile: async (args: { chatId: string; projectPath: string; path: string }) => {
+        discardCalls.push(args)
+        return { snapshotChanged: true }
+      },
+      ignoreFile: async () => ({ snapshotChanged: false }),
+    }
+
+    const router = createWsRouter({
+      store: {
+        state,
+        getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
+        getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
+        getRecentChatHistory: () => ({ entries: [], hasOlder: false, olderCursor: null }),
+      } as never,
+      diffStore: diffStore as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    router.handleOpen(ws as never)
+    router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "subscribe",
+        id: "chat-sub",
+        topic: { type: "chat", chatId: "chat-1" },
+      })
+    )
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "discard-1",
+        command: {
+          type: "chat.discardDiffFile",
+          chatId: "chat-1",
+          path: "app.txt",
+        },
+      })
+    )
+
+    expect(discardCalls).toEqual([{
+      chatId: "chat-1",
+      projectPath: "/tmp/project",
+      path: "app.txt",
+    }])
+    expect(ws.sent).toContainEqual({
+      v: PROTOCOL_VERSION,
+      type: "ack",
+      id: "discard-1",
+      result: { snapshotChanged: true },
+    })
+  })
+
+  test("routes ignore diff file commands through the diff store", async () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      unread: false,
+      provider: null,
+      planMode: false,
+      sessionToken: null,
+      lastTurnOutcome: null,
+    })
+
+    const ignoreCalls: Array<{ chatId: string; projectPath: string; path: string }> = []
+    const router = createWsRouter({
+      store: {
+        state,
+        getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
+        getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
+      } as never,
+      diffStore: {
+        getSnapshot: () => ({ status: "ready" as const, files: [], defaultBranchName: "main", originRepoSlug: "acme/repo", aheadCount: 0, behindCount: 0, lastFetchedAt: undefined }),
+        refreshSnapshot: async () => false,
+        syncBranch: async () => ({ ok: true as const, action: "fetch" as const, snapshotChanged: false }),
+        generateCommitMessage: async () => ({ subject: "", body: "" }),
+        commitFiles: async () => ({ ok: true as const, mode: "commit_only" as const, pushed: false, snapshotChanged: false }),
+        discardFile: async () => ({ snapshotChanged: false }),
+        ignoreFile: async (args: { chatId: string; projectPath: string; path: string }) => {
+          ignoreCalls.push(args)
+          return { snapshotChanged: false }
+        },
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "ignore-1",
+        command: {
+          type: "chat.ignoreDiffFile",
+          chatId: "chat-1",
+          path: "scratch.log",
+        },
+      })
+    )
+
+    expect(ignoreCalls).toEqual([{
+      chatId: "chat-1",
+      projectPath: "/tmp/project",
+      path: "scratch.log",
+    }])
+    expect(ws.sent).toContainEqual({
+      v: PROTOCOL_VERSION,
+      type: "ack",
+      id: "ignore-1",
+      result: { snapshotChanged: false },
     })
   })
 })
