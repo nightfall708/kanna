@@ -197,6 +197,7 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   const previousRowCountRef = useRef(0)
   const pendingPrependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null)
   const [transcriptContentWidth, setTranscriptContentWidth] = useState<number | null>(null)
+  const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
 
   const resolvedRows = useMemo(() => buildResolvedTranscriptRows(messages, {
     isLoading: isProcessing,
@@ -219,6 +220,16 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   const virtualMeasurementScopeKey = transcriptContentWidth === null
     ? "width:unknown"
     : `width:${Math.round(transcriptContentWidth)}`
+  const handleToolGroupExpandedChange = useCallback((groupId: string, next: boolean) => {
+    setToolGroupExpanded((current) => (
+      current[groupId] === next
+        ? current
+        : {
+            ...current,
+            [groupId]: next,
+          }
+    ))
+  }, [])
 
   const rowVirtualizer = useVirtualizer({
     count: virtualizedHeadRows.length,
@@ -367,6 +378,8 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
                           <div className="pb-5">
                             <KannaTranscriptRow
                               row={row}
+                              toolGroupExpanded={toolGroupExpanded}
+                              onToolGroupExpandedChange={handleToolGroupExpandedChange}
                               onAskUserQuestionSubmit={onAskUserQuestionSubmit}
                               onExitPlanModeConfirm={onExitPlanModeConfirm}
                             />
@@ -380,6 +393,8 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
                   <div key={`tail-row:${row.id}`} className="pb-5">
                     <KannaTranscriptRow
                       row={row}
+                      toolGroupExpanded={toolGroupExpanded}
+                      onToolGroupExpandedChange={handleToolGroupExpandedChange}
                       onAskUserQuestionSubmit={onAskUserQuestionSubmit}
                       onExitPlanModeConfirm={onExitPlanModeConfirm}
                     />

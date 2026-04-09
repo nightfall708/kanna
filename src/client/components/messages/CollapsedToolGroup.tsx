@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react"
+import { useMemo } from "react"
 import { ChevronRight } from "lucide-react"
 import { ToolCallMessage } from "./ToolCallMessage"
 import { MetaRow, MetaLabel } from "./shared"
@@ -59,11 +59,11 @@ interface Props {
   messages: HydratedTranscriptMessage[]
   isLoading: boolean
   localPath?: string | null
+  expanded: boolean
+  onExpandedChange: (next: boolean) => void
 }
 
-export function CollapsedToolGroup({ messages, isLoading, localPath }: Props) {
-  const [expanded, setExpanded] = useState(false)
-
+export function CollapsedToolGroup({ messages, isLoading, localPath, expanded, onExpandedChange }: Props) {
   const label = useMemo(() => getToolGroupLabel(messages), [messages])
 
   // Check if any tool in the group is still in progress
@@ -78,7 +78,7 @@ export function CollapsedToolGroup({ messages, isLoading, localPath }: Props) {
     <MetaRow className="w-full">
       <div className="flex flex-col w-full">
         <button
-          onClick={() => setExpanded(!expanded)}
+          onClick={() => onExpandedChange(!expanded)}
           className={`group cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-sm ${!expanded && !showLoadingState ? "hover:opacity-60 transition-opacity" : ""}`}
         >
           <div className="grid grid-cols-[auto_1fr] items-center gap-1.5">
@@ -104,7 +104,7 @@ export function CollapsedToolGroup({ messages, isLoading, localPath }: Props) {
             ))}
             {messages.length > 5 && (
               <button
-                onClick={() => setExpanded(false)}
+                onClick={() => onExpandedChange(false)}
                 className="cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-xs hover:opacity-80 transition-opacity"
               >
                 <div className="grid grid-cols-[auto_1fr] items-center gap-1.5">
