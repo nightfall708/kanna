@@ -30,6 +30,35 @@ describe("ChatRow", () => {
     expect(html).toContain(">1m<")
   })
 
+  test("falls back to the chat creation time for the age label", () => {
+    const html = renderToStaticMarkup(
+      <ChatRow
+        chat={{ ...baseChat, _creationTime: 30_000, lastMessageAt: undefined }}
+        activeChatId={null}
+        nowMs={60_000}
+        onSelectChat={() => undefined}
+        onDeleteChat={() => undefined}
+      />
+    )
+
+    expect(html).toContain(">now<")
+  })
+
+  test("prefers lastMessageAt over creation time for the age label", () => {
+    const html = renderToStaticMarkup(
+      <ChatRow
+        chat={{ ...baseChat, _creationTime: 59_000, lastMessageAt: 0 }}
+        activeChatId={null}
+        nowMs={60_000}
+        onSelectChat={() => undefined}
+        onDeleteChat={() => undefined}
+      />
+    )
+
+    expect(html).toContain(">1m<")
+    expect(html).not.toContain(">now<")
+  })
+
   test("renders the shortcut hint when the modifier is held", () => {
     const html = renderToStaticMarkup(
       <ChatRow

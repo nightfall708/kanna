@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
-import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot } from "../../shared/types"
+import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
@@ -10,6 +10,7 @@ import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData }
 import type { AskUserQuestionItem } from "../components/messages/types"
 import { useAppDialog } from "../components/ui/app-dialog"
 import { processTranscriptMessages } from "../lib/parseTranscript"
+import { generateUUID } from "../lib/utils"
 import { canCancelStatus, getLatestToolIds, isProcessingStatus } from "./derived"
 import { KannaSocket, type SocketStatus } from "./socket"
 
@@ -122,6 +123,60 @@ function mergeTranscriptEntries(olderHistoryEntries: TranscriptEntry[], recentEn
     deduped.set(entry._id, entry)
   }
   return [...deduped.values()]
+}
+
+const NEW_CHAT_OPTIMISTIC_SCOPE = "__new_chat__"
+
+export interface OptimisticUserPrompt {
+  id: string
+  scopeId: string
+  signature: string
+  requiredMatchCount: number
+  entry: UserPromptEntry
+}
+
+function serializeAttachmentSignature(attachment: ChatAttachment) {
+  return JSON.stringify({
+    id: attachment.id,
+    kind: attachment.kind,
+    displayName: attachment.displayName,
+    relativePath: attachment.relativePath,
+    mimeType: attachment.mimeType,
+    size: attachment.size,
+    contentUrl: attachment.contentUrl,
+  })
+}
+
+export function getUserPromptSignature(content: string, attachments: ChatAttachment[] = []) {
+  return JSON.stringify({
+    content,
+    attachments: attachments.map(serializeAttachmentSignature),
+  })
+}
+
+export function countMatchingUserPrompts(entries: TranscriptEntry[], signature: string) {
+  return entries.reduce((count, entry) => {
+    if (entry.kind !== "user_prompt") return count
+    return count + (getUserPromptSignature(entry.content, entry.attachments ?? []) === signature ? 1 : 0)
+  }, 0)
+}
+
+export function reconcileOptimisticUserPrompts(
+  optimisticPrompts: OptimisticUserPrompt[],
+  scopeId: string,
+  serverEntries: TranscriptEntry[],
+) {
+  const matchCounts = new Map<string, number>()
+  for (const entry of serverEntries) {
+    if (entry.kind !== "user_prompt") continue
+    const signature = getUserPromptSignature(entry.content, entry.attachments ?? [])
+    matchCounts.set(signature, (matchCounts.get(signature) ?? 0) + 1)
+  }
+
+  return optimisticPrompts.filter((prompt) => {
+    if (prompt.scopeId !== scopeId) return true
+    return (matchCounts.get(prompt.signature) ?? 0) < prompt.requiredMatchCount
+  })
 }
 
 const INITIAL_CHAT_RECENT_LIMIT = 200
@@ -378,6 +433,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [commandError, setCommandError] = useState<string | null>(null)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
+  const [optimisticUserPrompts, setOptimisticUserPrompts] = useState<OptimisticUserPrompt[]>([])
   const [focusEpoch, setFocusEpoch] = useState(0)
   const chatSubscriptionDebugRef = useRef(0)
   const lastActiveProjectDiffRef = useRef<{ projectId: string | null; diffs: ChatDiffSnapshot | null }>({
@@ -659,9 +715,20 @@ export function useKannaState(activeChatId: string | null): KannaState {
       pendingChatId,
     })
   }, [activeChatId, activeChatSnapshot, chatSnapshot, pendingChatId])
-  const transcriptEntries = useMemo(
+  const serverTranscriptEntries = useMemo(
     () => mergeTranscriptEntries(olderHistoryEntries, activeChatSnapshot?.messages ?? []),
     [activeChatSnapshot?.messages, olderHistoryEntries]
+  )
+  const optimisticScopeId = activeChatId ?? NEW_CHAT_OPTIMISTIC_SCOPE
+  const optimisticTranscriptEntries = useMemo(
+    () => optimisticUserPrompts
+      .filter((prompt) => prompt.scopeId === optimisticScopeId)
+      .map((prompt) => prompt.entry),
+    [optimisticScopeId, optimisticUserPrompts]
+  )
+  const transcriptEntries = useMemo(
+    () => [...serverTranscriptEntries, ...optimisticTranscriptEntries],
+    [optimisticTranscriptEntries, serverTranscriptEntries]
   )
   const messages = useMemo(() => processTranscriptMessages(transcriptEntries), [transcriptEntries])
   const latestToolIds = useMemo(() => getLatestToolIds(messages), [messages])
@@ -683,6 +750,16 @@ export function useKannaState(activeChatId: string | null): KannaState {
     ?? sidebarData.projectGroups[0]?.groupKey
     ?? fallbackLocalProjectPath
   )
+
+  useEffect(() => {
+    setOptimisticUserPrompts((current) => {
+      const reconciled = reconcileOptimisticUserPrompts(current, optimisticScopeId, serverTranscriptEntries)
+      if (reconciled.length === current.length && reconciled.every((prompt, index) => prompt === current[index])) {
+        return current
+      }
+      return reconciled
+    })
+  }, [optimisticScopeId, serverTranscriptEntries])
 
   useLayoutEffect(() => {
     if (initialScrollCompletedRef.current) return
@@ -865,6 +942,28 @@ export function useKannaState(activeChatId: string | null): KannaState {
     content: string,
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: import("../../shared/types").ChatAttachment[] }
   ) => {
+    const attachments = options?.attachments ?? []
+    const optimisticId = generateUUID()
+    const signature = getUserPromptSignature(content, attachments)
+    const optimisticScopeId = activeChatId ?? NEW_CHAT_OPTIMISTIC_SCOPE
+    const requiredMatchCount = countMatchingUserPrompts(serverTranscriptEntries, signature)
+      + optimisticUserPrompts.filter((prompt) => prompt.scopeId === optimisticScopeId && prompt.signature === signature).length
+      + 1
+
+    setOptimisticUserPrompts((current) => [...current, {
+      id: optimisticId,
+      scopeId: optimisticScopeId,
+      signature,
+      requiredMatchCount,
+      entry: {
+        _id: `optimistic:${optimisticId}`,
+        kind: "user_prompt",
+        content,
+        attachments,
+        createdAt: Date.now(),
+      },
+    }])
+
     try {
       let projectId = selectedProjectId ?? sidebarData.projectGroups[0]?.groupKey ?? null
       if (!activeChatId && !projectId && fallbackLocalProjectPath) {
@@ -888,13 +987,16 @@ export function useKannaState(activeChatId: string | null): KannaState {
         projectId: activeChatId ? undefined : projectId ?? undefined,
         provider: options?.provider,
         content,
-        attachments: options?.attachments,
+        attachments,
         model: options?.model,
         modelOptions: options?.modelOptions,
         planMode: options?.planMode,
       })
 
       if (!activeChatId && result.chatId) {
+        setOptimisticUserPrompts((current) => current.map((prompt) => (
+          prompt.id === optimisticId ? { ...prompt, scopeId: result.chatId! } : prompt
+        )))
         const chatPreferences = useChatPreferencesStore.getState()
         chatPreferences.setComposerState(
           result.chatId,
@@ -905,10 +1007,11 @@ export function useKannaState(activeChatId: string | null): KannaState {
       }
       setCommandError(null)
     } catch (error) {
+      setOptimisticUserPrompts((current) => current.filter((prompt) => prompt.id !== optimisticId))
       setCommandError(error instanceof Error ? error.message : String(error))
       throw error
     }
-  }, [activeChatId, fallbackLocalProjectPath, navigate, selectedProjectId, sidebarData.projectGroups, socket])
+  }, [activeChatId, fallbackLocalProjectPath, navigate, optimisticUserPrompts, selectedProjectId, serverTranscriptEntries, sidebarData.projectGroups, socket])
 
   const handleCancel = useCallback(async () => {
     if (!activeChatId) return

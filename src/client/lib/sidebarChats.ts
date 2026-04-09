@@ -6,11 +6,15 @@ export interface SidebarChatBuckets {
   remainingChats: SidebarChatRow[]
 }
 
+export function getSidebarChatTimestamp(chat: Pick<SidebarChatRow, "lastMessageAt" | "_creationTime">) {
+  return chat.lastMessageAt ?? chat._creationTime
+}
+
 export function shouldDefaultCollapseSidebarProject(
   chats: SidebarChatRow[],
   nowMs: number
 ) {
-  return chats.every((chat) => !isSidebarChatRecent(chat.lastMessageAt, nowMs))
+  return chats.every((chat) => !isSidebarChatRecent(getSidebarChatTimestamp(chat), nowMs))
 }
 
 export function getSidebarChatBuckets(
@@ -18,7 +22,7 @@ export function getSidebarChatBuckets(
   chatsPerProject: number,
   nowMs: number
 ): SidebarChatBuckets {
-  const recentChats = chats.filter((chat) => isSidebarChatRecent(chat.lastMessageAt, nowMs))
+  const recentChats = chats.filter((chat) => isSidebarChatRecent(getSidebarChatTimestamp(chat), nowMs))
   const collapsedChats = recentChats.length > 0
     ? recentChats.slice(0, chatsPerProject)
     : chats.slice(0, Math.min(5, chats.length))

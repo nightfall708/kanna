@@ -164,6 +164,7 @@ interface ChatTranscriptViewportProps {
   typedEmptyStateText: string
   isEmptyStateTypingComplete: boolean
   isPageFileDragActive: boolean
+  showEmptyState: boolean
 }
 
 const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
@@ -189,6 +190,7 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   typedEmptyStateText,
   isEmptyStateTypingComplete,
   isPageFileDragActive,
+  showEmptyState,
 }: ChatTranscriptViewportProps) {
   const contentRootRef = useRef<HTMLDivElement>(null)
   const previousRowCountRef = useRef(0)
@@ -400,7 +402,7 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
         </div>
       </div>
 
-      {messages.length === 0 ? (
+      {showEmptyState ? (
         <div
           className="pointer-events-none absolute inset-x-4 animate-fade-in"
           style={{
@@ -607,6 +609,7 @@ export function ChatPage() {
   const chatInputRef = useRef<ChatInputHandle | null>(null)
   const [typedEmptyStateText, setTypedEmptyStateText] = useState("")
   const [isEmptyStateTypingComplete, setIsEmptyStateTypingComplete] = useState(false)
+  const showEmptyState = state.messages.length === 0 && state.runtime?.title === "New Chat"
   const [fixedTerminalHeight, setFixedTerminalHeight] = useState(0)
   const [layoutWidth, setLayoutWidth] = useState(0)
   const [isPageFileDragActive, setIsPageFileDragActive] = useState(false)
@@ -1274,7 +1277,7 @@ export function ChatPage() {
   }
 
   useEffect(() => {
-    if (state.messages.length !== 0) return
+    if (!showEmptyState) return
 
     setTypedEmptyStateText("")
     setIsEmptyStateTypingComplete(false)
@@ -1291,7 +1294,7 @@ export function ChatPage() {
     }, EMPTY_STATE_TYPING_INTERVAL_MS)
 
     return () => window.clearInterval(interval)
-  }, [state.activeChatId, state.messages.length])
+  }, [showEmptyState, state.activeChatId])
 
   useEffect(() => {
     function handleGlobalKeydown(event: KeyboardEvent) {
@@ -1580,6 +1583,7 @@ export function ChatPage() {
           typedEmptyStateText={typedEmptyStateText}
           isEmptyStateTypingComplete={isEmptyStateTypingComplete}
           isPageFileDragActive={isPageFileDragActive}
+          showEmptyState={showEmptyState}
         />
       </CardContent>
 

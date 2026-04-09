@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import type { SidebarChatRow } from "../../shared/types"
-import { getSidebarChatBuckets, shouldDefaultCollapseSidebarProject } from "./sidebarChats"
+import {
+  getSidebarChatBuckets,
+  getSidebarChatTimestamp,
+  shouldDefaultCollapseSidebarProject,
+} from "./sidebarChats"
 
 const nowMs = 1_000_000
 const hourMs = 60 * 60 * 1_000
@@ -30,8 +34,20 @@ describe("getSidebarChatBuckets", () => {
     ]
 
     expect(getSidebarChatBuckets(chats, 10, nowMs)).toEqual({
-      collapsedChats: [chats[0], chats[1]],
-      remainingChats: [chats[2], chats[3]],
+      collapsedChats: [chats[0], chats[1], chats[3]],
+      remainingChats: [chats[2]],
+    })
+  })
+
+  test("treats a newly created chat with no last message as recent", () => {
+    const chats = [
+      createChat("chat-1"),
+      createChat("chat-2", nowMs - 25 * hourMs),
+    ]
+
+    expect(getSidebarChatBuckets(chats, 10, nowMs)).toEqual({
+      collapsedChats: [chats[0]],
+      remainingChats: [chats[1]],
     })
   })
 
@@ -71,9 +87,23 @@ describe("shouldDefaultCollapseSidebarProject", () => {
   test("returns true when the project has no chats within the last 24 hours", () => {
     const chats = [
       createChat("chat-1", nowMs - 25 * hourMs),
-      createChat("chat-2"),
+      createChat("chat-2", nowMs - 26 * hourMs),
     ]
 
     expect(shouldDefaultCollapseSidebarProject(chats, nowMs)).toBe(true)
+  })
+
+  test("returns false for a newly created chat with no last message", () => {
+    expect(shouldDefaultCollapseSidebarProject([createChat("chat-1")], nowMs)).toBe(false)
+  })
+})
+
+describe("getSidebarChatTimestamp", () => {
+  test("falls back to the chat creation time when lastMessageAt is missing", () => {
+    expect(getSidebarChatTimestamp(createChat("chat-1"))).toBe(1)
+  })
+
+  test("prefers lastMessageAt when it exists", () => {
+    expect(getSidebarChatTimestamp(createChat("chat-1", 123))).toBe(123)
   })
 })

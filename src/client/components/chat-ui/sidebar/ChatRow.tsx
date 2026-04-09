@@ -5,6 +5,7 @@ import { AnimatedShinyText } from "../../ui/animated-shiny-text"
 import { Button } from "../../ui/button"
 import { Kbd } from "../../ui/kbd"
 import { formatSidebarAgeLabel } from "../../../lib/formatters"
+import { getSidebarChatTimestamp } from "../../../lib/sidebarChats"
 import { cn, normalizeChatId } from "../../../lib/utils"
 
 const loadingStatuses = new Set(["starting", "running"])
@@ -28,7 +29,7 @@ function ChatRowImpl({
   onSelectChat,
   onDeleteChat,
 }: Props) {
-  const ageLabel = formatSidebarAgeLabel(chat.lastMessageAt, nowMs)
+  const ageLabel = formatSidebarAgeLabel(getSidebarChatTimestamp(chat), nowMs)
   const trailingLabel = showShortcutHint && shortcutHint ? shortcutHint : ageLabel
   const showShortcutKeycap = showShortcutHint && Boolean(shortcutHint)
   const normalizedChatId = normalizeChatId(chat.chatId)
