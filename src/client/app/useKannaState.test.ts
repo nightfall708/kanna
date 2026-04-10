@@ -1,13 +1,16 @@
 import { describe, expect, test } from "bun:test"
 import {
+  countMatchingUserPrompts,
   getActiveChatSnapshot,
   getNewestRemainingChatId,
+  getUserPromptSignature,
   getUiUpdateRestartReconnectAction,
+  reconcileOptimisticUserPrompts,
   resolveComposeIntent,
   shouldMarkActiveChatRead,
   shouldAutoFollowTranscript,
 } from "./useKannaState"
-import type { ChatSnapshot, SidebarData } from "../../shared/types"
+import type { ChatAttachment, ChatSnapshot, SidebarData, UserPromptEntry } from "../../shared/types"
 
 function createSidebarData(): SidebarData {
   return {
@@ -236,5 +239,81 @@ describe("getActiveChatSnapshot", () => {
     }
 
     expect(getActiveChatSnapshot(snapshot, "chat-new")).toBeNull()
+  })
+})
+
+describe("optimistic user prompts", () => {
+  function createUserPrompt(
+    id: string,
+    content: string,
+    attachments: ChatAttachment[] = [],
+  ): UserPromptEntry {
+    return {
+      _id: id,
+      createdAt: 1,
+      kind: "user_prompt",
+      content,
+      attachments,
+    }
+  }
+
+  test("counts matching prompts by content and attachments", () => {
+    const attachment: ChatAttachment = {
+      id: "att-1",
+      kind: "file",
+      displayName: "spec.txt",
+      absolutePath: "/tmp/spec.txt",
+      relativePath: "spec.txt",
+      contentUrl: "/uploads/spec.txt",
+      mimeType: "text/plain",
+      size: 12,
+    }
+    const signature = getUserPromptSignature("Review this", [attachment])
+
+    expect(countMatchingUserPrompts([
+      createUserPrompt("msg-1", "Review this", [attachment]),
+      createUserPrompt("msg-2", "Review this"),
+    ], signature)).toBe(1)
+  })
+
+  test("reconciles duplicate optimistic prompts in order", () => {
+    const optimisticPrompts = [
+      {
+        id: "opt-1",
+        scopeId: "chat-1",
+        signature: getUserPromptSignature("same"),
+        requiredMatchCount: 1,
+        entry: createUserPrompt("optimistic:1", "same"),
+      },
+      {
+        id: "opt-2",
+        scopeId: "chat-1",
+        signature: getUserPromptSignature("same"),
+        requiredMatchCount: 2,
+        entry: createUserPrompt("optimistic:2", "same"),
+      },
+    ]
+
+    expect(reconcileOptimisticUserPrompts(
+      optimisticPrompts,
+      "chat-1",
+      [createUserPrompt("server-1", "same")],
+    )).toEqual([optimisticPrompts[1]])
+  })
+
+  test("does not reconcile prompts from other chat scopes", () => {
+    const optimisticPrompt = {
+      id: "opt-1",
+      scopeId: "chat-2",
+      signature: getUserPromptSignature("same"),
+      requiredMatchCount: 1,
+      entry: createUserPrompt("optimistic:1", "same"),
+    }
+
+    expect(reconcileOptimisticUserPrompts(
+      [optimisticPrompt],
+      "chat-1",
+      [createUserPrompt("server-1", "same")],
+    )).toEqual([optimisticPrompt])
   })
 })

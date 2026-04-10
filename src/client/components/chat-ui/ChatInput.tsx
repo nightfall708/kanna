@@ -232,15 +232,19 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
   }, [])
 
-  const clearAttachments = useCallback(() => {
+  const clearAttachments = useCallback((options?: { cleanupPreviews?: boolean }) => {
+    const cleanupPreviews = options?.cleanupPreviews ?? true
     uploadGenerationRef.current += 1
     removedAttachmentIdsRef.current.clear()
     setAttachments((current) => {
-      current.forEach(cleanupAttachmentPreview)
+      if (cleanupPreviews) {
+        current.forEach(cleanupAttachmentPreview)
+      }
       return []
     })
     uploadQueueRef.current = []
     activeUploadsRef.current = 0
+    setSelectedAttachmentId(null)
     setUploadError(null)
   }, [cleanupAttachmentPreview])
 
@@ -483,6 +487,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (!canSubmit || hasPendingUploads) return
 
     const nextValue = value
+    const previousAttachments = attachmentsRef.current
+    const previousSelectedAttachmentId = selectedAttachmentId
+    const previousUploadError = uploadError
     const attachmentsForSubmit = uploadedAttachments.map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment)
     let modelOptions: ModelOptions
     if (providerPrefs.provider === "claude") {
@@ -500,17 +507,21 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setValue("")
     if (chatId) clearDraft(chatId)
     if (textareaRef.current) textareaRef.current.style.height = "auto"
+    clearAttachments({ cleanupPreviews: false })
+    if (latestChatIdRef.current) {
+      clearAttachmentDrafts(latestChatIdRef.current)
+    }
 
     try {
       await onSubmit(nextValue, submitOptions)
-      clearAttachments()
-      if (latestChatIdRef.current) {
-        clearAttachmentDrafts(latestChatIdRef.current)
-      }
+      previousAttachments.forEach(cleanupAttachmentPreview)
     } catch (error) {
       console.error("[ChatInput] Submit failed:", error)
       setValue(nextValue)
       if (chatId) setDraft(chatId, nextValue)
+      setAttachments(previousAttachments)
+      setSelectedAttachmentId(previousSelectedAttachmentId)
+      setUploadError(previousUploadError)
     }
   }
 

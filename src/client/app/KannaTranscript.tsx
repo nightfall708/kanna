@@ -1,4 +1,4 @@
-import React, { memo, useMemo } from "react"
+import React, { memo, useCallback, useMemo, useState } from "react"
 import type { AskUserQuestionItem, ProcessedToolCall } from "../components/messages/types"
 import type { AskUserQuestionAnswerMap, HydratedTranscriptMessage } from "../../shared/types"
 import { UserMessage } from "../components/messages/UserMessage"
@@ -93,8 +93,7 @@ function getTranscriptRenderItemId(item: TranscriptRenderItem) {
   }
 
   const firstId = item.messages[0]?.id ?? item.startIndex
-  const lastId = item.messages[item.messages.length - 1]?.id ?? item.startIndex
-  return `tool-group:${firstId}:${lastId}:${item.messages.length}`
+  return `tool-group:${firstId}`
 }
 
 function shouldRenderTranscriptSingleRow(
@@ -325,30 +324,45 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
 ))
 
 interface TranscriptToolGroupProps {
+  id: string
   startIndex: number
   messages: HydratedTranscriptMessage[]
   isLoading: boolean
   localPath?: string
+  expanded: boolean
+  onExpandedChange: (groupId: string, next: boolean) => void
 }
 
 const TranscriptToolGroup = memo(function TranscriptToolGroup({
+  id,
   startIndex,
   messages,
   isLoading,
   localPath,
+  expanded,
+  onExpandedChange,
 }: TranscriptToolGroupProps) {
   return (
     <div
       className="group relative"
       {...{ [CHAT_SELECTION_ZONE_ATTRIBUTE]: "" }}
     >
-      <CollapsedToolGroup messages={messages} isLoading={isLoading} localPath={localPath} />
+      <CollapsedToolGroup
+        messages={messages}
+        isLoading={isLoading}
+        localPath={localPath}
+        expanded={expanded}
+        onExpandedChange={(next) => onExpandedChange(id, next)}
+      />
     </div>
   )
 }, (prev, next) => (
-  prev.startIndex === next.startIndex
+  prev.id === next.id
+  && prev.startIndex === next.startIndex
   && prev.isLoading === next.isLoading
   && prev.localPath === next.localPath
+  && prev.expanded === next.expanded
+  && prev.onExpandedChange === next.onExpandedChange
   && prev.messages.length === next.messages.length
   && prev.messages.every((message, index) => sameMessage(message, next.messages[index]!))
 ))
@@ -425,6 +439,8 @@ interface KannaTranscriptProps {
 
 interface KannaTranscriptRowProps {
   row: ResolvedTranscriptRow
+  toolGroupExpanded: Record<string, boolean>
+  onToolGroupExpandedChange: (groupId: string, next: boolean) => void
   onAskUserQuestionSubmit: (
     toolUseId: string,
     questions: AskUserQuestionItem[],
@@ -435,16 +451,21 @@ interface KannaTranscriptRowProps {
 
 export const KannaTranscriptRow = memo(function KannaTranscriptRow({
   row,
+  toolGroupExpanded,
+  onToolGroupExpandedChange,
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
 }: KannaTranscriptRowProps) {
   if (row.kind === "tool-group") {
     return (
       <TranscriptToolGroup
+        id={row.id}
         startIndex={row.startIndex}
         messages={row.messages}
         isLoading={row.isLoading}
         localPath={row.localPath}
+        expanded={toolGroupExpanded[row.id] ?? false}
+        onExpandedChange={onToolGroupExpandedChange}
       />
     )
   }
@@ -467,6 +488,8 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
     />
   )
 }, (prev, next) => {
+  if (prev.toolGroupExpanded !== next.toolGroupExpanded) return false
+  if (prev.onToolGroupExpandedChange !== next.onToolGroupExpandedChange) return false
   if (prev.onAskUserQuestionSubmit !== next.onAskUserQuestionSubmit) return false
   if (prev.onExitPlanModeConfirm !== next.onExitPlanModeConfirm) return false
   if (prev.row.kind !== next.row.kind) return false
@@ -508,11 +531,22 @@ function KannaTranscriptImpl({
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
 }: KannaTranscriptProps) {
+  const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
   const rows = useMemo(() => buildResolvedTranscriptRows(messages, {
     isLoading,
     localPath,
     latestToolIds,
   }), [isLoading, latestToolIds, localPath, messages])
+  const handleToolGroupExpandedChange = useCallback((groupId: string, next: boolean) => {
+    setToolGroupExpanded((current) => (
+      current[groupId] === next
+        ? current
+        : {
+            ...current,
+            [groupId]: next,
+          }
+    ))
+  }, [])
 
   return (
     <OpenLocalLinkProvider onOpenLocalLink={onOpenLocalLink}>
@@ -523,6 +557,8 @@ function KannaTranscriptImpl({
         >
           <KannaTranscriptRow
             row={row}
+            toolGroupExpanded={toolGroupExpanded}
+            onToolGroupExpandedChange={handleToolGroupExpandedChange}
             onAskUserQuestionSubmit={onAskUserQuestionSubmit}
             onExitPlanModeConfirm={onExitPlanModeConfirm}
           />

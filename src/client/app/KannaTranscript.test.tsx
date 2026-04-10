@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
+import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
 import type { HydratedTranscriptMessage } from "../../shared/types"
-import { KannaTranscript } from "./KannaTranscript"
+import { buildResolvedTranscriptRows, KannaTranscript } from "./KannaTranscript"
 
 const ROW_WRAPPER_CLASS = "mx-auto max-w-[800px] pb-5"
 
@@ -20,6 +21,21 @@ function renderTranscript(messages: HydratedTranscriptMessage[]) {
 
 function countRowWrappers(html: string) {
   return html.split(ROW_WRAPPER_CLASS).length - 1
+}
+
+function createToolMessage(id: string, toolId = id): HydratedTranscriptMessage {
+  return {
+    id,
+    kind: "tool",
+    toolKind: "bash",
+    toolName: "Bash",
+    toolId,
+    input: {
+      command: `echo ${id}`,
+      description: `Run ${id}`,
+    },
+    timestamp: new Date().toISOString(),
+  }
 }
 
 describe("KannaTranscript", () => {
@@ -252,5 +268,64 @@ describe("KannaTranscript", () => {
 
     expect(countRowWrappers(html)).toBe(1)
     expect(html).toContain("Visible text")
+  })
+
+  test("keeps tool-group row ids stable when the grouped run grows", () => {
+    const latestToolIds = { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null }
+    const initialRows = buildResolvedTranscriptRows([
+      createToolMessage("tool-1"),
+      createToolMessage("tool-2"),
+    ], {
+      isLoading: true,
+      latestToolIds,
+    })
+    const updatedRows = buildResolvedTranscriptRows([
+      createToolMessage("tool-1"),
+      createToolMessage("tool-2"),
+      createToolMessage("tool-3"),
+    ], {
+      isLoading: true,
+      latestToolIds,
+    })
+
+    expect(initialRows).toHaveLength(1)
+    expect(updatedRows).toHaveLength(1)
+    expect(initialRows[0]?.kind).toBe("tool-group")
+    expect(updatedRows[0]?.kind).toBe("tool-group")
+    expect(initialRows[0]?.id).toBe("tool-group:tool-1")
+    expect(updatedRows[0]?.id).toBe("tool-group:tool-1")
+  })
+
+  test("renders grouped tools as expanded across rerenders while streaming when controlled", () => {
+    const initialHtml = renderToStaticMarkup(
+      <CollapsedToolGroup
+        messages={[
+          createToolMessage("tool-1"),
+          createToolMessage("tool-2"),
+        ]}
+        isLoading
+        expanded
+        onExpandedChange={() => undefined}
+      />
+    )
+
+    const updatedHtml = renderToStaticMarkup(
+      <CollapsedToolGroup
+        messages={[
+          createToolMessage("tool-1"),
+          createToolMessage("tool-2"),
+          createToolMessage("tool-3"),
+        ]}
+        isLoading
+        expanded
+        onExpandedChange={() => undefined}
+      />
+    )
+
+    expect(initialHtml).toContain("Run tool-1")
+    expect(initialHtml).toContain("Run tool-2")
+    expect(updatedHtml).toContain("Run tool-1")
+    expect(updatedHtml).toContain("Run tool-2")
+    expect(updatedHtml).toContain("Run tool-3")
   })
 })
