@@ -56,6 +56,24 @@ const SCROLL_BUTTON_BOTTOM_PX = 120
 const DIFF_REFRESH_INTERVAL_MS = 5_000
 const EMPTY_DIFF_SNAPSHOT: ChatDiffSnapshot = { status: "unknown", files: [] }
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 12
+const CHAT_SELECTION_AUTOFOLLOW_WINDOW_MS = 600
+
+export function getIgnoreFolderEntryFromDiffPath(filePath: string) {
+  const normalized = filePath.replaceAll("\\", "/").replace(/\/+/g, "/").replace(/\/$/u, "")
+  const lastSlashIndex = normalized.lastIndexOf("/")
+  if (lastSlashIndex <= 0) {
+    return null
+  }
+  return `${normalized.slice(0, lastSlashIndex)}/`
+}
+
+export function shouldAutoFollowTranscriptResize(
+  showScrollButton: boolean,
+  selectionAutoFollowUntil: number,
+  now = Date.now()
+) {
+  return !showScrollButton || now < selectionAutoFollowUntil
+}
 
 function serializeBranchSelection(branch: ChatBranchListEntry) {
   return branch.kind === "local"
@@ -143,6 +161,7 @@ function sameContextWindowSnapshot(left: ContextWindowSnapshot | null, right: Co
 }
 
 interface ChatTranscriptViewportProps {
+  activeChatId: string | null
   scrollRef: KannaState["scrollRef"]
   messages: KannaState["messages"]
   transcriptPaddingBottom: number
@@ -169,6 +188,7 @@ interface ChatTranscriptViewportProps {
 }
 
 const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
+  activeChatId,
   scrollRef,
   messages,
   transcriptPaddingBottom,
@@ -196,6 +216,7 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   const contentRootRef = useRef<HTMLDivElement>(null)
   const previousRowCountRef = useRef(0)
   const pendingPrependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null)
+  const selectionAutoFollowUntilRef = useRef(0)
   const [transcriptContentWidth, setTranscriptContentWidth] = useState<number | null>(null)
   const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
 
@@ -242,6 +263,10 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   })
 
   useEffect(() => {
+    selectionAutoFollowUntilRef.current = Date.now() + CHAT_SELECTION_AUTOFOLLOW_WINDOW_MS
+  }, [activeChatId])
+
+  useEffect(() => {
     const contentRoot = contentRootRef.current
     if (!contentRoot) return
 
@@ -259,7 +284,13 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
         return nextWidth
       })
 
-      if (!showScrollButton && !pendingPrependAnchorRef.current) {
+      if (
+        shouldAutoFollowTranscriptResize(
+          showScrollButton,
+          selectionAutoFollowUntilRef.current
+        )
+        && !pendingPrependAnchorRef.current
+      ) {
         const scrollContainer = scrollRef.current
         if (scrollContainer) {
           scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "auto" })
@@ -328,7 +359,7 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
     if (!scrollContainer) return
 
     scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "auto" })
-  }, [isProcessing, resolvedRows.length, scrollRef, showScrollButton, transcriptContentWidth])
+  }, [activeChatId, isProcessing, resolvedRows.length, scrollRef, showScrollButton, transcriptContentWidth])
 
   const handleTranscriptScroll = useCallback(() => {
     onScrollChange()
@@ -493,6 +524,7 @@ interface ChatInputDockProps {
   chatInputRef: RefObject<ChatInputHandle | null>
   chatInputElementRef: RefObject<HTMLTextAreaElement | null>
   activeChatId: string | null
+  previousPrompt: string | null
   hasSelectedProject: boolean
   runtimeStatus: string | null
   canCancel: boolean
@@ -509,6 +541,7 @@ const ChatInputDock = memo(function ChatInputDock({
   chatInputRef,
   chatInputElementRef,
   activeChatId,
+  previousPrompt,
   hasSelectedProject,
   runtimeStatus,
   canCancel,
@@ -535,6 +568,7 @@ const ChatInputDock = memo(function ChatInputDock({
           activeProvider={activeProvider}
           availableProviders={availableProviders}
           contextWindowSnapshot={contextWindowSnapshot}
+          previousPrompt={previousPrompt}
         />
       </div>
     </div>
@@ -852,6 +886,42 @@ export function ChatPage() {
       }
     })()
   }, [dialog, state.socket])
+
+  const handleIgnoreDiffFolder = useCallback((filePath: string) => {
+    const chatId = activeChatIdRef.current
+    if (!chatId) return
+
+    const initialValue = getIgnoreFolderEntryFromDiffPath(filePath)
+    if (!initialValue) return
+
+    void (async () => {
+      const ignorePath = await dialog.prompt({
+        title: "Ignore Folder",
+        description: "Edit the folder pattern to add to .gitignore.",
+        initialValue,
+        confirmLabel: "Ignore",
+      })
+      if (!ignorePath) return
+
+      try {
+        await state.socket.command({
+          type: "chat.ignoreDiffFile",
+          chatId,
+          path: ignorePath,
+        })
+      } catch (error) {
+        await dialog.alert({
+          title: "Ignore failed",
+          description: error instanceof Error ? error.message : String(error),
+          closeLabel: "OK",
+        })
+      }
+    })()
+  }, [dialog, state.socket])
+
+  const handleOpenDiffInFinder = useCallback((filePath: string) => {
+    void state.handleOpenExternalPath("open_finder", filePath)
+  }, [state.handleOpenExternalPath])
 
   const handleCommitDiffs = useCallback(async (args: { paths: string[]; summary: string; description: string; mode: DiffCommitMode }) => {
     const chatId = activeChatIdRef.current
@@ -1578,6 +1648,7 @@ export function ChatPage() {
           gitStatus={state.chatDiffSnapshot?.status}
         />
         <ChatTranscriptViewport
+          activeChatId={state.activeChatId}
           scrollRef={state.scrollRef}
           messages={state.messages}
           transcriptPaddingBottom={state.transcriptPaddingBottom}
@@ -1609,6 +1680,7 @@ export function ChatPage() {
         chatInputRef={chatInputRef}
         chatInputElementRef={chatInputElementRef}
         activeChatId={state.activeChatId}
+        previousPrompt={state.previousPrompt}
         hasSelectedProject={state.hasSelectedProject}
         runtimeStatus={state.runtime?.status ?? null}
         canCancel={state.canCancel}
@@ -1746,8 +1818,10 @@ export function ChatPage() {
                 diffRenderMode={diffRenderMode}
                 wrapLines={wrapDiffLines}
                 onOpenFile={handleOpenDiffFile}
+                onOpenInFinder={handleOpenDiffInFinder}
                 onDiscardFile={handleDiscardDiffFile}
                 onIgnoreFile={handleIgnoreDiffFile}
+                onIgnoreFolder={handleIgnoreDiffFolder}
                 onCopyFilePath={handleCopyDiffFilePath}
                 onCopyRelativePath={handleCopyDiffRelativePath}
                 onLoadPatch={handleLoadDiffPatch}

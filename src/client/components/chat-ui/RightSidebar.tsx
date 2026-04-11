@@ -1,5 +1,5 @@
 import { PatchDiff } from "@pierre/diffs/react"
-import { AlertTriangle, ArrowUp, Ban, Building2, Check, ChevronDown, ChevronUp, Code, Columns2, Copy, Download, Ellipsis, FileText, GitBranch, GitBranchPlus, Github, GitMerge, GitPullRequest, Globe, LoaderCircle, Lock, Minus, PencilLine, PenLine, RefreshCw, Rows3, Search, Trash2, Upload, UserRound, WrapText } from "lucide-react"
+import { AlertTriangle, ArrowUp, Ban, Building2, Check, ChevronDown, ChevronUp, Code, Columns2, Copy, Download, Ellipsis, FileText, FolderOpen, GitBranch, GitBranchPlus, Github, GitMerge, GitPullRequest, Globe, LoaderCircle, Lock, Minus, PencilLine, PenLine, RefreshCw, Rows3, Search, Trash2, Upload, UserRound, WrapText } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
 import type {
   ChatAttachment,
@@ -59,8 +59,10 @@ function getDiffPreviewAttachment(projectId: string | null, file: DiffFile): Cha
 
 export interface DiffFileActions {
   onOpenFile: (path: string) => void
+  onOpenInFinder: (path: string) => void
   onDiscardFile: (path: string) => void
   onIgnoreFile: (path: string) => void
+  onIgnoreFolder: (path: string) => void
   onCopyFilePath: (path: string) => void
   onCopyRelativePath: (path: string) => void
 }
@@ -91,6 +93,13 @@ interface RightSidebarProps extends DiffFileActions {
 
 export function canIgnoreDiffFile(file: DiffFile) {
   return file.isUntracked
+}
+
+export function canIgnoreDiffFolder(file: DiffFile) {
+  if (!canIgnoreDiffFile(file)) {
+    return false
+  }
+  return file.path.includes("/")
 }
 
 function IconButton(props: {
@@ -1130,6 +1139,7 @@ function DiffFileCard({
   onLoadPatch: (path: string) => Promise<string>
 }) {
   const canIgnore = canIgnoreDiffFile(file)
+  const canIgnoreFolder = canIgnoreDiffFolder(file)
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null)
   const cardRef = useRef<HTMLDivElement | null>(null)
   const { sentinelRef, isStuck } = useStickyState<HTMLDivElement>({
@@ -1297,6 +1307,15 @@ function DiffFileCard({
         <ContextMenuItem
           onSelect={(event) => {
             event.stopPropagation()
+            fileActions.onOpenInFinder(file.path)
+          }}
+        >
+          <FolderOpen className="h-3.5 w-3.5" />
+          <span className="text-xs font-medium">Open in Finder</span>
+        </ContextMenuItem>
+        <ContextMenuItem
+          onSelect={(event) => {
+            event.stopPropagation()
             fileActions.onDiscardFile(file.path)
           }}
           className="text-destructive dark:text-red-400 hover:bg-destructive/10 focus:bg-destructive/10 dark:hover:bg-red-500/20 dark:focus:bg-red-500/20"
@@ -1314,6 +1333,17 @@ function DiffFileCard({
         >
           <Ban className="h-3.5 w-3.5" />
           <span className="text-xs font-medium">Ignore File</span>
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!canIgnoreFolder}
+          onSelect={(event) => {
+            event.stopPropagation()
+            if (!canIgnoreFolder) return
+            fileActions.onIgnoreFolder(file.path)
+          }}
+        >
+          <Ban className="h-3.5 w-3.5" />
+          <span className="text-xs font-medium">Ignore folder...</span>
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
@@ -1346,8 +1376,10 @@ function RightSidebarImpl({
   diffRenderMode,
   wrapLines,
   onOpenFile,
+  onOpenInFinder,
   onDiscardFile,
   onIgnoreFile,
+  onIgnoreFolder,
   onCopyFilePath,
   onCopyRelativePath,
   onListBranches,
@@ -1369,11 +1401,13 @@ function RightSidebarImpl({
 }: RightSidebarProps) {
   const fileActions: DiffFileActions = useMemo(() => ({
     onOpenFile,
+    onOpenInFinder,
     onDiscardFile,
     onIgnoreFile,
+    onIgnoreFolder,
     onCopyFilePath,
     onCopyRelativePath,
-  }), [onOpenFile, onDiscardFile, onIgnoreFile, onCopyFilePath, onCopyRelativePath])
+  }), [onOpenFile, onOpenInFinder, onDiscardFile, onIgnoreFile, onIgnoreFolder, onCopyFilePath, onCopyRelativePath])
   const hasChanges = diffs.files.length > 0
   const [isGenerating, setIsGenerating] = useState(false)
   const [commitModeInFlight, setCommitModeInFlight] = useState<DiffCommitMode | null>(null)
@@ -1449,7 +1483,7 @@ function RightSidebarImpl({
   const aheadCount = diffs.aheadCount ?? 0
   const isPublishedBranch = diffs.hasUpstream === true
   const isPublishableBranch = diffs.hasUpstream === false && Boolean(diffs.branchName)
-  const hasRemoteOrigin = Boolean(diffs.originRepoSlug)
+  const hasRemoteOrigin = diffs.hasOriginRemote === true
   const encodedBranchName = diffs.branchName
     ? diffs.branchName.split("/").map((segment) => encodeURIComponent(segment)).join("/")
     : null
@@ -1474,7 +1508,7 @@ function RightSidebarImpl({
     && selectedCount > 0
     && hasSummary
     && !isBusy
-  const primaryCommitMode: DiffCommitMode = "commit_and_push"
+  const primaryCommitMode: DiffCommitMode = hasRemoteOrigin ? "commit_and_push" : "commit_only"
   const resolvedBranchName = diffs.branchName ?? "current branch"
 
   async function handleCommit(mode: DiffCommitMode) {
@@ -1852,10 +1886,12 @@ function RightSidebarImpl({
                               {hasSummary ? (
                                 isCommitting ? (
                                   <LoaderCircle strokeWidth={2.5} className="size-3 shrink-0 animate-spin" />
-                                ) : diffs.hasUpstream ? (
+                                ) : primaryCommitMode === "commit_and_push" ? diffs.hasUpstream ? (
                                   <Upload strokeWidth={2.5} className="size-3 shrink-0" />
                                 ) : (
                                   <GitBranchPlus strokeWidth={2.5} className="size-3 shrink-0" />
+                                ) : (
+                                  <Check strokeWidth={2.5} className="size-3 shrink-0" />
                                 )
                               ) : isGenerating ? (
                                 <LoaderCircle strokeWidth={2.5} className="size-3 shrink-0 animate-spin" />
@@ -1866,7 +1902,9 @@ function RightSidebarImpl({
                                 {hasSummary
                                   ? (isCommitting
                                     ? (commitModeInFlight === "commit_only" ? "Committing..." : "Committing & Pushing...")
-                                    : diffs.hasUpstream
+                                    : primaryCommitMode === "commit_only"
+                                      ? <>Commit to <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>
+                                      : diffs.hasUpstream
                                       ? <>Commit &amp; push to <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>
                                       : <>Commit &amp; publish <GitBranch strokeWidth={2.5} className="mr-[4.5px] ml-0.5 inline size-3 " />{resolvedBranchName}</>)
                                   : (isGenerating

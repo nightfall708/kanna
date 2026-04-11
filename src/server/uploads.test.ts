@@ -182,7 +182,7 @@ describe("uploads", () => {
     try {
       const project = await server.store.openProject(projectDir, "Project")
       const formData = new FormData()
-      formData.append("files", new File([new Uint8Array(25 * 1024 * 1024 + 1)], "big.bin", { type: "application/octet-stream" }))
+      formData.append("files", new File([new Uint8Array(100 * 1024 * 1024 + 1)], "big.bin", { type: "application/octet-stream" }))
 
       const response = await fetch(`http://localhost:${server.port}/api/projects/${project.id}/uploads`, {
         method: "POST",
@@ -191,7 +191,7 @@ describe("uploads", () => {
 
       expect(response.status).toBe(413)
       expect(await response.json()).toEqual({
-        error: "File \"big.bin\" exceeds the 25 MB limit.",
+        error: "File \"big.bin\" exceeds the 100 MB limit.",
       })
     } finally {
       await server.stop()

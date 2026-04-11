@@ -15,8 +15,8 @@ import { createWsRouter, type ClientState } from "./ws-router"
 import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload } from "./uploads"
 import { getProjectUploadDir } from "./paths"
 
-const MAX_UPLOAD_FILES = 10
-const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024
+const MAX_UPLOAD_FILES = 50
+const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 const STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS = 60 * 1000
 
 export async function persistUploadedFiles(args: {

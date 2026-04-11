@@ -16,16 +16,16 @@ function createClipboardItem(args: {
 describe("willExceedAttachmentLimit", () => {
   test("rejects a batch that would push the composer above the total attachment limit", () => {
     expect(willExceedAttachmentLimit({
-      currentAttachmentCount: 7,
-      queuedAttachmentCount: 1,
+      currentAttachmentCount: 45,
+      queuedAttachmentCount: 3,
       incomingAttachmentCount: 3,
     })).toBe(true)
   })
 
   test("allows a batch that exactly reaches the total attachment limit", () => {
     expect(willExceedAttachmentLimit({
-      currentAttachmentCount: 7,
-      queuedAttachmentCount: 1,
+      currentAttachmentCount: 45,
+      queuedAttachmentCount: 3,
       incomingAttachmentCount: 2,
     })).toBe(false)
   })
@@ -37,7 +37,7 @@ describe("willExceedAttachmentLimit", () => {
     ], 123)
 
     expect(willExceedAttachmentLimit({
-      currentAttachmentCount: 8,
+      currentAttachmentCount: 48,
       queuedAttachmentCount: 0,
       incomingAttachmentCount: pastedFiles.length,
     })).toBe(false)
