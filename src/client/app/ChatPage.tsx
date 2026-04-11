@@ -492,7 +492,7 @@ const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
             <div className="flex h-full items-center justify-center">
               <div className="text-center flex flex-col items-center justify-center gap-3">
                 <Upload className="mx-auto size-14 text-foreground" strokeWidth={1.75} />
-                <div className="text-xl font-medium text-foreground">Drop up to 10 files</div>
+                <div className="text-xl font-medium text-foreground">Drop up to 50 files</div>
               </div>
             </div>
           </div>
