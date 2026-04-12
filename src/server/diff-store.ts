@@ -1823,6 +1823,15 @@ export class DiffStore {
     ])
     const hasOriginRemote = originRemoteUrl !== null
     if (args.action === "publish") {
+      if (!hasOriginRemote) {
+        return {
+          ok: false,
+          action: args.action,
+          title: "No origin remote configured",
+          message: "This repository does not have an origin remote configured.",
+          snapshotChanged: false,
+        }
+      }
       const publishResult = await runGit(["push", "-u", "origin", "HEAD"], repo.repoRoot)
       if (publishResult.exitCode !== 0) {
         const detail = formatGitFailure(publishResult)
