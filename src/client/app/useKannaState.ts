@@ -341,8 +341,12 @@ export function getUiUpdateRestartReconnectAction(
   return "none"
 }
 
-const FIXED_TRANSCRIPT_PADDING_BOTTOM = 140
+const TRANSCRIPT_PADDING_BOTTOM_OFFSET = 30
 const UI_UPDATE_RESTART_STORAGE_KEY = "kanna:ui-update-restart"
+
+export function getTranscriptPaddingBottom(inputHeight: number) {
+  return inputHeight + TRANSCRIPT_PADDING_BOTTOM_OFFSET
+}
 
 function getUiUpdateRestartPhase() {
   return window.sessionStorage.getItem(UI_UPDATE_RESTART_STORAGE_KEY)
@@ -839,7 +843,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const isProcessing = isProcessingStatus(effectiveRuntimeStatus ?? undefined)
   const canCancel = canCancelStatus(effectiveRuntimeStatus ?? undefined)
   const isDraining = runtime?.isDraining ?? false
-  const transcriptPaddingBottom = FIXED_TRANSCRIPT_PADDING_BOTTOM
+  const transcriptPaddingBottom = getTranscriptPaddingBottom(inputHeight)
   const showScrollButton = !isAtBottom && messages.length > 0
   const fallbackLocalProjectPath = localProjects?.projects[0]?.localPath ?? null
   const navbarLocalPath =

@@ -4,6 +4,7 @@ import {
   getActiveChatSnapshot,
   getNewestRemainingChatId,
   getPreviousPrompt,
+  getTranscriptPaddingBottom,
   getUserPromptSignature,
   getUiUpdateRestartReconnectAction,
   reconcileOptimisticUserPrompts,
@@ -111,6 +112,20 @@ describe("shouldAutoFollowTranscript", () => {
 
   test("returns false when the transcript is not near the bottom", () => {
     expect(shouldAutoFollowTranscript(24)).toBe(false)
+  })
+})
+
+describe("getTranscriptPaddingBottom", () => {
+  test("keeps the extra bottom offset even when the input height is zero", () => {
+    expect(getTranscriptPaddingBottom(0)).toBe(30)
+  })
+
+  test("adds the fixed offset to the measured input height", () => {
+    expect(getTranscriptPaddingBottom(140)).toBe(170)
+  })
+
+  test("scales linearly as the composer grows", () => {
+    expect(getTranscriptPaddingBottom(200) - getTranscriptPaddingBottom(140)).toBe(60)
   })
 })
 

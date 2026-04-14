@@ -142,6 +142,27 @@ function useLayoutWidth(ref: RefObject<HTMLDivElement | null>) {
   return layoutWidth
 }
 
+const MOBILE_RIGHT_SIDEBAR_BREAKPOINT_PX = 768
+
+export function shouldUseMobileRightSidebarOverlay(viewportWidth: number) {
+  return viewportWidth > 0 && viewportWidth < MOBILE_RIGHT_SIDEBAR_BREAKPOINT_PX
+}
+
+function useMobileRightSidebarOverlayEnabled() {
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 0 : window.innerWidth))
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const updateViewportWidth = () => setViewportWidth(window.innerWidth)
+    updateViewportWidth()
+    window.addEventListener("resize", updateViewportWidth)
+    return () => window.removeEventListener("resize", updateViewportWidth)
+  }, [])
+
+  return shouldUseMobileRightSidebarOverlay(viewportWidth)
+}
+
 function useFixedTerminalHeight(args: {
   layoutRootRef: RefObject<HTMLDivElement | null>
   shouldRenderTerminalLayout: boolean
@@ -321,6 +342,8 @@ export function ChatPage() {
   const shouldRenderTerminalLayout = Boolean(projectId && hasTerminals)
   const showRightSidebar = Boolean(projectId && rightSidebarVisibility.isVisible)
   const shouldRenderRightSidebarLayout = Boolean(projectId)
+  const isMobileRightSidebarOverlay = useMobileRightSidebarOverlayEnabled()
+  const shouldRenderDesktopRightSidebarLayout = shouldRenderRightSidebarLayout && !isMobileRightSidebarOverlay
   const layoutWidth = useLayoutWidth(layoutRootRef)
   const clampRightSidebarSize = useCallback((size: number, widthOverride?: number) => {
     if (!Number.isFinite(size)) {
@@ -359,7 +382,7 @@ export function ChatPage() {
     sidebarVisualRef,
   } = useRightSidebarToggleAnimation({
     projectId,
-    shouldRenderRightSidebarLayout,
+    shouldRenderRightSidebarLayout: shouldRenderDesktopRightSidebarLayout,
     showRightSidebar,
     rightSidebarSize: effectiveRightSidebarSize,
   })
@@ -561,8 +584,31 @@ export function ChatPage() {
     return () => window.removeEventListener("resize", handleResize)
   }, [state.updateScrollState])
 
+  useEffect(() => {
+    if (!showRightSidebar || !isMobileRightSidebarOverlay) return
+
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [isMobileRightSidebarOverlay, showRightSidebar])
+
+  useEffect(() => {
+    if (!showRightSidebar || !isMobileRightSidebarOverlay) return
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return
+      event.preventDefault()
+      handleCloseRightSidebar()
+    }
+
+    window.addEventListener("keydown", handleEscape)
+    return () => window.removeEventListener("keydown", handleEscape)
+  }, [handleCloseRightSidebar, isMobileRightSidebarOverlay, showRightSidebar])
+
   useLayoutEffect(() => {
-    if (!showRightSidebar || layoutWidth <= 0 || isRightSidebarAnimating.current) {
+    if (!showRightSidebar || isMobileRightSidebarOverlay || layoutWidth <= 0 || isRightSidebarAnimating.current) {
       return
     }
 
@@ -584,6 +630,7 @@ export function ChatPage() {
     layoutWidth,
     rightSidebarPanelGroupRef,
     showRightSidebar,
+    isMobileRightSidebarOverlay,
   ])
 
   const chatCard = (
@@ -692,7 +739,7 @@ export function ChatPage() {
 
   return (
     <div ref={layoutRootRef} className="flex-1 flex flex-col min-w-0 relative">
-      {shouldRenderRightSidebarLayout && projectId ? (
+      {shouldRenderDesktopRightSidebarLayout && projectId ? (
         <ResizablePanelGroup
           key={`${projectId}-right-sidebar`}
           groupRef={rightSidebarPanelGroupRef}
@@ -787,6 +834,65 @@ export function ChatPage() {
       ) : (
         workspace
       )}
+      {isMobileRightSidebarOverlay && projectId ? (
+        <div
+          className={cn(
+            "absolute inset-0 z-40 transition-opacity duration-300 ease-out",
+            showRightSidebar ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
+          )}
+          aria-hidden={showRightSidebar ? undefined : true}
+          data-mobile-right-sidebar-overlay
+        >
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/45 backdrop-blur-[1px]"
+            aria-label="Close changes sidebar"
+            onClick={handleCloseRightSidebar}
+          />
+          <div
+            ref={sidebarVisualRef}
+            className={cn(
+              "absolute inset-y-0 right-0 flex w-[min(92vw,30rem)] max-w-full min-h-0 flex-col overflow-hidden border-l border-border bg-background shadow-2xl transition-transform duration-300 ease-out",
+              "pt-[max(env(safe-area-inset-top),0px)] pb-[max(env(safe-area-inset-bottom),0px)]",
+              showRightSidebar ? "translate-x-0" : "translate-x-full",
+            )}
+            data-right-sidebar-open={showRightSidebar ? "true" : "false"}
+            data-right-sidebar-animated="false"
+            data-right-sidebar-visual
+          >
+            <RightSidebar
+              projectId={projectId}
+              diffs={state.chatDiffSnapshot ?? EMPTY_DIFF_SNAPSHOT}
+              editorLabel={state.editorLabel}
+              diffRenderMode={diffRenderMode}
+              wrapLines={wrapDiffLines}
+              onOpenFile={handleOpenDiffFile}
+              onOpenInFinder={handleOpenDiffInFinder}
+              onDiscardFile={handleDiscardDiffFile}
+              onIgnoreFile={handleIgnoreDiffFile}
+              onIgnoreFolder={handleIgnoreDiffFolder}
+              onCopyFilePath={handleCopyDiffFilePath}
+              onCopyRelativePath={handleCopyDiffRelativePath}
+              onLoadPatch={handleLoadDiffPatch}
+              onListBranches={handleListBranches}
+              onPreviewMergeBranch={handlePreviewMergeBranch}
+              onMergeBranch={handleMergeBranch}
+              onCheckoutBranch={handleCheckoutBranch}
+              onCreateBranch={handleCreateBranch}
+              onGenerateCommitMessage={handleGenerateCommitMessage}
+              onInitializeGit={handleInitializeGit}
+              onGetGitHubPublishInfo={handleGetGitHubPublishInfo}
+              onCheckGitHubRepoAvailability={handleCheckGitHubRepoAvailability}
+              onSetupGitHub={handleSetupGitHub}
+              onCommit={handleCommitDiffs}
+              onSyncWithRemote={handleSyncBranch}
+              onDiffRenderModeChange={setDiffRenderMode}
+              onWrapLinesChange={setWrapDiffLines}
+              onClose={handleCloseRightSidebar}
+            />
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
