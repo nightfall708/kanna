@@ -1,6 +1,6 @@
-import React, { memo, useCallback, useMemo, useState } from "react"
+import React, { memo, useCallback, useMemo, useRef, useState } from "react"
 import type { AskUserQuestionItem, ProcessedToolCall } from "../components/messages/types"
-import type { AskUserQuestionAnswerMap, HydratedTranscriptMessage } from "../../shared/types"
+import type { AskUserQuestionAnswerMap, ChatAttachment, HydratedTranscriptMessage } from "../../shared/types"
 import { UserMessage } from "../components/messages/UserMessage"
 import { RawJsonMessage } from "../components/messages/RawJsonMessage"
 import { SystemMessage } from "../components/messages/SystemMessage"
@@ -51,6 +51,11 @@ export interface ResolvedToolGroupTranscriptRow {
 }
 
 export type ResolvedTranscriptRow = ResolvedSingleTranscriptRow | ResolvedToolGroupTranscriptRow
+
+export interface StableResolvedTranscriptRowsState {
+  byId: Map<string, ResolvedTranscriptRow>
+  result: ResolvedTranscriptRow[]
+}
 
 interface TranscriptMessageRenderState {
   isFirstSystem: boolean
@@ -193,6 +198,24 @@ function sameStringArray(left: string[] | undefined, right: string[] | undefined
   return left.every((value, index) => value === right[index])
 }
 
+function sameAttachment(left: ChatAttachment, right: ChatAttachment) {
+  return left.id === right.id
+    && left.kind === right.kind
+    && left.displayName === right.displayName
+    && left.absolutePath === right.absolutePath
+    && left.relativePath === right.relativePath
+    && left.contentUrl === right.contentUrl
+    && left.mimeType === right.mimeType
+    && left.size === right.size
+}
+
+function sameAttachmentArray(left: ChatAttachment[] | undefined, right: ChatAttachment[] | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.length !== right.length) return false
+  return left.every((attachment, index) => sameAttachment(attachment, right[index]!))
+}
+
 function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptMessage) {
   if (left === right) return true
   if (left.kind !== right.kind || left.id !== right.id || left.hidden !== right.hidden) return false
@@ -200,7 +223,8 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
   switch (left.kind) {
     case "user_prompt":
       return left.content === (right.kind === "user_prompt" ? right.content : null)
-        && left.attachments?.length === (right.kind === "user_prompt" ? right.attachments?.length : null)
+        && right.kind === "user_prompt"
+        && sameAttachmentArray(left.attachments, right.attachments)
     case "system_init":
       return right.kind === "system_init"
         && left.provider === right.provider
@@ -242,6 +266,67 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
     case "unknown":
       return right.kind === "unknown" && left.json === right.json
   }
+}
+
+function isResolvedTranscriptRowUnchanged(left: ResolvedTranscriptRow, right: ResolvedTranscriptRow) {
+  if (left.kind !== right.kind || left.id !== right.id) return false
+
+  if (left.kind === "single" && right.kind === "single") {
+    return left.index === right.index
+      && left.isLoading === right.isLoading
+      && left.localPath === right.localPath
+      && left.isFirstSystem === right.isFirstSystem
+      && left.isFirstAccount === right.isFirstAccount
+      && left.isLatestAskUserQuestion === right.isLatestAskUserQuestion
+      && left.isLatestExitPlanMode === right.isLatestExitPlanMode
+      && left.isLatestTodoWrite === right.isLatestTodoWrite
+      && left.hideResult === right.hideResult
+      && left.isFinalStatus === right.isFinalStatus
+      && sameMessage(left.message, right.message)
+  }
+
+  if (left.kind === "tool-group" && right.kind === "tool-group") {
+    return left.startIndex === right.startIndex
+      && left.isLoading === right.isLoading
+      && left.localPath === right.localPath
+      && left.messages.length === right.messages.length
+      && left.messages.every((message, index) => sameMessage(message, right.messages[index]!))
+  }
+
+  return false
+}
+
+export function computeStableResolvedTranscriptRows(
+  rows: ResolvedTranscriptRow[],
+  previous: StableResolvedTranscriptRowsState,
+): StableResolvedTranscriptRowsState {
+  const nextById = new Map<string, ResolvedTranscriptRow>()
+  let anyChanged = rows.length !== previous.byId.size
+
+  const result = rows.map((row, index) => {
+    const previousRow = previous.byId.get(row.id)
+    const nextRow = previousRow && isResolvedTranscriptRowUnchanged(previousRow, row) ? previousRow : row
+    nextById.set(row.id, nextRow)
+    if (!anyChanged && previous.result[index] !== nextRow) {
+      anyChanged = true
+    }
+    return nextRow
+  })
+
+  return anyChanged ? { byId: nextById, result } : previous
+}
+
+export function useStableResolvedRows(rows: ResolvedTranscriptRow[]) {
+  const previousState = useRef<StableResolvedTranscriptRowsState>({
+    byId: new Map<string, ResolvedTranscriptRow>(),
+    result: [],
+  })
+
+  return useMemo(() => {
+    const nextState = computeStableResolvedTranscriptRows(rows, previousState.current)
+    previousState.current = nextState
+    return nextState.result
+  }, [rows])
 }
 
 interface TranscriptSingleRowProps {
@@ -492,7 +577,7 @@ interface KannaTranscriptProps {
 
 interface KannaTranscriptRowProps {
   row: ResolvedTranscriptRow
-  toolGroupExpanded: Record<string, boolean>
+  toolGroupExpanded?: boolean
   onToolGroupExpandedChange: (groupId: string, next: boolean) => void
   onAskUserQuestionSubmit: (
     toolUseId: string,
@@ -517,7 +602,7 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
         messages={row.messages}
         isLoading={row.isLoading}
         localPath={row.localPath}
-        expanded={toolGroupExpanded[row.id] ?? false}
+        expanded={toolGroupExpanded ?? false}
         onExpandedChange={onToolGroupExpandedChange}
       />
     )
@@ -610,7 +695,7 @@ function KannaTranscriptImpl({
         >
           <KannaTranscriptRow
             row={row}
-            toolGroupExpanded={toolGroupExpanded}
+            toolGroupExpanded={row.kind === "tool-group" ? (toolGroupExpanded[row.id] ?? false) : undefined}
             onToolGroupExpandedChange={handleToolGroupExpandedChange}
             onAskUserQuestionSubmit={onAskUserQuestionSubmit}
             onExitPlanModeConfirm={onExitPlanModeConfirm}

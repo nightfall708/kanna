@@ -101,6 +101,7 @@ interface Props {
     value: string,
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: ChatAttachment[] }
   ) => Promise<void>
+  onLayoutChange?: () => void
   onCancel?: () => void
   disabled: boolean
   canCancel?: boolean
@@ -158,6 +159,7 @@ function getEffectiveComposerState(
 
 const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSubmit,
+  onLayoutChange,
   onCancel,
   disabled,
   canCancel,
@@ -275,12 +277,22 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   useLayoutEffect(() => {
     autoResize()
-  }, [value, autoResize])
+    onLayoutChange?.()
+  }, [autoResize, onLayoutChange, value])
 
   useEffect(() => {
-    window.addEventListener("resize", autoResize)
-    return () => window.removeEventListener("resize", autoResize)
-  }, [autoResize])
+    const handleResize = () => {
+      autoResize()
+      onLayoutChange?.()
+    }
+
+    window.addEventListener("resize", handleResize)
+    return () => window.removeEventListener("resize", handleResize)
+  }, [autoResize, onLayoutChange])
+
+  useLayoutEffect(() => {
+    onLayoutChange?.()
+  }, [attachments.length, onLayoutChange, uploadError])
 
   useEffect(() => {
     textareaRef.current?.focus()

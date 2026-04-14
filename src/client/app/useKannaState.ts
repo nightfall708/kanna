@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
+import { useShallow } from "zustand/react/shallow"
 import { APP_NAME } from "../../shared/branding"
 import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
@@ -341,11 +342,15 @@ export function getUiUpdateRestartReconnectAction(
   return "none"
 }
 
-const TRANSCRIPT_PADDING_BOTTOM_OFFSET = 30
+export const TRANSCRIPT_PADDING_BOTTOM_OFFSET = 30
 const UI_UPDATE_RESTART_STORAGE_KEY = "kanna:ui-update-restart"
 
 export function getTranscriptPaddingBottom(inputHeight: number) {
   return inputHeight + TRANSCRIPT_PADDING_BOTTOM_OFFSET
+}
+
+export function getNextMeasuredInputHeight(previousHeight: number, measuredHeight: number) {
+  return measuredHeight > 0 ? measuredHeight : previousHeight
 }
 
 function getUiUpdateRestartPhase() {
@@ -419,8 +424,6 @@ export interface KannaState {
   startingLocalPath: string | null
   sidebarOpen: boolean
   sidebarCollapsed: boolean
-  scrollRef: RefObject<HTMLDivElement | null>
-  inputRef: RefObject<HTMLDivElement | null>
   messages: ReturnType<typeof processTranscriptMessages>
   previousPrompt: string | null
   latestToolIds: ReturnType<typeof getLatestToolIds>
@@ -432,8 +435,6 @@ export interface KannaState {
   isProcessing: boolean
   canCancel: boolean
   isDraining: boolean
-  transcriptPaddingBottom: number
-  showScrollButton: boolean
   navbarLocalPath?: string
   editorLabel: string
   hasSelectedProject: boolean
@@ -444,8 +445,6 @@ export interface KannaState {
   expandSidebar: () => void
   openAddProjectModal: () => void
   closeAddProjectModal: () => void
-  updateScrollState: () => void
-  scrollToBottom: () => void
   loadOlderHistory: () => Promise<void>
   handleCreateChat: (projectId: string) => Promise<void>
   handleOpenLocalProject: (localPath: string) => Promise<void>
@@ -498,8 +497,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [addProjectModalOpen, setAddProjectModalOpen] = useState(false)
-  const [inputHeight, setInputHeight] = useState(148)
-  const [isAtBottom, setIsAtBottom] = useState(true)
   const [commandError, setCommandError] = useState<string | null>(null)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
@@ -507,12 +504,9 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [optimisticProcessing, setOptimisticProcessing] = useState<OptimisticProcessingState | null>(null)
   const [focusEpoch, setFocusEpoch] = useState(0)
   const sendToStartingProfilesRef = useRef<Map<string, SendToStartingTrace>>(new Map())
-  const draftByChatId = useChatInputStore((state) => state.drafts)
-  const attachmentDraftsByChatId = useChatInputStore((state) => state.attachmentDrafts)
-  const draftChatIds = useMemo(() => Object.keys(draftByChatId), [draftByChatId])
-  const attachmentDraftChatIds = useMemo(
-    () => Object.keys(attachmentDraftsByChatId),
-    [attachmentDraftsByChatId]
+  const draftChatIds = useChatInputStore(useShallow((state) => Object.keys(state.drafts).sort()))
+  const attachmentDraftChatIds = useChatInputStore(
+    useShallow((state) => Object.keys(state.attachmentDrafts).sort())
   )
   const chatSubscriptionDebugRef = useRef(0)
   const lastStartingRenderedTraceIdRef = useRef<string | null>(null)
@@ -521,11 +515,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
     diffs: null,
   })
   const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
-
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLDivElement>(null)
-  const initialScrollCompletedRef = useRef(false)
-  const initialScrollFrameRef = useRef<number | null>(null)
 
   useEffect(() => socket.onStatus(setConnectionStatus), [socket])
 
@@ -723,37 +712,11 @@ export function useKannaState(activeChatId: string | null): KannaState {
   }, [activeChatId, focusEpoch, sidebarData.projectGroups, sidebarReady, socket])
 
   useEffect(() => {
-    initialScrollCompletedRef.current = false
-    if (initialScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(initialScrollFrameRef.current)
-      initialScrollFrameRef.current = null
-    }
-    setIsAtBottom(true)
     setOlderHistoryEntries([])
     setIsHistoryLoading(false)
     setHistoryCursor(null)
     setHasOlderHistory(false)
   }, [activeChatId])
-
-  useEffect(() => {
-    return () => {
-      if (initialScrollFrameRef.current !== null) {
-        window.cancelAnimationFrame(initialScrollFrameRef.current)
-      }
-    }
-  }, [])
-
-  useLayoutEffect(() => {
-    const element = inputRef.current
-    if (!element) return
-
-    const observer = new ResizeObserver(() => {
-      setInputHeight(element.getBoundingClientRect().height)
-    })
-    observer.observe(element)
-    setInputHeight(element.getBoundingClientRect().height)
-    return () => observer.disconnect()
-  }, [])
 
   const activeChatSnapshot = useMemo(
     () => getActiveChatSnapshot(chatSnapshot, activeChatId),
@@ -843,8 +806,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const isProcessing = isProcessingStatus(effectiveRuntimeStatus ?? undefined)
   const canCancel = canCancelStatus(effectiveRuntimeStatus ?? undefined)
   const isDraining = runtime?.isDraining ?? false
-  const transcriptPaddingBottom = getTranscriptPaddingBottom(inputHeight)
-  const showScrollButton = !isAtBottom && messages.length > 0
   const fallbackLocalProjectPath = localProjects?.projects[0]?.localPath ?? null
   const navbarLocalPath =
     runtime?.localPath
@@ -953,56 +914,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
       return reconciled
     })
   }, [optimisticScopeId, serverTranscriptEntries])
-
-  useLayoutEffect(() => {
-    if (initialScrollCompletedRef.current) return
-
-    const element = scrollRef.current
-    if (!element) return
-    if (activeChatId && !runtime) return
-
-    element.scrollTo({ top: element.scrollHeight, behavior: "auto" })
-    if (initialScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(initialScrollFrameRef.current)
-    }
-    initialScrollFrameRef.current = window.requestAnimationFrame(() => {
-      const currentElement = scrollRef.current
-      if (!currentElement) return
-      currentElement.scrollTo({ top: currentElement.scrollHeight, behavior: "auto" })
-      initialScrollFrameRef.current = null
-    })
-    initialScrollCompletedRef.current = true
-  }, [activeChatId, inputHeight, messages.length, runtime])
-
-  useEffect(() => {
-    if (!initialScrollCompletedRef.current || !isAtBottom) return
-
-    const frameId = window.requestAnimationFrame(() => {
-      const element = scrollRef.current
-      if (!element || !isAtBottom) return
-      element.scrollTo({ top: element.scrollHeight, behavior: "auto" })
-    })
-
-    return () => window.cancelAnimationFrame(frameId)
-  }, [activeChatId, inputHeight, isAtBottom, messages.length, runtime?.status])
-
-  const updateScrollState = useCallback(() => {
-    const element = scrollRef.current
-    if (!element) return
-    const distance = element.scrollHeight - element.scrollTop - element.clientHeight
-    setIsAtBottom(shouldAutoFollowTranscript(distance))
-  }, [])
-
-  const enableAutoFollow = useCallback((behavior: ScrollBehavior) => {
-    const element = scrollRef.current
-    setIsAtBottom(true)
-    if (!element) return
-    element.scrollTo({ top: element.scrollHeight, behavior })
-  }, [])
-
-  const scrollToBottom = useCallback(() => {
-    enableAutoFollow("smooth")
-  }, [enableAutoFollow])
 
   const loadOlderHistory = useCallback(async () => {
     if (!activeChatId || !historyCursor || isHistoryLoading || !hasOlderHistory) {
@@ -1195,8 +1106,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
       if (!activeChatId && !projectId) {
         throw new Error("Open a project first")
       }
-
-      enableAutoFollow("auto")
 
       const result = await socket.command<{ chatId?: string }>({
         type: "chat.send",
@@ -1457,8 +1366,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
     startingLocalPath,
     sidebarOpen,
     sidebarCollapsed,
-    scrollRef,
-    inputRef,
     messages,
     previousPrompt,
     latestToolIds,
@@ -1470,8 +1377,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
     isProcessing,
     canCancel,
     isDraining,
-    transcriptPaddingBottom,
-    showScrollButton,
     navbarLocalPath,
     editorLabel,
     hasSelectedProject,
@@ -1482,8 +1387,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
     expandSidebar,
     openAddProjectModal,
     closeAddProjectModal,
-    updateScrollState,
-    scrollToBottom,
     loadOlderHistory,
     handleCreateChat,
     handleOpenLocalProject,

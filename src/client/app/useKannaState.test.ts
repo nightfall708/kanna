@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   countMatchingUserPrompts,
   getActiveChatSnapshot,
+  getNextMeasuredInputHeight,
   getNewestRemainingChatId,
   getPreviousPrompt,
   getTranscriptPaddingBottom,
@@ -126,6 +127,16 @@ describe("getTranscriptPaddingBottom", () => {
 
   test("scales linearly as the composer grows", () => {
     expect(getTranscriptPaddingBottom(200) - getTranscriptPaddingBottom(140)).toBe(60)
+  })
+})
+
+describe("getNextMeasuredInputHeight", () => {
+  test("keeps the previous height when a transient zero measurement is reported", () => {
+    expect(getNextMeasuredInputHeight(148, 0)).toBe(148)
+  })
+
+  test("accepts the latest non-zero measurement", () => {
+    expect(getNextMeasuredInputHeight(148, 178)).toBe(178)
   })
 })
 
