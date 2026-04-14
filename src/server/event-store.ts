@@ -7,7 +7,6 @@ import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, TranscriptEnt
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
-  type MessageEvent,
   type ProjectEvent,
   type SnapshotFile,
   type StoreEvent,
@@ -19,7 +18,23 @@ import {
 import { resolveLocalPath } from "./paths"
 
 const COMPACTION_THRESHOLD_BYTES = 2 * 1024 * 1024
-const STALE_EMPTY_CHAT_MAX_AGE_MS = 5 * 60 * 1000
+const STALE_EMPTY_CHAT_MAX_AGE_MS = 30 * 60 * 1000
+
+function isSendToStartingProfilingEnabled() {
+  return process.env.KANNA_PROFILE_SEND_TO_STARTING === "1"
+}
+
+function logSendToStartingProfile(stage: string, details?: Record<string, unknown>) {
+  if (!isSendToStartingProfilingEnabled()) {
+    return
+  }
+
+  console.log("[kanna/send->starting][server]", JSON.stringify({
+    stage,
+    ...details,
+  }))
+}
+
 interface LegacyTranscriptStats {
   hasLegacyData: boolean
   sources: Array<"snapshot" | "messages_log">
@@ -31,6 +46,41 @@ interface TranscriptPageResult {
   entries: TranscriptEntry[]
   hasOlder: boolean
   olderCursor: string | null
+}
+
+interface ParsedReplayEvent {
+  event: StoreEvent
+  sourceIndex: number
+  lineIndex: number
+}
+
+function getReplayEventPriority(event: StoreEvent) {
+  switch (event.type) {
+    case "project_opened":
+    case "project_removed":
+      return 0
+    case "chat_created":
+      return 1
+    case "chat_renamed":
+    case "chat_provider_set":
+    case "chat_plan_mode_set":
+      return 2
+    case "message_appended":
+      return 3
+    case "turn_started":
+      return 4
+    case "session_token_set":
+      return 5
+    case "turn_cancelled":
+      return 6
+    case "turn_finished":
+    case "turn_failed":
+      return 7
+    case "chat_read_state_set":
+      return 8
+    case "chat_deleted":
+      return 9
+  }
 }
 
 function encodeHistoryCursor(index: number) {
@@ -166,21 +216,33 @@ export class EventStore {
 
   private async replayLogs() {
     if (this.storageReset) return
-    await this.replayLog<ProjectEvent>(this.projectsLogPath)
+    const replayEvents = [
+      ...await this.loadReplayEvents(this.projectsLogPath, 0),
+      ...await this.loadReplayEvents(this.chatsLogPath, 1),
+      ...await this.loadReplayEvents(this.messagesLogPath, 2),
+      ...await this.loadReplayEvents(this.turnsLogPath, 3),
+    ]
     if (this.storageReset) return
-    await this.replayLog<ChatEvent>(this.chatsLogPath)
-    if (this.storageReset) return
-    await this.replayLog<MessageEvent>(this.messagesLogPath)
-    if (this.storageReset) return
-    await this.replayLog<TurnEvent>(this.turnsLogPath)
+
+    replayEvents
+      .sort((left, right) => (
+        left.event.timestamp - right.event.timestamp
+        || getReplayEventPriority(left.event) - getReplayEventPriority(right.event)
+        || left.sourceIndex - right.sourceIndex
+        || left.lineIndex - right.lineIndex
+      ))
+      .forEach(({ event }) => {
+        this.applyEvent(event)
+      })
   }
 
-  private async replayLog<TEvent extends StoreEvent>(filePath: string) {
+  private async loadReplayEvents(filePath: string, sourceIndex: number): Promise<ParsedReplayEvent[]> {
     const file = Bun.file(filePath)
-    if (!(await file.exists())) return
+    if (!(await file.exists())) return []
     const text = await file.text()
-    if (!text.trim()) return
+    if (!text.trim()) return []
 
+    const parsedEvents: ParsedReplayEvent[] = []
     const lines = text.split("\n")
     let lastNonEmpty = -1
     for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -198,19 +260,25 @@ export class EventStore {
         if (event.v !== STORE_VERSION) {
           console.warn(`${LOG_PREFIX} Resetting local history from incompatible event log`)
           await this.clearStorage()
-          return
+          return []
         }
-        this.applyEvent(event as StoreEvent)
+        parsedEvents.push({
+          event: event as StoreEvent,
+          sourceIndex,
+          lineIndex: index,
+        })
       } catch (error) {
         if (index === lastNonEmpty) {
           console.warn(`${LOG_PREFIX} Ignoring corrupt trailing line in ${path.basename(filePath)}`)
-          return
+          return parsedEvents
         }
         console.warn(`${LOG_PREFIX} Failed to replay ${path.basename(filePath)}, resetting local history:`, error)
         await this.clearStorage()
-        return
+        return []
       }
     }
+
+    return parsedEvents
   }
 
   private applyEvent(event: StoreEvent) {
@@ -237,7 +305,7 @@ export class EventStore {
         break
       }
       case "chat_created": {
-        const chat = {
+      const chat = {
           id: event.chatId,
           projectId: event.projectId,
           title: event.title,
@@ -247,6 +315,7 @@ export class EventStore {
           provider: null,
           planMode: false,
           sessionToken: null,
+          hasMessages: false,
           lastTurnOutcome: null,
         }
         this.state.chatsById.set(chat.id, chat)
@@ -336,6 +405,7 @@ export class EventStore {
   private applyMessageMetadata(chatId: string, entry: TranscriptEntry) {
     const chat = this.state.chatsById.get(chatId)
     if (!chat) return
+    chat.hasMessages = true
     if (entry.kind === "user_prompt") {
       chat.lastMessageAt = entry.createdAt
     }
@@ -459,16 +529,24 @@ export class EventStore {
     now?: number
     maxAgeMs?: number
     activeChatIds?: Iterable<string>
+    protectedChatIds?: Iterable<string>
   }) {
     const now = args?.now ?? Date.now()
     const maxAgeMs = args?.maxAgeMs ?? STALE_EMPTY_CHAT_MAX_AGE_MS
-    const activeChatIds = new Set(args?.activeChatIds ?? [])
+    const protectedChatIds = new Set([
+      ...(args?.activeChatIds ?? []),
+      ...(args?.protectedChatIds ?? []),
+    ])
     const prunedChatIds: string[] = []
 
     for (const chat of this.state.chatsById.values()) {
-      if (chat.deletedAt || activeChatIds.has(chat.id)) continue
+      if (chat.deletedAt || protectedChatIds.has(chat.id)) continue
       if (now - chat.createdAt < maxAgeMs) continue
-      if (this.getMessages(chat.id).length > 0) continue
+      if (chat.hasMessages) continue
+      if (this.getMessages(chat.id).length > 0) {
+        chat.hasMessages = true
+        continue
+      }
 
       const event: ChatEvent = {
         v: STORE_VERSION,
@@ -533,13 +611,27 @@ export class EventStore {
     this.requireChat(chatId)
     const payload = `${JSON.stringify(entry)}\n`
     const transcriptPath = this.transcriptPath(chatId)
+    const queuedAt = performance.now()
     this.writeChain = this.writeChain.then(async () => {
+      const startedAt = performance.now()
+      const queueDelayMs = Number((startedAt - queuedAt).toFixed(1))
       await mkdir(this.transcriptsDir, { recursive: true })
+      const beforeAppendAt = performance.now()
       await appendFile(transcriptPath, payload, "utf8")
+      const afterAppendAt = performance.now()
       this.applyMessageMetadata(chatId, entry)
       if (this.cachedTranscript?.chatId === chatId) {
         this.cachedTranscript.entries.push({ ...entry })
       }
+      logSendToStartingProfile("event_store.append_message", {
+        chatId,
+        entryId: entry._id,
+        kind: entry.kind,
+        payloadBytes: payload.length,
+        queueDelayMs,
+        appendMs: Number((afterAppendAt - beforeAppendAt).toFixed(1)),
+        totalMs: Number((afterAppendAt - queuedAt).toFixed(1)),
+      })
     })
     return this.writeChain
   }

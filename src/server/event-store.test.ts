@@ -191,6 +191,86 @@ describe("EventStore", () => {
     expect(reloaded.getChat(chat.id)?.unread).toBe(true)
   })
 
+  test("preserves read state after a finished turn across restart", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    await store.recordTurnFinished(chat.id)
+    await store.setChatReadState(chat.id, false)
+
+    expect(store.getChat(chat.id)?.unread).toBe(false)
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+
+    expect(reloaded.getChat(chat.id)?.unread).toBe(false)
+  })
+
+  test("preserves read state after a failed turn across restart", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    await store.recordTurnFailed(chat.id, "boom")
+    await store.setChatReadState(chat.id, false)
+
+    expect(store.getChat(chat.id)?.unread).toBe(false)
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+
+    expect(reloaded.getChat(chat.id)?.unread).toBe(false)
+  })
+
+  test("prefers mark-read over turn completion when replay timestamps tie", async () => {
+    const dataDir = await createTempDataDir()
+    const chatsLogPath = join(dataDir, "chats.jsonl")
+    const turnsLogPath = join(dataDir, "turns.jsonl")
+    const projectId = "project-1"
+    const chatId = "chat-1"
+    const timestamp = 100
+
+    await writeFile(chatsLogPath, [
+      JSON.stringify({
+        v: 2,
+        type: "chat_created",
+        timestamp,
+        chatId,
+        projectId,
+        title: "Chat",
+      }),
+      JSON.stringify({
+        v: 2,
+        type: "chat_read_state_set",
+        timestamp,
+        chatId,
+        unread: false,
+      }),
+      "",
+    ].join("\n"), "utf8")
+    await writeFile(turnsLogPath, [
+      JSON.stringify({
+        v: 2,
+        type: "turn_finished",
+        timestamp,
+        chatId,
+      }),
+      "",
+    ].join("\n"), "utf8")
+
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    expect(store.getChat(chatId)?.unread).toBe(false)
+  })
+
   test("loads chats without unread from older snapshots as read", async () => {
     const dataDir = await createTempDataDir()
     const snapshotPath = join(dataDir, "snapshot.json")
@@ -226,14 +306,14 @@ describe("EventStore", () => {
     expect(store.getChat("chat-1")?.unread).toBe(false)
   })
 
-  test("prunes stale empty chats after five minutes", async () => {
+  test("prunes stale empty chats after thirty minutes", async () => {
     const dataDir = await createTempDataDir()
     const store = new EventStore(dataDir)
     await store.initialize()
 
     const project = await store.openProject("/tmp/project")
     const chat = await store.createChat(project.id)
-    const staleNow = chat.createdAt + 5 * 60 * 1000
+    const staleNow = chat.createdAt + 30 * 60 * 1000
 
     const pruned = await store.pruneStaleEmptyChats({ now: staleNow })
 
@@ -248,7 +328,7 @@ describe("EventStore", () => {
 
     const project = await store.openProject("/tmp/project")
     const chat = await store.createChat(project.id)
-    const pruned = await store.pruneStaleEmptyChats({ now: chat.createdAt + 5 * 60 * 1000 - 1 })
+    const pruned = await store.pruneStaleEmptyChats({ now: chat.createdAt + 30 * 60 * 1000 - 1 })
 
     expect(pruned).toEqual([])
     expect(store.getChat(chat.id)?.id).toBe(chat.id)
@@ -263,7 +343,7 @@ describe("EventStore", () => {
     const chat = await store.createChat(project.id)
     await store.appendMessage(chat.id, entry("user_prompt", chat.createdAt + 1, { content: "hello" }))
 
-    const pruned = await store.pruneStaleEmptyChats({ now: chat.createdAt + 5 * 60 * 1000 })
+    const pruned = await store.pruneStaleEmptyChats({ now: chat.createdAt + 30 * 60 * 1000 })
 
     expect(pruned).toEqual([])
     expect(store.getChat(chat.id)?.id).toBe(chat.id)
@@ -278,8 +358,25 @@ describe("EventStore", () => {
     const chat = await store.createChat(project.id)
 
     const pruned = await store.pruneStaleEmptyChats({
-      now: chat.createdAt + 5 * 60 * 1000,
+      now: chat.createdAt + 30 * 60 * 1000,
       activeChatIds: [chat.id],
+    })
+
+    expect(pruned).toEqual([])
+    expect(store.getChat(chat.id)?.id).toBe(chat.id)
+  })
+
+  test("does not prune stale chats with protected draft state", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    const pruned = await store.pruneStaleEmptyChats({
+      now: chat.createdAt + 30 * 60 * 1000,
+      protectedChatIds: [chat.id],
     })
 
     expect(pruned).toEqual([])

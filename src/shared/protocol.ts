@@ -67,11 +67,13 @@ export type ClientCommand =
   | { type: "chat.create"; projectId: string }
   | { type: "chat.rename"; chatId: string; title: string }
   | { type: "chat.delete"; chatId: string }
+  | { type: "chat.setDraftProtection"; chatIds: string[] }
   | { type: "chat.markRead"; chatId: string }
   | {
       type: "chat.send"
       chatId?: string
       projectId?: string
+      clientTraceId?: string
       provider?: AgentProvider
       content: string
       attachments?: ChatAttachment[]
