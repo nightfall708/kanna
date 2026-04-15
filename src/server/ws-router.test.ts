@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { KeybindingsSnapshot, UpdateSnapshot } from "../shared/types"
+import type { KeybindingsSnapshot, LlmProviderSnapshot, UpdateSnapshot } from "../shared/types"
 import { PROTOCOL_VERSION } from "../shared/types"
 import { createEmptyState } from "./events"
 import { createWsRouter } from "./ws-router"
@@ -66,6 +66,17 @@ const DEFAULT_UPDATE_SNAPSHOT: UpdateSnapshot = {
   reloadRequestedAt: null,
 }
 
+const DEFAULT_LLM_PROVIDER_SNAPSHOT: LlmProviderSnapshot = {
+  provider: "openai",
+  apiKey: "",
+  model: "",
+  baseUrl: "",
+  resolvedBaseUrl: "https://api.openai.com/v1",
+  enabled: false,
+  warning: null,
+  filePathDisplay: "~/.kanna/llm-provider.json",
+}
+
 describe("ws-router", () => {
   test("acks system.ping without broadcasting snapshots", async () => {
     const router = createWsRouter({
@@ -105,6 +116,94 @@ describe("ws-router", () => {
         id: "ping-1",
       },
     ])
+  })
+
+  test("reads and writes llm provider settings via commands", async () => {
+    const writes: Array<Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">> = []
+    const router = createWsRouter({
+      store: { state: createEmptyState() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      llmProvider: {
+        read: async () => DEFAULT_LLM_PROVIDER_SNAPSHOT,
+        write: async (value) => {
+          writes.push(value)
+          return {
+            ...DEFAULT_LLM_PROVIDER_SNAPSHOT,
+            ...value,
+            resolvedBaseUrl: value.provider === "custom" ? value.baseUrl : "https://api.openai.com/v1",
+            enabled: Boolean(value.apiKey && value.model),
+          }
+        },
+      },
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "llm-read-1",
+        command: { type: "settings.readLlmProvider" },
+      })
+    )
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "llm-write-1",
+        command: {
+          type: "settings.writeLlmProvider",
+          provider: "custom",
+          apiKey: "test-key",
+          model: "gpt-test",
+          baseUrl: "https://example.com/v1",
+        },
+      })
+    )
+
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "llm-read-1",
+        result: DEFAULT_LLM_PROVIDER_SNAPSHOT,
+      },
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "llm-write-1",
+        result: {
+          ...DEFAULT_LLM_PROVIDER_SNAPSHOT,
+          provider: "custom",
+          apiKey: "test-key",
+          model: "gpt-test",
+          baseUrl: "https://example.com/v1",
+          resolvedBaseUrl: "https://example.com/v1",
+          enabled: true,
+        },
+      },
+    ])
+    expect(writes).toEqual([{
+      provider: "custom",
+      apiKey: "test-key",
+      model: "gpt-test",
+      baseUrl: "https://example.com/v1",
+    }])
   })
 
   test("acks terminal.input without rebroadcasting terminal snapshots", async () => {

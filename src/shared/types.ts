@@ -2,6 +2,9 @@ export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
 export type AgentProvider = "claude" | "codex"
+export type LlmProviderKind = "openai" | "openrouter" | "custom"
+export const DEFAULT_OPENAI_SDK_MODEL = "gpt-5.4-mini"
+export const DEFAULT_OPENROUTER_SDK_MODEL = "moonshotai/kimi-k2.5:nitro"
 
 export type AttachmentKind = "image" | "file"
 
@@ -247,6 +250,24 @@ export interface LocalProjectsSnapshot {
     displayName: string
   }
   projects: LocalProjectSummary[]
+}
+
+export interface LlmProviderFile {
+  provider?: LlmProviderKind
+  apiKey?: string
+  model?: string
+  baseUrl?: string | null
+}
+
+export interface LlmProviderSnapshot {
+  provider: LlmProviderKind
+  apiKey: string
+  model: string
+  baseUrl: string
+  resolvedBaseUrl: string
+  enabled: boolean
+  warning: string | null
+  filePathDisplay: string
 }
 
 export type UpdateStatus =

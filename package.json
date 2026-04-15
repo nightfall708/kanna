@@ -57,6 +57,7 @@
     "cloudflared": "^0.7.1",
     "default-shell": "^2.2.0",
     "file-type": "^22.0.0",
+    "openai": "^6.34.0",
     "react-resizable-panels": "^4.7.3",
     "uqr": "^0.1.3"
   },

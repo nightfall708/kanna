@@ -12,6 +12,7 @@ import { ensureProjectDirectory } from "./paths"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
+import type { LlmProviderSnapshot } from "../shared/types"
 
 const DEFAULT_CHAT_RECENT_LIMIT = 200
 
@@ -96,6 +97,10 @@ interface CreateWsRouterArgs {
   agent: AgentCoordinator
   terminals: TerminalManager
   keybindings: KeybindingsManager
+  llmProvider?: {
+    read: () => Promise<LlmProviderSnapshot>
+    write: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderSnapshot>
+  }
   refreshDiscovery: () => Promise<DiscoveredProject[]>
   getDiscoveredProjects: () => DiscoveredProject[]
   machineDisplayName: string
@@ -139,6 +144,7 @@ export function createWsRouter({
   agent,
   terminals,
   keybindings,
+  llmProvider,
   refreshDiscovery,
   getDiscoveredProjects,
   machineDisplayName,
@@ -166,6 +172,37 @@ export function createWsRouter({
     discardFile: async () => ({ snapshotChanged: false }),
     ignoreFile: async () => ({ snapshotChanged: false }),
     readPatch: async () => ({ patch: "" }),
+  }
+  const resolvedLlmProvider = llmProvider ?? {
+    read: async () => ({
+      provider: "openai" as const,
+      apiKey: "",
+      model: "gpt-5.4-mini",
+      baseUrl: "",
+      resolvedBaseUrl: "https://api.openai.com/v1",
+      enabled: false,
+      warning: null,
+      filePathDisplay: "~/.kanna/llm-provider.json",
+    }),
+    write: async ({ provider, apiKey, model, baseUrl }: {
+      provider: "openai" | "openrouter" | "custom"
+      apiKey: string
+      model: string
+      baseUrl: string
+    }) => ({
+      provider,
+      apiKey,
+      model,
+      baseUrl,
+      resolvedBaseUrl: provider === "openrouter"
+        ? "https://openrouter.ai/api/v1"
+        : provider === "custom"
+          ? baseUrl
+          : "https://api.openai.com/v1",
+      enabled: false,
+      warning: null,
+      filePathDisplay: "~/.kanna/llm-provider.json",
+    }),
   }
 
   function getProtectedChatIds() {
@@ -676,6 +713,20 @@ export function createWsRouter({
         }
         case "settings.writeKeybindings": {
           const snapshot = await keybindings.write(command.bindings)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          return
+        }
+        case "settings.readLlmProvider": {
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: await resolvedLlmProvider.read() })
+          return
+        }
+        case "settings.writeLlmProvider": {
+          const snapshot = await resolvedLlmProvider.write({
+            provider: command.provider,
+            apiKey: command.apiKey,
+            model: command.model,
+            baseUrl: command.baseUrl,
+          })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
         }

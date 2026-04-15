@@ -6,6 +6,7 @@ import type {
   ChatSnapshot,
   DiffCommitMode,
   KeybindingsSnapshot,
+  LlmProviderSnapshot,
   LocalProjectsSnapshot,
   ModelOptions,
   SidebarData,
@@ -57,6 +58,14 @@ export type ClientCommand =
   | { type: "update.install" }
   | { type: "settings.readKeybindings" }
   | { type: "settings.writeKeybindings"; bindings: KeybindingsSnapshot["bindings"] }
+  | { type: "settings.readLlmProvider" }
+  | {
+      type: "settings.writeLlmProvider"
+      provider: LlmProviderSnapshot["provider"]
+      apiKey: string
+      model: string
+      baseUrl: string
+    }
   | {
       type: "system.openExternal"
       localPath: string
@@ -190,6 +199,7 @@ export type ServerSnapshot =
   | { type: "local-projects"; data: LocalProjectsSnapshot }
   | { type: "update"; data: UpdateSnapshot }
   | { type: "keybindings"; data: KeybindingsSnapshot }
+  | { type: "llm-provider"; data: LlmProviderSnapshot }
   | { type: "chat"; data: ChatSnapshot | null }
   | { type: "project-git"; data: ChatDiffSnapshot | null }
   | { type: "terminal"; data: TerminalSnapshot | null }

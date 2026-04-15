@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
 import { APP_NAME } from "../../shared/branding"
-import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
+import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type LlmProviderSnapshot, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
@@ -478,6 +478,7 @@ export interface KannaState {
   chatSnapshot: ChatSnapshot | null
   chatDiffSnapshot: ChatDiffSnapshot | null
   keybindings: KeybindingsSnapshot | null
+  llmProvider: LlmProviderSnapshot | null
   connectionStatus: SocketStatus
   sidebarReady: boolean
   localProjectsReady: boolean
@@ -513,6 +514,8 @@ export interface KannaState {
   handleCreateProject: (project: ProjectRequest) => Promise<void>
   handleCheckForUpdates: (options?: { force?: boolean }) => Promise<void>
   handleInstallUpdate: () => Promise<void>
+  handleReadLlmProvider: () => Promise<void>
+  handleWriteLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<void>
   handleSignOut: () => Promise<void>
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
@@ -555,6 +558,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [hasOlderHistory, setHasOlderHistory] = useState(false)
   const [projectDiffSnapshots, setProjectDiffSnapshots] = useState<Record<string, ChatDiffSnapshot | null>>({})
   const [keybindings, setKeybindings] = useState<KeybindingsSnapshot | null>(null)
+  const [llmProvider, setLlmProvider] = useState<LlmProviderSnapshot | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<SocketStatus>("connecting")
   const [sidebarReady, setSidebarReady] = useState(false)
   const [localProjectsReady, setLocalProjectsReady] = useState(false)
@@ -702,6 +706,40 @@ export function useKannaState(activeChatId: string | null): KannaState {
       setCommandError(null)
     })
   }, [socket])
+
+  const handleReadLlmProvider = useCallback(async () => {
+    try {
+      const snapshot = await socket.command<LlmProviderSnapshot>({ type: "settings.readLlmProvider" })
+      setLlmProvider(snapshot)
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [socket])
+
+  const handleWriteLlmProvider = useCallback(async (
+    value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">
+  ) => {
+    try {
+      const snapshot = await socket.command<LlmProviderSnapshot>({
+        type: "settings.writeLlmProvider",
+        provider: value.provider,
+        apiKey: value.apiKey,
+        model: value.model,
+        baseUrl: value.baseUrl,
+      })
+      setLlmProvider(snapshot)
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+      throw error
+    }
+  }, [socket])
+
+  useEffect(() => {
+    if (connectionStatus !== "connected") return
+    void handleReadLlmProvider()
+  }, [connectionStatus, handleReadLlmProvider])
 
   useEffect(() => {
     function handleFocusSignal() {
@@ -1547,6 +1585,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     chatSnapshot,
     chatDiffSnapshot,
     keybindings,
+    llmProvider,
     connectionStatus,
     sidebarReady,
     localProjectsReady,
@@ -1582,6 +1621,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleCreateProject,
     handleCheckForUpdates,
     handleInstallUpdate,
+    handleReadLlmProvider,
+    handleWriteLlmProvider,
     handleSignOut,
     handleSend,
     handleSteerQueuedMessage,

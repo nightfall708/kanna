@@ -8,6 +8,7 @@ import { AgentCoordinator } from "./agent"
 import { DiffStore } from "./diff-store"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
+import { readLlmProviderSnapshot, writeLlmProviderSnapshot } from "./llm-provider"
 import { getMachineDisplayName } from "./machine-name"
 import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
@@ -120,6 +121,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     agent,
     terminals,
     keybindings,
+    llmProvider: {
+      read: readLlmProviderSnapshot,
+      write: writeLlmProviderSnapshot,
+    },
     refreshDiscovery,
     getDiscoveredProjects: () => discoveredProjects,
     machineDisplayName,
