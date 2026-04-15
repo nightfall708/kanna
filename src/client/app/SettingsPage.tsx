@@ -9,10 +9,11 @@ import {
   Monitor,
   Moon,
   MessageSquareQuote,
-  RefreshCw,
   Settings2,
   Sun,
-  CloudDownload,
+  Download,
+  Cloud,
+  DownloadCloud,
 } from "lucide-react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -135,28 +136,6 @@ export function getKeybindingsSubtitle(filePathDisplay: string) {
   return `Edit global app shortcuts stored in ${filePathDisplay}.`
 }
 
-export function getGeneralHeaderAction(updateSnapshot: UpdateSnapshot | null) {
-  const isChecking = updateSnapshot?.status === "checking"
-  const isUpdating = updateSnapshot?.status === "updating" || updateSnapshot?.status === "restart_pending"
-
-  if (updateSnapshot?.updateAvailable) {
-    return {
-      disabled: isUpdating,
-      kind: "update" as const,
-      label: "Update",
-      variant: "default" as const,
-    }
-  }
-
-  return {
-    disabled: isChecking || isUpdating,
-    kind: "check" as const,
-    label: "Check for updates",
-    spinning: isChecking,
-    variant: "outline" as const,
-  }
-}
-
 export function shouldPreviewChatSoundChange(
   previousValue: string,
   nextValue: string
@@ -227,12 +206,28 @@ export function ChangelogSection({
   releases,
   error,
   onRetry,
+  updateSnapshot,
+  currentVersion,
+  onInstallUpdate,
+  onCheckForUpdates,
 }: {
   status: ChangelogStatus
   releases: GithubRelease[]
   error: string | null
   onRetry: () => void
+  updateSnapshot: UpdateSnapshot | null
+  currentVersion: string
+  onInstallUpdate: () => void
+  onCheckForUpdates: () => void
 }) {
+  const latestVersion = updateSnapshot?.latestVersion ?? releases[0]?.tag_name ?? "Unknown"
+  const currentVersionLabel = updateSnapshot?.currentVersion ?? currentVersion
+  const isChecking = updateSnapshot?.status === "checking"
+  const isUpdating = updateSnapshot?.status === "updating" || updateSnapshot?.status === "restart_pending"
+  const canInstallUpdate = updateSnapshot?.updateAvailable === true
+  const normalizedLatestVersion = latestVersion.replace(/^v/i, "")
+  const normalizedCurrentVersion = currentVersionLabel.replace(/^v/i, "")
+
   return (
     <div className="space-y-4">
       {status === "loading" || status === "idle" ? (
@@ -273,19 +268,39 @@ export function ChangelogSection({
         </div>
       ) : null}
 
-      {status === "success" && releases.length > 0 ? (
-        releases.map((release) => (
-          <article
-            key={release.id}
-            className="rounded-xl border border-border bg-card/30 pl-6 pr-4 py-4"
+      {!canInstallUpdate && status === "success" ? (
+        <div className="flex justify-end">
+          <SettingsHeaderButton
+            variant="outline"
+            onClick={onCheckForUpdates}
+            disabled={isChecking || isUpdating}
           >
+            {isChecking ? "Checking…" : "Check for updates"}
+          </SettingsHeaderButton>
+        </div>
+      ) : null}
+
+      {status === "success" && releases.length > 0 ? (
+        releases.map((release) => {
+          const normalizedTag = release.tag_name.replace(/^v/i, "")
+          const isLatestRelease = normalizedTag === normalizedLatestVersion
+          const isCurrentRelease = normalizedTag === normalizedCurrentVersion
+
+          return (
+            <article
+              key={release.id}
+              className={cn(
+                "rounded-xl border bg-card/30 pl-6 pr-4 py-4",
+                isLatestRelease ? "border-border bg-muted" : "border-border"
+              )}
+            >
 
             <div className="flex flex-row items-center min-w-0 flex-1 gap-3 ">
-              <div className="flex flex-row items-center min-w-0 flex-1 gap-3 ">
+              <div className="flex flex-row items-center min-w-0 flex-1 gap-2 ">
                 <div className="text-lg font-semibold tracking-[-0.2px] text-foreground">
                   {release.name?.trim() || release.tag_name}
                 </div>
-                <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
                   <span>{formatPublishedDate(release.published_at)}</span>
                   {release.prerelease ? (
                     <span className="rounded-full border border-border px-2.5 py-1 uppercase tracking-wide">
@@ -297,27 +312,56 @@ export function ChangelogSection({
               </div>
 
 
-              <div className="flex flex-row items-center justify-end min-w-0 flex-1 gap-3 ">
-                <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <div className="flex flex-row items-center justify-end min-w-0 flex-1 gap-2 ">
+                {/* <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
                   
                   <span className="rounded-full bg-muted px-2.5 py-1 font-mono text-foreground/80">
                     {release.tag_name}
                   </span>
-                </div>
+                </div> */}
 
-                <a
+             
+            
+                  <a
                   href={release.html_url}
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label="View release on GitHub"
                   className={cn(
                     buttonVariants({ variant: "ghost", size: "icon-sm" }),
-                    "h-8 w-8 shrink-0 rounded-md"
+                    "h-8 w-8 shrink-0 rounded-md hover:!bg-transparent hover:border-border/0"
                   )}
                 >
                   <GitHubIcon className="h-4 w-4" />
                 </a>
 
+                  {isCurrentRelease ? (
+                      
+                  <span
+                    className={cn(
+                      "bg-transparent border border-border text-secondary-foreground",
+                      'h-9 rounded-full px-3 text-sm',
+                      "h-auto gap-1.5 px-3 py-1.5"
+                    )}
+                  >
+                    Current
+                  </span>
+                  ) : null}
+                  
+                
+                  { isLatestRelease && canInstallUpdate  ? (
+                  <SettingsHeaderButton
+                    variant="default"
+                    className=""
+                    onClick={onInstallUpdate}
+                    disabled={isUpdating}
+                  >
+                    <div className="flex flex-row items-center justify-center gap-2">
+                    <DownloadCloud className="size-4"/>
+                    {isUpdating ? "Updating…" : "Update"}
+                    </div>
+                  </SettingsHeaderButton>
+                ) : null}
               </div>
             
              
@@ -334,7 +378,8 @@ export function ChangelogSection({
               <div className="mt-5 text-sm text-muted-foreground">No release notes were provided.</div>
             )}
           </article>
-        ))
+          )
+        })
       ) : null}
     </div>
   )
@@ -424,7 +469,6 @@ export function SettingsPage() {
   const [keybindingDrafts, setKeybindingDrafts] = useState<Record<string, string>>({})
   const [keybindingsError, setKeybindingsError] = useState<string | null>(null)
   const updateSnapshot = state.updateSnapshot
-  const generalHeaderAction = getGeneralHeaderAction(updateSnapshot)
   const updateStatusLabel = updateSnapshot?.status === "checking"
     ? "Checking for updates…"
     : updateSnapshot?.status === "updating"
@@ -677,6 +721,14 @@ export function SettingsPage() {
                     <div className="text-lg font-semibold tracking-[-0.2px] text-foreground">
                       {selectedSection.label}
                     </div>
+                    {selectedPage === "general" ? (
+                      <SettingsHeaderButton
+                        variant="outline"
+                        onClick={() => navigate("/settings/changelog")}
+                      >
+                        Check for updates
+                      </SettingsHeaderButton>
+                    ) : null}
                     {selectedPage === "keybindings" ? (
                       <SettingsHeaderButton
                         onClick={() => {
@@ -686,28 +738,6 @@ export function SettingsPage() {
                       >
                         Open in {state.editorLabel}
                       </SettingsHeaderButton>
-                    ) : null}
-                    {selectedPage === "general" ? (
-                      <div className="flex items-center gap-2">
-                        <SettingsHeaderButton
-                          variant={generalHeaderAction.variant}
-                          onClick={() => {
-                            if (generalHeaderAction.kind === "update") {
-                              void state.handleInstallUpdate()
-                              return
-                            }
-                            void state.handleCheckForUpdates({ force: true })
-                          }}
-                          disabled={generalHeaderAction.disabled}
-                          icon={generalHeaderAction.kind === "check"
-                            ? <RefreshCw className={cn("size-3.5", generalHeaderAction.spinning && "animate-spin")} />
-                            : generalHeaderAction.kind === "update"
-                            ? <CloudDownload className={cn("size-3.5")} />
-                            : undefined}
-                        >
-                          {generalHeaderAction.label}
-                        </SettingsHeaderButton>
-                      </div>
                     ) : null}
                   </div>
                   <div className="mt-1 text-sm text-muted-foreground">
@@ -1063,6 +1093,14 @@ export function SettingsPage() {
                     releases={releases}
                     error={changelogError}
                     onRetry={retryChangelog}
+                    updateSnapshot={updateSnapshot}
+                    currentVersion={appVersion}
+                    onInstallUpdate={() => {
+                      void state.handleInstallUpdate()
+                    }}
+                    onCheckForUpdates={() => {
+                      void state.handleCheckForUpdates({ force: true })
+                    }}
                   />
                 )}
               </div>

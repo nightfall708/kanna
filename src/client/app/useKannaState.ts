@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
+import { useShallow } from "zustand/react/shallow"
 import { APP_NAME } from "../../shared/branding"
-import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
+import { PROVIDERS, type AgentProvider, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
@@ -49,6 +50,41 @@ function sameHistory(left: ChatSnapshot["history"] | null | undefined, right: Ch
   return left.hasOlder === right.hasOlder
     && left.olderCursor === right.olderCursor
     && left.recentLimit === right.recentLimit
+}
+
+function sameQueuedMessage(left: QueuedChatMessage, right: QueuedChatMessage) {
+  return left.id === right.id
+    && left.content === right.content
+    && left.createdAt === right.createdAt
+    && left.provider === right.provider
+    && left.model === right.model
+    && left.planMode === right.planMode
+    && JSON.stringify(left.modelOptions) === JSON.stringify(right.modelOptions)
+    && sameAttachmentArray(left.attachments, right.attachments)
+}
+
+function sameAttachmentArray(left: ChatAttachment[], right: ChatAttachment[]) {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+  return left.every((attachment, index) => {
+    const other = right[index]
+    return Boolean(other)
+      && attachment.id === other.id
+      && attachment.kind === other.kind
+      && attachment.displayName === other.displayName
+      && attachment.absolutePath === other.absolutePath
+      && attachment.relativePath === other.relativePath
+      && attachment.contentUrl === other.contentUrl
+      && attachment.mimeType === other.mimeType
+      && attachment.size === other.size
+  })
+}
+
+function sameQueuedMessages(left: ChatSnapshot["queuedMessages"] | null | undefined, right: ChatSnapshot["queuedMessages"] | null | undefined) {
+  if (left === right) return true
+  if (!left || !right) return false
+  if (left.length !== right.length) return false
+  return left.every((message, index) => sameQueuedMessage(message, right[index]!))
 }
 
 function sameDiffs(left: ChatDiffSnapshot | null | undefined, right: ChatDiffSnapshot | null | undefined) {
@@ -111,6 +147,7 @@ function sameChatSnapshotCore(left: ChatSnapshot | null, right: ChatSnapshot | n
   if (left === right) return true
   if (!left || !right) return false
   return sameRuntime(left.runtime, right.runtime)
+    && sameQueuedMessages(left.queuedMessages, right.queuedMessages)
     && sameTranscriptEntries(left.messages, right.messages)
     && sameHistory(left.history, right.history)
     && sameProviders(left.availableProviders, right.availableProviders)
@@ -329,31 +366,64 @@ export function shouldAutoFollowTranscript(distanceFromBottom: number) {
 export function getUiUpdateRestartReconnectAction(
   phase: string | null,
   connectionStatus: SocketStatus
-): "none" | "awaiting_reconnect" | "navigate_changelog" {
+): "none" | "awaiting_server_ready" {
   if (phase === "awaiting_disconnect" && connectionStatus === "disconnected") {
-    return "awaiting_reconnect"
-  }
-
-  if (phase === "awaiting_reconnect" && connectionStatus === "connected") {
-    return "navigate_changelog"
+    return "awaiting_server_ready"
   }
 
   return "none"
 }
 
-const FIXED_TRANSCRIPT_PADDING_BOTTOM = 140
+export const TRANSCRIPT_PADDING_BOTTOM_OFFSET = 30
 const UI_UPDATE_RESTART_STORAGE_KEY = "kanna:ui-update-restart"
+const UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY = "kanna:last-update-reload-request"
+
+export function getTranscriptPaddingBottom(inputHeight: number) {
+  return inputHeight + TRANSCRIPT_PADDING_BOTTOM_OFFSET
+}
+
+export function getNextMeasuredInputHeight(previousHeight: number, measuredHeight: number) {
+  return measuredHeight > 0 ? measuredHeight : previousHeight
+}
 
 function getUiUpdateRestartPhase() {
   return window.sessionStorage.getItem(UI_UPDATE_RESTART_STORAGE_KEY)
 }
 
-function setUiUpdateRestartPhase(phase: "awaiting_disconnect" | "awaiting_reconnect") {
+function setUiUpdateRestartPhase(phase: "awaiting_disconnect" | "awaiting_server_ready") {
   window.sessionStorage.setItem(UI_UPDATE_RESTART_STORAGE_KEY, phase)
 }
 
 function clearUiUpdateRestartPhase() {
   window.sessionStorage.removeItem(UI_UPDATE_RESTART_STORAGE_KEY)
+}
+
+export function shouldHandleUiUpdateReloadRequest(
+  reloadRequestedAt: number | null | undefined,
+  lastHandledReloadRequest: string | null
+) {
+  if (!reloadRequestedAt) return false
+  return String(reloadRequestedAt) !== lastHandledReloadRequest
+}
+
+function getLastHandledUiUpdateReloadRequest() {
+  return window.sessionStorage.getItem(UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY)
+}
+
+function setLastHandledUiUpdateReloadRequest(reloadRequestedAt: number) {
+  window.sessionStorage.setItem(UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY, String(reloadRequestedAt))
+}
+
+async function isServerReady() {
+  const response = await fetch("/health", {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+    },
+  })
+
+  return response.ok
 }
 
 export interface ProjectRequest {
@@ -415,9 +485,8 @@ export interface KannaState {
   startingLocalPath: string | null
   sidebarOpen: boolean
   sidebarCollapsed: boolean
-  scrollRef: RefObject<HTMLDivElement | null>
-  inputRef: RefObject<HTMLDivElement | null>
   messages: ReturnType<typeof processTranscriptMessages>
+  queuedMessages: QueuedChatMessage[]
   previousPrompt: string | null
   latestToolIds: ReturnType<typeof getLatestToolIds>
   runtime: ChatSnapshot["runtime"] | null
@@ -428,8 +497,6 @@ export interface KannaState {
   isProcessing: boolean
   canCancel: boolean
   isDraining: boolean
-  transcriptPaddingBottom: number
-  showScrollButton: boolean
   navbarLocalPath?: string
   editorLabel: string
   hasSelectedProject: boolean
@@ -440,8 +507,6 @@ export interface KannaState {
   expandSidebar: () => void
   openAddProjectModal: () => void
   closeAddProjectModal: () => void
-  updateScrollState: () => void
-  scrollToBottom: () => void
   loadOlderHistory: () => Promise<void>
   handleCreateChat: (projectId: string) => Promise<void>
   handleOpenLocalProject: (localPath: string) => Promise<void>
@@ -449,6 +514,8 @@ export interface KannaState {
   handleCheckForUpdates: (options?: { force?: boolean }) => Promise<void>
   handleInstallUpdate: () => Promise<void>
   handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
+  handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
+  handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleCancel: () => Promise<void>
   handleStopDraining: () => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
@@ -494,8 +561,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [addProjectModalOpen, setAddProjectModalOpen] = useState(false)
-  const [inputHeight, setInputHeight] = useState(148)
-  const [isAtBottom, setIsAtBottom] = useState(true)
   const [commandError, setCommandError] = useState<string | null>(null)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
@@ -503,12 +568,9 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [optimisticProcessing, setOptimisticProcessing] = useState<OptimisticProcessingState | null>(null)
   const [focusEpoch, setFocusEpoch] = useState(0)
   const sendToStartingProfilesRef = useRef<Map<string, SendToStartingTrace>>(new Map())
-  const draftByChatId = useChatInputStore((state) => state.drafts)
-  const attachmentDraftsByChatId = useChatInputStore((state) => state.attachmentDrafts)
-  const draftChatIds = useMemo(() => Object.keys(draftByChatId), [draftByChatId])
-  const attachmentDraftChatIds = useMemo(
-    () => Object.keys(attachmentDraftsByChatId),
-    [attachmentDraftsByChatId]
+  const draftChatIds = useChatInputStore(useShallow((state) => Object.keys(state.drafts).sort()))
+  const attachmentDraftChatIds = useChatInputStore(
+    useShallow((state) => Object.keys(state.attachmentDrafts).sort())
   )
   const chatSubscriptionDebugRef = useRef(0)
   const lastStartingRenderedTraceIdRef = useRef<string | null>(null)
@@ -517,11 +579,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
     diffs: null,
   })
   const editorLabel = getEditorPresetLabel(useTerminalPreferencesStore((store) => store.editorPreset))
-
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLDivElement>(null)
-  const initialScrollCompletedRef = useRef(false)
-  const initialScrollFrameRef = useRef<number | null>(null)
 
   useEffect(() => socket.onStatus(setConnectionStatus), [socket])
 
@@ -565,18 +622,62 @@ export function useKannaState(activeChatId: string | null): KannaState {
   }, [connectionStatus, socket])
 
   useEffect(() => {
-    const phase = getUiUpdateRestartPhase()
-    const reconnectAction = getUiUpdateRestartReconnectAction(phase, connectionStatus)
-    if (reconnectAction === "awaiting_reconnect") {
-      setUiUpdateRestartPhase("awaiting_reconnect")
+    const reloadRequestedAt = updateSnapshot?.reloadRequestedAt
+    if (!shouldHandleUiUpdateReloadRequest(reloadRequestedAt, getLastHandledUiUpdateReloadRequest())) {
+      return
+    }
+    if (!reloadRequestedAt) {
       return
     }
 
-    if (reconnectAction === "navigate_changelog") {
-      clearUiUpdateRestartPhase()
-      navigate("/settings/changelog", { replace: true })
+    setLastHandledUiUpdateReloadRequest(reloadRequestedAt)
+    setUiUpdateRestartPhase("awaiting_disconnect")
+  }, [updateSnapshot?.reloadRequestedAt])
+
+  useEffect(() => {
+    const phase = getUiUpdateRestartPhase()
+    const reconnectAction = getUiUpdateRestartReconnectAction(phase, connectionStatus)
+    if (reconnectAction === "awaiting_server_ready") {
+      setUiUpdateRestartPhase("awaiting_server_ready")
+      return
     }
-  }, [connectionStatus, navigate])
+  }, [connectionStatus])
+
+  useEffect(() => {
+    if (getUiUpdateRestartPhase() !== "awaiting_server_ready") {
+      return
+    }
+
+    let cancelled = false
+    let timeoutId: number | null = null
+
+    const pollServerReadiness = async () => {
+      try {
+        if (await isServerReady()) {
+          if (cancelled) return
+          clearUiUpdateRestartPhase()
+          window.location.reload()
+          return
+        }
+      } catch {
+        // Keep polling while the process restarts.
+      }
+
+      if (cancelled) return
+      timeoutId = window.setTimeout(() => {
+        void pollServerReadiness()
+      }, 500)
+    }
+
+    void pollServerReadiness()
+
+    return () => {
+      cancelled = true
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId)
+      }
+    }
+  }, [connectionStatus])
 
   useEffect(() => {
     function handleWindowFocus() {
@@ -719,37 +820,11 @@ export function useKannaState(activeChatId: string | null): KannaState {
   }, [activeChatId, focusEpoch, sidebarData.projectGroups, sidebarReady, socket])
 
   useEffect(() => {
-    initialScrollCompletedRef.current = false
-    if (initialScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(initialScrollFrameRef.current)
-      initialScrollFrameRef.current = null
-    }
-    setIsAtBottom(true)
     setOlderHistoryEntries([])
     setIsHistoryLoading(false)
     setHistoryCursor(null)
     setHasOlderHistory(false)
   }, [activeChatId])
-
-  useEffect(() => {
-    return () => {
-      if (initialScrollFrameRef.current !== null) {
-        window.cancelAnimationFrame(initialScrollFrameRef.current)
-      }
-    }
-  }, [])
-
-  useLayoutEffect(() => {
-    const element = inputRef.current
-    if (!element) return
-
-    const observer = new ResizeObserver(() => {
-      setInputHeight(element.getBoundingClientRect().height)
-    })
-    observer.observe(element)
-    setInputHeight(element.getBoundingClientRect().height)
-    return () => observer.disconnect()
-  }, [])
 
   const activeChatSnapshot = useMemo(
     () => getActiveChatSnapshot(chatSnapshot, activeChatId),
@@ -831,6 +906,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const previousPrompt = useMemo(() => getPreviousPrompt(messages), [messages])
   const latestToolIds = useMemo(() => getLatestToolIds(messages), [messages])
   const runtime = activeChatSnapshot?.runtime ?? null
+  const queuedMessages = activeChatSnapshot?.queuedMessages ?? []
   const optimisticRuntimeStatus = optimisticProcessing?.scopeId === optimisticScopeId && (!runtime || runtime.status === "idle")
     ? "starting"
     : null
@@ -839,8 +915,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const isProcessing = isProcessingStatus(effectiveRuntimeStatus ?? undefined)
   const canCancel = canCancelStatus(effectiveRuntimeStatus ?? undefined)
   const isDraining = runtime?.isDraining ?? false
-  const transcriptPaddingBottom = FIXED_TRANSCRIPT_PADDING_BOTTOM
-  const showScrollButton = !isAtBottom && messages.length > 0
   const fallbackLocalProjectPath = localProjects?.projects[0]?.localPath ?? null
   const navbarLocalPath =
     runtime?.localPath
@@ -949,56 +1023,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
       return reconciled
     })
   }, [optimisticScopeId, serverTranscriptEntries])
-
-  useLayoutEffect(() => {
-    if (initialScrollCompletedRef.current) return
-
-    const element = scrollRef.current
-    if (!element) return
-    if (activeChatId && !runtime) return
-
-    element.scrollTo({ top: element.scrollHeight, behavior: "auto" })
-    if (initialScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(initialScrollFrameRef.current)
-    }
-    initialScrollFrameRef.current = window.requestAnimationFrame(() => {
-      const currentElement = scrollRef.current
-      if (!currentElement) return
-      currentElement.scrollTo({ top: currentElement.scrollHeight, behavior: "auto" })
-      initialScrollFrameRef.current = null
-    })
-    initialScrollCompletedRef.current = true
-  }, [activeChatId, inputHeight, messages.length, runtime])
-
-  useEffect(() => {
-    if (!initialScrollCompletedRef.current || !isAtBottom) return
-
-    const frameId = window.requestAnimationFrame(() => {
-      const element = scrollRef.current
-      if (!element || !isAtBottom) return
-      element.scrollTo({ top: element.scrollHeight, behavior: "auto" })
-    })
-
-    return () => window.cancelAnimationFrame(frameId)
-  }, [activeChatId, inputHeight, isAtBottom, messages.length, runtime?.status])
-
-  const updateScrollState = useCallback(() => {
-    const element = scrollRef.current
-    if (!element) return
-    const distance = element.scrollHeight - element.scrollTop - element.clientHeight
-    setIsAtBottom(shouldAutoFollowTranscript(distance))
-  }, [])
-
-  const enableAutoFollow = useCallback((behavior: ScrollBehavior) => {
-    const element = scrollRef.current
-    setIsAtBottom(true)
-    if (!element) return
-    element.scrollTo({ top: element.scrollHeight, behavior })
-  }, [])
-
-  const scrollToBottom = useCallback(() => {
-    enableAutoFollow("smooth")
-  }, [enableAutoFollow])
 
   const loadOlderHistory = useCallback(async () => {
     if (!activeChatId || !historyCursor || isHistoryLoading || !hasOlderHistory) {
@@ -1132,6 +1156,26 @@ export function useKannaState(activeChatId: string | null): KannaState {
     options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: import("../../shared/types").ChatAttachment[] }
   ) => {
     const attachments = options?.attachments ?? []
+    if (activeChatId && isProcessing) {
+      try {
+        await socket.command<{ queuedMessageId: string }>({
+          type: "message.enqueue",
+          chatId: activeChatId,
+          content,
+          attachments,
+          provider: options?.provider,
+          model: options?.model,
+          modelOptions: options?.modelOptions,
+          planMode: options?.planMode,
+        })
+        setCommandError(null)
+        return
+      } catch (error) {
+        setCommandError(error instanceof Error ? error.message : String(error))
+        throw error
+      }
+    }
+
     const optimisticId = generateUUID()
     const clientTraceId = generateUUID()
     const signature = getUserPromptSignature(content, attachments)
@@ -1192,8 +1236,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
         throw new Error("Open a project first")
       }
 
-      enableAutoFollow("auto")
-
       const result = await socket.command<{ chatId?: string }>({
         type: "chat.send",
         chatId: activeChatId ?? undefined,
@@ -1243,7 +1285,35 @@ export function useKannaState(activeChatId: string | null): KannaState {
       setCommandError(error instanceof Error ? error.message : String(error))
       throw error
     }
-  }, [activeChatId, fallbackLocalProjectPath, navigate, optimisticUserPrompts, selectedProjectId, serverTranscriptEntries, sidebarData.projectGroups, socket])
+  }, [activeChatId, fallbackLocalProjectPath, isProcessing, navigate, optimisticUserPrompts, selectedProjectId, serverTranscriptEntries, sidebarData.projectGroups, socket])
+
+  const handleSteerQueuedMessage = useCallback(async (queuedMessageId: string) => {
+    if (!activeChatId) return
+    try {
+      await socket.command({
+        type: "message.steer",
+        chatId: activeChatId,
+        queuedMessageId,
+      })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [activeChatId, socket])
+
+  const handleRemoveQueuedMessage = useCallback(async (queuedMessageId: string) => {
+    if (!activeChatId) return
+    try {
+      await socket.command({
+        type: "message.dequeue",
+        chatId: activeChatId,
+        queuedMessageId,
+      })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [activeChatId, socket])
 
   const handleCancel = useCallback(async () => {
     if (!activeChatId) return
@@ -1453,9 +1523,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
     startingLocalPath,
     sidebarOpen,
     sidebarCollapsed,
-    scrollRef,
-    inputRef,
     messages,
+    queuedMessages,
     previousPrompt,
     latestToolIds,
     runtime,
@@ -1466,8 +1535,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
     isProcessing,
     canCancel,
     isDraining,
-    transcriptPaddingBottom,
-    showScrollButton,
     navbarLocalPath,
     editorLabel,
     hasSelectedProject,
@@ -1478,8 +1545,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
     expandSidebar,
     openAddProjectModal,
     closeAddProjectModal,
-    updateScrollState,
-    scrollToBottom,
     loadOlderHistory,
     handleCreateChat,
     handleOpenLocalProject,
@@ -1487,6 +1552,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleCheckForUpdates,
     handleInstallUpdate,
     handleSend,
+    handleSteerQueuedMessage,
+    handleRemoveQueuedMessage,
     handleCancel,
     handleStopDraining,
     handleDeleteChat,

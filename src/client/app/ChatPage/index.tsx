@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode, type RefObject } from "react"
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type DragEvent, type ReactNode, type RefObject } from "react"
+import { type LegendListRef } from "@legendapp/list/react"
 import type { GroupImperativeHandle } from "react-resizable-panels"
 import { useOutletContext } from "react-router-dom"
 import type { ChatInputHandle } from "../../components/chat-ui/ChatInput"
@@ -25,6 +26,7 @@ import { useRightSidebarToggleAnimation } from "../useRightSidebarToggleAnimatio
 import { useStickyChatFocus } from "../useStickyChatFocus"
 import { useTerminalToggleAnimation } from "../useTerminalToggleAnimation"
 import type { KannaState } from "../useKannaState"
+import { getNextMeasuredInputHeight, getTranscriptPaddingBottom } from "../useKannaState"
 import { ChatInputDock } from "./ChatInputDock"
 import { ChatTranscriptViewport } from "./ChatTranscriptViewport"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
@@ -142,6 +144,57 @@ function useLayoutWidth(ref: RefObject<HTMLDivElement | null>) {
   return layoutWidth
 }
 
+function useTranscriptPaddingBottom() {
+  const inputRef = useRef<HTMLDivElement>(null)
+  const [inputHeight, setInputHeight] = useState(148)
+
+  const syncInputHeight = useCallback(() => {
+    const element = inputRef.current
+    if (!element) return
+    const measuredHeight = element.getBoundingClientRect().height
+    setInputHeight((current) => getNextMeasuredInputHeight(current, measuredHeight))
+  }, [])
+
+  useLayoutEffect(() => {
+    const element = inputRef.current
+    if (!element) return
+
+    const observer = new ResizeObserver(() => {
+      syncInputHeight()
+    })
+    observer.observe(element)
+    syncInputHeight()
+    return () => observer.disconnect()
+  }, [syncInputHeight])
+
+  return {
+    inputRef,
+    syncInputHeight,
+    transcriptPaddingBottom: getTranscriptPaddingBottom(inputHeight),
+  }
+}
+
+const MOBILE_RIGHT_SIDEBAR_BREAKPOINT_PX = 768
+
+export function shouldUseMobileRightSidebarOverlay(viewportWidth: number) {
+  return viewportWidth > 0 && viewportWidth < MOBILE_RIGHT_SIDEBAR_BREAKPOINT_PX
+}
+
+function useMobileRightSidebarOverlayEnabled() {
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 0 : window.innerWidth))
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+
+    const updateViewportWidth = () => setViewportWidth(window.innerWidth)
+    updateViewportWidth()
+    window.addEventListener("resize", updateViewportWidth)
+    return () => window.removeEventListener("resize", updateViewportWidth)
+  }, [])
+
+  return shouldUseMobileRightSidebarOverlay(viewportWidth)
+}
+
 function useFixedTerminalHeight(args: {
   layoutRootRef: RefObject<HTMLDivElement | null>
   shouldRenderTerminalLayout: boolean
@@ -198,6 +251,106 @@ interface ChatWorkspaceProps {
   onTerminalLayout: ReturnType<typeof useTerminalLayoutStore.getState>["setTerminalSizes"]
   onLayoutChanged: (layout: Record<string, number>) => void
 }
+
+type ChatSidebarContentProps = ComponentProps<typeof RightSidebar>
+
+const ChatSidebarContent = memo(function ChatSidebarContent(props: ChatSidebarContentProps) {
+  return (
+    <RightSidebar
+      {...props}
+      diffs={props.diffs ?? EMPTY_DIFF_SNAPSHOT}
+    />
+  )
+})
+
+interface DesktopSidebarPaneProps {
+  showRightSidebar: boolean
+  sizePercent: number
+  sidebarPanelRef: RefObject<HTMLDivElement | null>
+  sidebarVisualRef: RefObject<HTMLDivElement | null>
+  content: ReactNode
+}
+
+const DesktopSidebarPane = memo(function DesktopSidebarPane({
+  showRightSidebar,
+  sizePercent,
+  sidebarPanelRef,
+  sidebarVisualRef,
+  content,
+}: DesktopSidebarPaneProps) {
+  return (
+    <ResizablePanel
+      id="rightSidebar"
+      defaultSize={`${sizePercent}%`}
+      className="min-h-0 min-w-0"
+      elementRef={sidebarPanelRef}
+    >
+      <div
+        ref={sidebarVisualRef}
+        className="h-full min-h-0 overflow-hidden"
+        data-right-sidebar-open={showRightSidebar ? "true" : "false"}
+        data-right-sidebar-animated="false"
+        data-right-sidebar-visual
+        style={{
+          "--terminal-toggle-duration": `${TERMINAL_TOGGLE_ANIMATION_DURATION_MS}ms`,
+        } as CSSProperties}
+      >
+        {content}
+      </div>
+    </ResizablePanel>
+  )
+})
+
+interface MobileSidebarPaneProps {
+  projectId: string | null
+  showRightSidebar: boolean
+  sidebarVisualRef: RefObject<HTMLDivElement | null>
+  onClose: () => void
+  content: ReactNode
+}
+
+const MobileSidebarPane = memo(function MobileSidebarPane({
+  projectId,
+  showRightSidebar,
+  sidebarVisualRef,
+  onClose,
+  content,
+}: MobileSidebarPaneProps) {
+  if (!projectId) {
+    return null
+  }
+
+  return (
+    <div
+      className={cn(
+        "absolute inset-0 z-40 transition-opacity duration-300 ease-out",
+        showRightSidebar ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
+      )}
+      aria-hidden={showRightSidebar ? undefined : true}
+      data-mobile-right-sidebar-overlay
+    >
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/45 backdrop-blur-[1px]"
+        aria-label="Close changes sidebar"
+        onClick={onClose}
+      />
+      <div
+        ref={sidebarVisualRef}
+        className={cn(
+          "absolute inset-y-0 right-0 flex w-[min(92vw,30rem)] max-w-full min-h-0 flex-col overflow-hidden border-l border-border bg-background shadow-2xl transition-transform duration-300 ease-out",
+          "pt-[max(env(safe-area-inset-top),0px)] pb-[max(env(safe-area-inset-bottom),0px)]",
+          showRightSidebar ? "translate-x-0" : "translate-x-full",
+        )}
+        data-right-sidebar-open={showRightSidebar ? "true" : "false"}
+        data-right-sidebar-animated="false"
+        data-right-sidebar-visual
+      >
+        {content}
+      </div>
+    </div>
+  )
+})
 
 function ChatWorkspace({
   chatCard,
@@ -284,9 +437,14 @@ export function ChatPage() {
   const state = useOutletContext<KannaState>()
   const dialog = useAppDialog()
   const layoutRootRef = useRef<HTMLDivElement>(null)
+  const transcriptListRef = useRef<LegendListRef | null>(null)
+  const isAtEndRef = useRef(true)
+  const showScrollTimeoutRef = useRef<number | null>(null)
   const chatCardRef = useRef<HTMLDivElement>(null)
   const chatInputElementRef = useRef<HTMLTextAreaElement>(null)
   const chatInputRef = useRef<ChatInputHandle | null>(null)
+  const { inputRef, syncInputHeight, transcriptPaddingBottom } = useTranscriptPaddingBottom()
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const showEmptyState = state.messages.length === 0 && state.runtime?.title === "New Chat"
   const projectId = state.activeProjectId
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
@@ -321,6 +479,8 @@ export function ChatPage() {
   const shouldRenderTerminalLayout = Boolean(projectId && hasTerminals)
   const showRightSidebar = Boolean(projectId && rightSidebarVisibility.isVisible)
   const shouldRenderRightSidebarLayout = Boolean(projectId)
+  const isMobileRightSidebarOverlay = useMobileRightSidebarOverlayEnabled()
+  const shouldRenderDesktopRightSidebarLayout = shouldRenderRightSidebarLayout && !isMobileRightSidebarOverlay
   const layoutWidth = useLayoutWidth(layoutRootRef)
   const clampRightSidebarSize = useCallback((size: number, widthOverride?: number) => {
     if (!Number.isFinite(size)) {
@@ -359,7 +519,7 @@ export function ChatPage() {
     sidebarVisualRef,
   } = useRightSidebarToggleAnimation({
     projectId,
-    shouldRenderRightSidebarLayout,
+    shouldRenderRightSidebarLayout: shouldRenderDesktopRightSidebarLayout,
     showRightSidebar,
     rightSidebarSize: effectiveRightSidebarSize,
   })
@@ -501,6 +661,61 @@ export function ChatPage() {
     removeTerminal(currentProjectId, terminalId)
   }, [removeTerminal, state.socket])
 
+  const clearShowScrollTimeout = useCallback(() => {
+    if (showScrollTimeoutRef.current !== null) {
+      window.clearTimeout(showScrollTimeoutRef.current)
+      showScrollTimeoutRef.current = null
+    }
+  }, [])
+
+  const onIsAtEndChange = useCallback((isAtEnd: boolean) => {
+    if (isAtEndRef.current === isAtEnd) return
+    isAtEndRef.current = isAtEnd
+    if (isAtEnd) {
+      clearShowScrollTimeout()
+      setShowScrollToBottom(false)
+      return
+    }
+
+    clearShowScrollTimeout()
+    showScrollTimeoutRef.current = window.setTimeout(() => {
+      setShowScrollToBottom(true)
+      showScrollTimeoutRef.current = null
+    }, 150)
+  }, [clearShowScrollTimeout])
+
+  const syncIsAtEndFromList = useCallback(() => {
+    const state = transcriptListRef.current?.getState?.()
+    if (state) {
+      onIsAtEndChange(state.isAtEnd)
+    }
+  }, [onIsAtEndChange])
+
+  const scrollToTranscriptEnd = useCallback((animated = true) => {
+    isAtEndRef.current = true
+    clearShowScrollTimeout()
+    setShowScrollToBottom(false)
+    void transcriptListRef.current?.scrollToEnd?.({ animated })
+  }, [clearShowScrollTimeout])
+
+  const handleChatSubmit = useCallback(async (
+    content: string,
+    options?: Parameters<typeof state.handleSend>[1],
+  ) => {
+    scrollToTranscriptEnd(false)
+    await state.handleSend(content, options)
+  }, [scrollToTranscriptEnd, state])
+
+  useEffect(() => {
+    return () => clearShowScrollTimeout()
+  }, [clearShowScrollTimeout])
+
+  useEffect(() => {
+    isAtEndRef.current = true
+    clearShowScrollTimeout()
+    setShowScrollToBottom(false)
+  }, [clearShowScrollTimeout, state.activeChatId])
+
   useEffect(() => {
     function handleGlobalKeydown(event: KeyboardEvent) {
       if (!projectId) return
@@ -540,29 +755,80 @@ export function ChatPage() {
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {
-      state.updateScrollState()
+      syncIsAtEndFromList()
     })
     const timeoutId = window.setTimeout(() => {
-      state.updateScrollState()
+      syncIsAtEndFromList()
     }, TERMINAL_TOGGLE_ANIMATION_DURATION_MS)
 
     return () => {
       window.cancelAnimationFrame(frameId)
       window.clearTimeout(timeoutId)
     }
-  }, [shouldRenderTerminalLayout, showTerminalPane, state.updateScrollState])
+  }, [shouldRenderTerminalLayout, showTerminalPane, syncIsAtEndFromList])
 
   useEffect(() => {
     function handleResize() {
-      state.updateScrollState()
+      syncIsAtEndFromList()
     }
 
     window.addEventListener("resize", handleResize)
     return () => window.removeEventListener("resize", handleResize)
-  }, [state.updateScrollState])
+  }, [syncIsAtEndFromList])
+
+  useEffect(() => {
+    if (!showRightSidebar || !isMobileRightSidebarOverlay) return
+
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [isMobileRightSidebarOverlay, showRightSidebar])
+
+  useEffect(() => {
+    if (!showRightSidebar || !isMobileRightSidebarOverlay) return
+
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return
+      event.preventDefault()
+      handleCloseRightSidebar()
+    }
+
+    window.addEventListener("keydown", handleEscape)
+    return () => window.removeEventListener("keydown", handleEscape)
+  }, [handleCloseRightSidebar, isMobileRightSidebarOverlay, showRightSidebar])
+
+  useEffect(() => {
+    if (!isAtEndRef.current) {
+      return
+    }
+
+    let secondFrame: number | null = null
+    const firstFrame = window.requestAnimationFrame(() => {
+      void transcriptListRef.current?.scrollToEnd?.({ animated: false })
+      secondFrame = window.requestAnimationFrame(() => {
+        void transcriptListRef.current?.scrollToEnd?.({ animated: false })
+      })
+    })
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame)
+      if (secondFrame !== null) {
+        window.cancelAnimationFrame(secondFrame)
+      }
+    }
+  }, [
+    state.commandError,
+    state.isDraining,
+    state.isProcessing,
+    state.messages.length,
+    state.queuedMessages.length,
+    state.runtimeStatus,
+  ])
 
   useLayoutEffect(() => {
-    if (!showRightSidebar || layoutWidth <= 0 || isRightSidebarAnimating.current) {
+    if (!showRightSidebar || isMobileRightSidebarOverlay || layoutWidth <= 0 || isRightSidebarAnimating.current) {
       return
     }
 
@@ -584,6 +850,7 @@ export function ChatPage() {
     layoutWidth,
     rightSidebarPanelGroupRef,
     showRightSidebar,
+    isMobileRightSidebarOverlay,
   ])
 
   const chatCard = (
@@ -595,7 +862,7 @@ export function ChatPage() {
       onDragLeave={handleTranscriptDragLeave}
       onDrop={handleTranscriptDrop}
     >
-      <CardContent className="flex flex-1 min-h-0 flex-col p-0 overflow-hidden relative">
+      <CardContent className="flex flex-1 min-h-0 flex-col overflow-hidden p-0 relative">
         <ChatNavbar
           sidebarCollapsed={state.sidebarCollapsed}
           onOpenSidebar={state.openSidebar}
@@ -618,9 +885,10 @@ export function ChatPage() {
         />
         <ChatTranscriptViewport
           activeChatId={state.activeChatId}
-          scrollRef={state.scrollRef}
+          listRef={transcriptListRef}
           messages={state.messages}
-          transcriptPaddingBottom={state.transcriptPaddingBottom}
+          queuedMessages={state.queuedMessages}
+          transcriptPaddingBottom={transcriptPaddingBottom}
           localPath={state.runtime?.localPath}
           latestToolIds={state.latestToolIds}
           isHistoryLoading={state.isHistoryLoading}
@@ -631,12 +899,14 @@ export function ChatPage() {
           commandError={state.commandError}
           loadOlderHistory={state.loadOlderHistory}
           onStopDraining={state.handleStopDraining}
+          onSteerQueuedMessage={state.handleSteerQueuedMessage}
+          onRemoveQueuedMessage={state.handleRemoveQueuedMessage}
           onOpenLocalLink={state.handleOpenLocalLink}
           onAskUserQuestionSubmit={state.handleAskUserQuestion}
           onExitPlanModeConfirm={state.handleExitPlanMode}
-          showScrollButton={state.showScrollButton}
-          onScrollChange={state.updateScrollState}
-          scrollToBottom={state.scrollToBottom}
+          showScrollButton={showScrollToBottom && state.messages.length > 0}
+          onIsAtEndChange={onIsAtEndChange}
+          scrollToBottom={() => scrollToTranscriptEnd(true)}
           typedEmptyStateText={typedEmptyStateText}
           isEmptyStateTypingComplete={isEmptyStateTypingComplete}
           isPageFileDragActive={isPageFileDragActive}
@@ -645,7 +915,8 @@ export function ChatPage() {
       </CardContent>
 
       <ChatInputDock
-        inputRef={state.inputRef}
+        inputRef={inputRef}
+        onLayoutChange={syncInputHeight}
         chatInputRef={chatInputRef}
         chatInputElementRef={chatInputElementRef}
         activeChatId={state.activeChatId}
@@ -657,7 +928,7 @@ export function ChatPage() {
         activeProvider={state.runtime?.provider ?? null}
         availableProviders={state.availableProviders}
         contextWindowSnapshot={contextWindowSnapshot}
-        onSubmit={state.handleSend}
+        onSubmit={handleChatSubmit}
         onCancel={handleCancel}
       />
     </Card>
@@ -690,9 +961,75 @@ export function ChatPage() {
     chatCard
   )
 
+  const rightSidebarContentProps = useMemo<ComponentProps<typeof ChatSidebarContent> | null>(() => {
+    if (!projectId) {
+      return null
+    }
+
+    return {
+      projectId,
+      diffs: state.chatDiffSnapshot ?? EMPTY_DIFF_SNAPSHOT,
+      editorLabel: state.editorLabel,
+      diffRenderMode,
+      wrapLines: wrapDiffLines,
+      onOpenFile: handleOpenDiffFile,
+      onOpenInFinder: handleOpenDiffInFinder,
+      onDiscardFile: handleDiscardDiffFile,
+      onIgnoreFile: handleIgnoreDiffFile,
+      onIgnoreFolder: handleIgnoreDiffFolder,
+      onCopyFilePath: handleCopyDiffFilePath,
+      onCopyRelativePath: handleCopyDiffRelativePath,
+      onLoadPatch: handleLoadDiffPatch,
+      onListBranches: handleListBranches,
+      onPreviewMergeBranch: handlePreviewMergeBranch,
+      onMergeBranch: handleMergeBranch,
+      onCheckoutBranch: handleCheckoutBranch,
+      onCreateBranch: handleCreateBranch,
+      onGenerateCommitMessage: handleGenerateCommitMessage,
+      onInitializeGit: handleInitializeGit,
+      onGetGitHubPublishInfo: handleGetGitHubPublishInfo,
+      onCheckGitHubRepoAvailability: handleCheckGitHubRepoAvailability,
+      onSetupGitHub: handleSetupGitHub,
+      onCommit: handleCommitDiffs,
+      onSyncWithRemote: handleSyncBranch,
+      onDiffRenderModeChange: setDiffRenderMode,
+      onWrapLinesChange: setWrapDiffLines,
+      onClose: handleCloseRightSidebar,
+    }
+  }, [
+    diffRenderMode,
+    handleCheckGitHubRepoAvailability,
+    handleCheckoutBranch,
+    handleCloseRightSidebar,
+    handleCommitDiffs,
+    handleCopyDiffFilePath,
+    handleCopyDiffRelativePath,
+    handleCreateBranch,
+    handleDiscardDiffFile,
+    handleGenerateCommitMessage,
+    handleGetGitHubPublishInfo,
+    handleIgnoreDiffFile,
+    handleIgnoreDiffFolder,
+    handleInitializeGit,
+    handleListBranches,
+    handleLoadDiffPatch,
+    handleMergeBranch,
+    handleOpenDiffFile,
+    handleOpenDiffInFinder,
+    handlePreviewMergeBranch,
+    handleSetupGitHub,
+    handleSyncBranch,
+    projectId,
+    setDiffRenderMode,
+    setWrapDiffLines,
+    state.chatDiffSnapshot,
+    state.editorLabel,
+    wrapDiffLines,
+  ])
+
   return (
     <div ref={layoutRootRef} className="flex-1 flex flex-col min-w-0 relative">
-      {shouldRenderRightSidebarLayout && projectId ? (
+      {shouldRenderDesktopRightSidebarLayout && projectId ? (
         <ResizablePanelGroup
           key={`${projectId}-right-sidebar`}
           groupRef={rightSidebarPanelGroupRef}
@@ -735,58 +1072,26 @@ export function ChatPage() {
             disabled={!showRightSidebar}
             className={cn(!showRightSidebar && "pointer-events-none opacity-0")}
           />
-          <ResizablePanel
-            id="rightSidebar"
-            defaultSize={`${effectiveRightSidebarSize}%`}
-            className="min-h-0 min-w-0"
-            elementRef={sidebarPanelRef}
-          >
-            <div
-              ref={sidebarVisualRef}
-              className="h-full min-h-0 overflow-hidden"
-              data-right-sidebar-open={showRightSidebar ? "true" : "false"}
-              data-right-sidebar-animated="false"
-              data-right-sidebar-visual
-              style={{
-                "--terminal-toggle-duration": `${TERMINAL_TOGGLE_ANIMATION_DURATION_MS}ms`,
-              } as CSSProperties}
-            >
-              <RightSidebar
-                projectId={projectId}
-                diffs={state.chatDiffSnapshot ?? EMPTY_DIFF_SNAPSHOT}
-                editorLabel={state.editorLabel}
-                diffRenderMode={diffRenderMode}
-                wrapLines={wrapDiffLines}
-                onOpenFile={handleOpenDiffFile}
-                onOpenInFinder={handleOpenDiffInFinder}
-                onDiscardFile={handleDiscardDiffFile}
-                onIgnoreFile={handleIgnoreDiffFile}
-                onIgnoreFolder={handleIgnoreDiffFolder}
-                onCopyFilePath={handleCopyDiffFilePath}
-                onCopyRelativePath={handleCopyDiffRelativePath}
-                onLoadPatch={handleLoadDiffPatch}
-                onListBranches={handleListBranches}
-                onPreviewMergeBranch={handlePreviewMergeBranch}
-                onMergeBranch={handleMergeBranch}
-                onCheckoutBranch={handleCheckoutBranch}
-                onCreateBranch={handleCreateBranch}
-                onGenerateCommitMessage={handleGenerateCommitMessage}
-                onInitializeGit={handleInitializeGit}
-                onGetGitHubPublishInfo={handleGetGitHubPublishInfo}
-                onCheckGitHubRepoAvailability={handleCheckGitHubRepoAvailability}
-                onSetupGitHub={handleSetupGitHub}
-                onCommit={handleCommitDiffs}
-                onSyncWithRemote={handleSyncBranch}
-                onDiffRenderModeChange={setDiffRenderMode}
-                onWrapLinesChange={setWrapDiffLines}
-                onClose={handleCloseRightSidebar}
-              />
-            </div>
-          </ResizablePanel>
+          <DesktopSidebarPane
+            showRightSidebar={showRightSidebar}
+            sizePercent={effectiveRightSidebarSize}
+            sidebarPanelRef={sidebarPanelRef}
+            sidebarVisualRef={sidebarVisualRef}
+            content={rightSidebarContentProps ? <ChatSidebarContent {...rightSidebarContentProps} /> : null}
+          />
         </ResizablePanelGroup>
       ) : (
         workspace
       )}
+      {isMobileRightSidebarOverlay ? (
+        <MobileSidebarPane
+          projectId={projectId}
+          showRightSidebar={showRightSidebar}
+          sidebarVisualRef={sidebarVisualRef}
+          onClose={handleCloseRightSidebar}
+          content={rightSidebarContentProps ? <ChatSidebarContent {...rightSidebarContentProps} /> : null}
+        />
+      ) : null}
     </div>
   )
 }

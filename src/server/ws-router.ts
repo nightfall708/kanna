@@ -309,6 +309,7 @@ export function createWsRouter({
             lastCheckedAt: null,
             error: null,
             installAction: "restart",
+            reloadRequestedAt: null,
           },
         },
       }
@@ -618,6 +619,7 @@ export function createWsRouter({
                 lastCheckedAt: Date.now(),
                 error: "Update manager unavailable.",
                 installAction: "restart",
+                reloadRequestedAt: null,
               }
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
@@ -929,6 +931,24 @@ export function createWsRouter({
         case "chat.respondTool": {
           await agent.respondTool(command)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
+        case "message.enqueue": {
+          const result = await agent.enqueue(command)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "message.steer": {
+          await agent.steer(command)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "message.dequeue": {
+          await agent.dequeue(command)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
           return
         }
         case "terminal.create": {

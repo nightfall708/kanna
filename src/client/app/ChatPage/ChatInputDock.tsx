@@ -5,6 +5,7 @@ import type { KannaState } from "../useKannaState"
 
 interface ChatInputDockProps {
   inputRef: RefObject<HTMLDivElement | null>
+  onLayoutChange: () => void
   chatInputRef: RefObject<ChatInputHandle | null>
   chatInputElementRef: RefObject<HTMLTextAreaElement | null>
   activeChatId: string | null
@@ -22,6 +23,7 @@ interface ChatInputDockProps {
 
 export const ChatInputDock = memo(function ChatInputDock({
   inputRef,
+  onLayoutChange,
   chatInputRef,
   chatInputElementRef,
   activeChatId,
@@ -42,6 +44,7 @@ export const ChatInputDock = memo(function ChatInputDock({
         <ChatInput
           ref={chatInputRef}
           inputElementRef={chatInputElementRef}
+          onLayoutChange={onLayoutChange}
           key={activeChatId ?? "new-chat"}
           onSubmit={onSubmit}
           onCancel={onCancel}

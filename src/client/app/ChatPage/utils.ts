@@ -5,7 +5,6 @@ import type { ContextWindowSnapshot } from "../../lib/contextWindow"
 export const EMPTY_STATE_TEXT = "What are we building?"
 export const EMPTY_STATE_TYPING_INTERVAL_MS = 19
 export const CHAT_NAVBAR_OFFSET_PX = 72
-export const SCROLL_BUTTON_BOTTOM_PX = 120
 export const DIFF_REFRESH_INTERVAL_MS = 5_000
 export const EMPTY_DIFF_SNAPSHOT: ChatDiffSnapshot = { status: "unknown", files: [] }
 export const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 12

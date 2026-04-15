@@ -1,27 +1,29 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { measureElement, useVirtualizer } from "@tanstack/react-virtual"
+import { LegendList, type LegendListRef } from "@legendapp/list/react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, Flower, Upload } from "lucide-react"
 import { AnimatedShinyText } from "../../components/ui/animated-shiny-text"
 import { DrainingIndicator } from "../../components/messages/DrainingIndicator"
+import { QueuedUserMessage } from "../../components/messages/QueuedUserMessage"
 import { OpenLocalLinkProvider } from "../../components/messages/shared"
 import { ProcessingMessage } from "../../components/messages/ProcessingMessage"
 import { cn } from "../../lib/utils"
-import { buildResolvedTranscriptRows, KannaTranscriptRow } from "../KannaTranscript"
+import {
+  buildResolvedTranscriptRows,
+  KannaTranscriptRow,
+  type ResolvedTranscriptRow,
+  useStableResolvedRows,
+} from "../KannaTranscript"
 import type { KannaState } from "../useKannaState"
 import {
   CHAT_NAVBAR_OFFSET_PX,
-  CHAT_SELECTION_AUTOFOLLOW_WINDOW_MS,
   EMPTY_STATE_TEXT,
-  SCROLL_BUTTON_BOTTOM_PX,
-  estimateTranscriptRowHeight,
-  getPinnedTailStartIndex,
-  shouldAutoFollowTranscriptResize,
 } from "./utils"
 
 interface ChatTranscriptViewportProps {
   activeChatId: string | null
-  scrollRef: KannaState["scrollRef"]
+  listRef: React.RefObject<LegendListRef | null>
   messages: KannaState["messages"]
+  queuedMessages: KannaState["queuedMessages"]
   transcriptPaddingBottom: number
   localPath: string | null | undefined
   latestToolIds: KannaState["latestToolIds"]
@@ -33,11 +35,13 @@ interface ChatTranscriptViewportProps {
   commandError: string | null
   loadOlderHistory: () => Promise<void>
   onStopDraining: () => void
+  onSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
+  onRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   onOpenLocalLink: KannaState["handleOpenLocalLink"]
   onAskUserQuestionSubmit: KannaState["handleAskUserQuestion"]
   onExitPlanModeConfirm: KannaState["handleExitPlanMode"]
   showScrollButton: boolean
-  onScrollChange: () => void
+  onIsAtEndChange: (isAtEnd: boolean) => void
   scrollToBottom: () => void
   typedEmptyStateText: string
   isEmptyStateTypingComplete: boolean
@@ -47,8 +51,9 @@ interface ChatTranscriptViewportProps {
 
 export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   activeChatId,
-  scrollRef,
+  listRef,
   messages,
+  queuedMessages,
   transcriptPaddingBottom,
   localPath,
   latestToolIds,
@@ -60,45 +65,48 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   commandError,
   loadOlderHistory,
   onStopDraining,
+  onSteerQueuedMessage,
+  onRemoveQueuedMessage,
   onOpenLocalLink,
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
   showScrollButton,
-  onScrollChange,
+  onIsAtEndChange,
   scrollToBottom,
   typedEmptyStateText,
   isEmptyStateTypingComplete,
   isPageFileDragActive,
   showEmptyState,
 }: ChatTranscriptViewportProps) {
-  const contentRootRef = useRef<HTMLDivElement>(null)
   const previousRowCountRef = useRef(0)
-  const pendingPrependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null)
-  const selectionAutoFollowUntilRef = useRef(0)
-  const [transcriptContentWidth, setTranscriptContentWidth] = useState<number | null>(null)
   const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
 
-  const resolvedRows = useMemo(() => buildResolvedTranscriptRows(messages, {
+  const rawRows = useMemo(() => buildResolvedTranscriptRows(messages, {
     isLoading: isProcessing,
     localPath: localPath ?? undefined,
     latestToolIds,
   }), [isProcessing, latestToolIds, localPath, messages])
+  const resolvedRows = useStableResolvedRows(rawRows)
 
-  const pinnedTailStartIndex = useMemo(
-    () => getPinnedTailStartIndex(resolvedRows, isProcessing),
-    [isProcessing, resolvedRows]
-  )
-  const virtualizedHeadRows = useMemo(
-    () => resolvedRows.slice(0, pinnedTailStartIndex),
-    [pinnedTailStartIndex, resolvedRows]
-  )
-  const pinnedTailRows = useMemo(
-    () => resolvedRows.slice(pinnedTailStartIndex),
-    [pinnedTailStartIndex, resolvedRows]
-  )
-  const virtualMeasurementScopeKey = transcriptContentWidth === null
-    ? "width:unknown"
-    : `width:${Math.round(transcriptContentWidth)}`
+  useEffect(() => {
+    setToolGroupExpanded({})
+  }, [activeChatId])
+
+  useEffect(() => {
+    const previousRowCount = previousRowCountRef.current
+    previousRowCountRef.current = resolvedRows.length
+
+    if (previousRowCount > 0 || resolvedRows.length === 0) {
+      return
+    }
+
+    onIsAtEndChange(true)
+    const frameId = window.requestAnimationFrame(() => {
+      void listRef.current?.scrollToEnd?.({ animated: false })
+    })
+    return () => window.cancelAnimationFrame(frameId)
+  }, [listRef, onIsAtEndChange, resolvedRows.length])
+
   const handleToolGroupExpandedChange = useCallback((groupId: string, next: boolean) => {
     setToolGroupExpanded((current) => (
       current[groupId] === next
@@ -110,202 +118,134 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
     ))
   }, [])
 
-  const rowVirtualizer = useVirtualizer({
-    count: virtualizedHeadRows.length,
-    getScrollElement: () => scrollRef.current,
-    getItemKey: (index) => `${virtualMeasurementScopeKey}:${virtualizedHeadRows[index]?.id ?? index}`,
-    estimateSize: (index) => estimateTranscriptRowHeight(virtualizedHeadRows[index] ?? pinnedTailRows[0]!),
-    measureElement,
-    useAnimationFrameWithResizeObserver: true,
-    overscan: 8,
-  })
+  const handleScroll = useCallback((event?: unknown) => {
+    const currentTarget = (
+      typeof event === "object"
+      && event !== null
+      && "currentTarget" in event
+      && event.currentTarget instanceof HTMLElement
+    )
+      ? event.currentTarget
+      : listRef.current?.getScrollableNode?.()
+
+    if (currentTarget instanceof HTMLElement) {
+      const distanceFromEnd = currentTarget.scrollHeight - currentTarget.clientHeight - currentTarget.scrollTop
+      onIsAtEndChange(distanceFromEnd <= 4)
+      return
+    }
+
+    const state = listRef.current?.getState?.()
+    if (state) {
+      onIsAtEndChange(state.isAtEnd)
+    }
+  }, [listRef, onIsAtEndChange])
 
   useEffect(() => {
-    selectionAutoFollowUntilRef.current = Date.now() + CHAT_SELECTION_AUTOFOLLOW_WINDOW_MS
-  }, [activeChatId])
+    let cleanup: (() => void) | undefined
+    const frameId = window.requestAnimationFrame(() => {
+      const scrollNode = listRef.current?.getScrollableNode?.()
+      if (!(scrollNode instanceof HTMLElement)) {
+        return
+      }
 
-  useEffect(() => {
-    const contentRoot = contentRootRef.current
-    if (!contentRoot) return
+      const handleNativeScroll = () => {
+        handleScroll({ currentTarget: scrollNode })
+      }
 
-    const observer = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect
-      if (!rect) return
-
-      const width = rect.width
-      setTranscriptContentWidth((current) => {
-        const nextWidth = typeof width === "number" ? width : null
-        if (nextWidth === null && current === null) return current
-        if (nextWidth !== null && current !== null && Math.round(nextWidth) === Math.round(current)) {
-          return current
-        }
-        return nextWidth
-      })
-
-      if (
-        shouldAutoFollowTranscriptResize(
-          showScrollButton,
-          selectionAutoFollowUntilRef.current
-        )
-        && !pendingPrependAnchorRef.current
-      ) {
-        const scrollContainer = scrollRef.current
-        if (scrollContainer) {
-          scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "auto" })
-        }
+      scrollNode.addEventListener("scroll", handleNativeScroll, { passive: true })
+      handleNativeScroll()
+      cleanup = () => {
+        scrollNode.removeEventListener("scroll", handleNativeScroll)
       }
     })
 
-    observer.observe(contentRoot)
-    return () => observer.disconnect()
-  }, [scrollRef, showScrollButton])
-
-  useEffect(() => {
-    if (transcriptContentWidth === null) return
-    rowVirtualizer.measure()
-  }, [rowVirtualizer, transcriptContentWidth])
-
-  useEffect(() => {
-    rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
-      const viewportHeight = instance.scrollRect?.height ?? 0
-      const scrollOffset = instance.scrollOffset ?? 0
-      const itemIntersectsViewport = item.end > scrollOffset && item.start < scrollOffset + viewportHeight
-      if (itemIntersectsViewport) {
-        return false
-      }
-      const remainingDistance = instance.getTotalSize() - (scrollOffset + viewportHeight)
-      return remainingDistance > 24
-    }
     return () => {
-      rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined
+      window.cancelAnimationFrame(frameId)
+      cleanup?.()
     }
-  }, [rowVirtualizer])
+  }, [activeChatId, handleScroll, listRef, resolvedRows.length])
 
-  const requestOlderHistory = useCallback(() => {
-    if (isHistoryLoading || !hasOlderHistory) return
-    const scrollContainer = scrollRef.current
-    if (scrollContainer) {
-      pendingPrependAnchorRef.current = {
-        scrollHeight: scrollContainer.scrollHeight,
-        scrollTop: scrollContainer.scrollTop,
-      }
+  const handleStartReached = useCallback(() => {
+    if (isHistoryLoading || !hasOlderHistory) {
+      return
     }
     void loadOlderHistory()
-  }, [hasOlderHistory, isHistoryLoading, loadOlderHistory, scrollRef])
+  }, [hasOlderHistory, isHistoryLoading, loadOlderHistory])
 
-  useLayoutEffect(() => {
-    const previousCount = previousRowCountRef.current
-    const currentCount = resolvedRows.length
+  const renderItem = useCallback(({ item }: { item: ResolvedTranscriptRow }) => (
+    <div className="mx-auto w-full max-w-[800px] pb-5" data-transcript-row-id={item.id}>
+      <KannaTranscriptRow
+        row={item}
+        toolGroupExpanded={item.kind === "tool-group" ? (toolGroupExpanded[item.id] ?? false) : undefined}
+        onToolGroupExpandedChange={handleToolGroupExpandedChange}
+        onAskUserQuestionSubmit={onAskUserQuestionSubmit}
+        onExitPlanModeConfirm={onExitPlanModeConfirm}
+      />
+    </div>
+  ), [handleToolGroupExpandedChange, onAskUserQuestionSubmit, onExitPlanModeConfirm, toolGroupExpanded])
 
-    if (pendingPrependAnchorRef.current && !isHistoryLoading) {
-      const scrollContainer = scrollRef.current
-      if (scrollContainer && currentCount > previousCount) {
-        const heightDelta = scrollContainer.scrollHeight - pendingPrependAnchorRef.current.scrollHeight
-        scrollContainer.scrollTop = pendingPrependAnchorRef.current.scrollTop + heightDelta
-      }
-      pendingPrependAnchorRef.current = null
-    }
+  const listHeader = (
+    <div className="mx-auto w-full max-w-[800px] pt-[72px]">
+      {isHistoryLoading ? (
+        <div className="flex justify-center pb-4">
+          <span className="text-sm translate-y-[-0.5px]">
+            <AnimatedShinyText
+              animate
+              shimmerWidth={Math.max(20, "Loading more messages...".length * 3)}
+            >
+              Loading more messages...
+            </AnimatedShinyText>
+          </span>
+        </div>
+      ) : null}
+    </div>
+  )
 
-    previousRowCountRef.current = currentCount
-  }, [isHistoryLoading, resolvedRows.length, scrollRef])
-
-  useLayoutEffect(() => {
-    if (showScrollButton) return
-    if (pendingPrependAnchorRef.current) return
-
-    const scrollContainer = scrollRef.current
-    if (!scrollContainer) return
-
-    scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior: "auto" })
-  }, [activeChatId, isProcessing, resolvedRows.length, scrollRef, showScrollButton, transcriptContentWidth])
-
-  const handleTranscriptScroll = useCallback(() => {
-    onScrollChange()
-    const scrollContainer = scrollRef.current
-    if (!scrollContainer) return
-    if (scrollContainer.scrollTop > 0) return
-    requestOlderHistory()
-  }, [onScrollChange, requestOlderHistory, scrollRef])
+  const listFooter = (
+    <div className="mx-auto w-full max-w-[800px]">
+      {isProcessing ? <ProcessingMessage status={runtimeStatus ?? undefined} /> : null}
+      {queuedMessages.map((message) => (
+        <QueuedUserMessage
+          key={message.id}
+          message={message}
+          onRemove={() => void onRemoveQueuedMessage(message.id)}
+          onSendNow={() => void onSteerQueuedMessage(message.id)}
+        />
+      ))}
+      {!isProcessing && isDraining ? (
+        <DrainingIndicator onStop={() => void onStopDraining()} />
+      ) : null}
+      {commandError ? (
+        <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+          {commandError}
+        </div>
+      ) : null}
+    </div>
+  )
 
   return (
     <>
-      <div
-        ref={scrollRef}
-        onScroll={handleTranscriptScroll}
-        className="flex-1 min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain px-3 scroll-pt-[72px] [scrollbar-gutter:auto]"
-      >
-        <div ref={contentRootRef} className="mx-auto w-full max-w-[800px] animate-fade-in pt-[72px]">
-          {isHistoryLoading ? (
-            <div className="pb-4 flex justify-center">
-              <span className="text-sm translate-y-[-0.5px]">
-                <AnimatedShinyText
-                  animate
-                  shimmerWidth={Math.max(20, "Loading more messages...".length * 3)}
-                >
-                  Loading more messages...
-                </AnimatedShinyText>
-              </span>
-            </div>
-          ) : null}
-          {messages.length > 0 ? (
-            <OpenLocalLinkProvider onOpenLocalLink={onOpenLocalLink}>
-              <>
-                {virtualizedHeadRows.length > 0 ? (
-                  <div className="relative" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
-                    {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                      const row = virtualizedHeadRows[virtualRow.index]
-                      if (!row) return null
-
-                      return (
-                        <div
-                          key={`virtual-row:${row.id}`}
-                          data-index={virtualRow.index}
-                          ref={rowVirtualizer.measureElement}
-                          className="absolute left-0 top-0 w-full"
-                          style={{ transform: `translateY(${virtualRow.start}px)` }}
-                        >
-                          <div className="pb-5">
-                            <KannaTranscriptRow
-                              row={row}
-                              toolGroupExpanded={toolGroupExpanded}
-                              onToolGroupExpandedChange={handleToolGroupExpandedChange}
-                              onAskUserQuestionSubmit={onAskUserQuestionSubmit}
-                              onExitPlanModeConfirm={onExitPlanModeConfirm}
-                            />
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-                ) : null}
-                {pinnedTailRows.map((row) => (
-                  <div key={`tail-row:${row.id}`} className="pb-5">
-                    <KannaTranscriptRow
-                      row={row}
-                      toolGroupExpanded={toolGroupExpanded}
-                      onToolGroupExpandedChange={handleToolGroupExpandedChange}
-                      onAskUserQuestionSubmit={onAskUserQuestionSubmit}
-                      onExitPlanModeConfirm={onExitPlanModeConfirm}
-                    />
-                  </div>
-                ))}
-              </>
-            </OpenLocalLinkProvider>
-          ) : (
-            <div style={{ height: transcriptPaddingBottom }} aria-hidden="true" />
-          )}
-          {isProcessing ? <ProcessingMessage status={runtimeStatus ?? undefined} /> : null}
-          {!isProcessing && isDraining ? (
-            <DrainingIndicator onStop={() => void onStopDraining()} />
-          ) : null}
-          {commandError ? (
-            <div className="text-sm text-destructive border border-destructive/20 bg-destructive/5 rounded-xl px-4 py-3">
-              {commandError}
-            </div>
-          ) : null}
-          <div style={{ height: transcriptPaddingBottom }} aria-hidden="true" />
-        </div>
-      </div>
+      <OpenLocalLinkProvider onOpenLocalLink={onOpenLocalLink}>
+        <LegendList<ResolvedTranscriptRow>
+          ref={listRef}
+          data={resolvedRows}
+          extraData={toolGroupExpanded}
+          keyExtractor={keyExtractor}
+          renderItem={renderItem}
+          estimatedItemSize={96}
+          initialScrollAtEnd
+          maintainScrollAtEnd
+          maintainScrollAtEndThreshold={0.1}
+          maintainVisibleContentPosition
+          onScroll={handleScroll}
+          onStartReached={handleStartReached}
+          onStartReachedThreshold={0.1}
+          className="h-full flex-1 overflow-x-hidden overscroll-y-contain px-3 scroll-pt-[72px] [scrollbar-gutter:auto]"
+          contentContainerStyle={{ paddingBottom: transcriptPaddingBottom + 10 }}
+          ListHeaderComponent={listHeader}
+          ListFooterComponent={listFooter}
+        />
+      </OpenLocalLinkProvider>
 
       {showEmptyState ? (
         <div
@@ -316,18 +256,18 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
           }}
         >
           <div className="mx-auto flex h-full max-w-[800px] items-center justify-center">
-            <div className="flex flex-col items-center justify-center text-muted-foreground gap-4 opacity-70">
-              <Flower strokeWidth={1.5} className="size-8 text-muted-foreground kanna-empty-state-flower" />
+            <div className="flex flex-col items-center justify-center gap-4 text-muted-foreground opacity-70">
+              <Flower strokeWidth={1.5} className="kanna-empty-state-flower size-8 text-muted-foreground" />
               <div
-                className="text-base font-normal text-muted-foreground text-center max-w-xs flex items-center kanna-empty-state-text"
+                className="kanna-empty-state-text flex max-w-xs items-center text-center text-base font-normal text-muted-foreground"
                 aria-label={EMPTY_STATE_TEXT}
               >
                 <span className="relative inline-grid place-items-start">
-                  <span className="invisible col-start-1 row-start-1 whitespace-pre flex items-center">
+                  <span className="invisible col-start-1 row-start-1 flex items-center whitespace-pre">
                     <span>{EMPTY_STATE_TEXT}</span>
                     <span className="kanna-typewriter-cursor-slot" aria-hidden="true" />
                   </span>
-                  <span className="col-start-1 row-start-1 whitespace-pre flex items-center">
+                  <span className="col-start-1 row-start-1 flex items-center whitespace-pre">
                     <span>{typedEmptyStateText}</span>
                     <span className="kanna-typewriter-cursor-slot" aria-hidden="true">
                       <span
@@ -344,11 +284,11 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
       ) : null}
 
       {isPageFileDragActive ? (
-        <div className="absolute inset-0 z-30 pointer-events-none">
+        <div className="pointer-events-none absolute inset-0 z-30">
           <div className="absolute inset-0 backdrop-blur-sm" />
           <div className="absolute inset-6 ">
             <div className="flex h-full items-center justify-center">
-              <div className="text-center flex flex-col items-center justify-center gap-3">
+              <div className="flex flex-col items-center justify-center gap-3 text-center">
                 <Upload className="mx-auto size-14 text-foreground" strokeWidth={1.75} />
                 <div className="text-xl font-medium text-foreground">Drop up to 50 files</div>
               </div>
@@ -358,17 +298,17 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
       ) : null}
 
       <div
-        style={{ bottom: SCROLL_BUTTON_BOTTOM_PX }}
+        style={{ bottom: transcriptPaddingBottom - 20 }}
         className={cn(
-          "absolute left-1/2 -translate-x-1/2 z-10 transition-all",
+          "absolute left-1/2 z-10 -translate-x-1/2 transition-all",
           showScrollButton
             ? "scale-100 duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-            : "scale-60 duration-300 ease-out pointer-events-none blur-sm opacity-0"
+            : "pointer-events-none scale-60 opacity-0 blur-sm duration-300 ease-out",
         )}
       >
         <button
           onClick={scrollToBottom}
-          className="flex items-center transition-colors gap-1.5 px-2 bg-white hover:bg-muted border border-border rounded-full aspect-square cursor-pointer text-sm text-primary hover:text-foreground dark:bg-slate-700 dark:hover:bg-slate-600 dark:text-slate-100 dark:border-slate-600"
+          className="flex aspect-square cursor-pointer items-center gap-1.5 rounded-full border border-border bg-white px-2 text-sm text-primary transition-colors hover:bg-muted hover:text-foreground dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600"
         >
           <ArrowDown className="h-5 w-5" />
         </button>
@@ -376,3 +316,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
     </>
   )
 })
+
+function keyExtractor(item: ResolvedTranscriptRow) {
+  return item.id
+}
