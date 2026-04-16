@@ -13,6 +13,7 @@ import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 import type { LlmProviderSnapshot } from "../shared/types"
+import type { LlmProviderValidationResult } from "../shared/types"
 
 const DEFAULT_CHAT_RECENT_LIMIT = 200
 
@@ -100,6 +101,7 @@ interface CreateWsRouterArgs {
   llmProvider?: {
     read: () => Promise<LlmProviderSnapshot>
     write: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderSnapshot>
+    validate: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
   }
   refreshDiscovery: () => Promise<DiscoveredProject[]>
   getDiscoveredProjects: () => DiscoveredProject[]
@@ -202,6 +204,13 @@ export function createWsRouter({
       enabled: false,
       warning: null,
       filePathDisplay: "~/.kanna/llm-provider.json",
+    }),
+    validate: async () => ({
+      ok: false,
+      error: {
+        type: "config_error",
+        message: "LLM provider validation unavailable.",
+      },
     }),
   }
 
@@ -728,6 +737,16 @@ export function createWsRouter({
             baseUrl: command.baseUrl,
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          return
+        }
+        case "settings.validateLlmProvider": {
+          const result = await resolvedLlmProvider.validate({
+            provider: command.provider,
+            apiKey: command.apiKey,
+            model: command.model,
+            baseUrl: command.baseUrl,
+          })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "project.open": {

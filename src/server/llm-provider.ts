@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
+import OpenAI from "openai"
 import { getLlmProviderFilePath } from "../shared/branding"
 import {
   DEFAULT_OPENAI_SDK_MODEL,
@@ -8,6 +9,7 @@ import {
   type LlmProviderFile,
   type LlmProviderKind,
   type LlmProviderSnapshot,
+  type LlmProviderValidationResult,
 } from "../shared/types"
 
 export const OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -146,4 +148,60 @@ export async function writeLlmProviderSnapshot(
   await mkdir(path.dirname(filePath), { recursive: true })
   await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8")
   return snapshot
+}
+
+function toSerializableValue(value: unknown): unknown {
+  if (value === null || value === undefined) return value ?? null
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value
+  if (Array.isArray(value)) {
+    return value.map((entry) => toSerializableValue(entry))
+  }
+  if (value instanceof Error) {
+    return toSerializableValue(Object.fromEntries(
+      Object.getOwnPropertyNames(value).map((key) => [key, (value as unknown as Record<string, unknown>)[key]])
+    ))
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>
+    return Object.fromEntries(
+      Object.keys(record).map((key) => [key, toSerializableValue(record[key])])
+    )
+  }
+  return String(value)
+}
+
+export async function validateLlmProviderCredentials(
+  value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">
+): Promise<LlmProviderValidationResult> {
+  const snapshot = normalizeLlmProviderSnapshot(value)
+  if (!snapshot.enabled) {
+    return {
+      ok: false,
+      error: {
+        type: "config_error",
+        message: snapshot.warning ?? "LLM provider configuration is incomplete.",
+      },
+    }
+  }
+
+  try {
+    const client = new OpenAI({
+      apiKey: snapshot.apiKey,
+      baseURL: snapshot.resolvedBaseUrl,
+    })
+    await client.responses.create({
+      model: snapshot.model,
+      input: "Reply with ok.",
+      max_output_tokens: 5,
+    })
+    return {
+      ok: true,
+      error: null,
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      error: toSerializableValue(error),
+    }
+  }
 }

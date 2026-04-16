@@ -67,6 +67,13 @@ export type ClientCommand =
       baseUrl: string
     }
   | {
+      type: "settings.validateLlmProvider"
+      provider: LlmProviderSnapshot["provider"]
+      apiKey: string
+      model: string
+      baseUrl: string
+    }
+  | {
       type: "system.openExternal"
       localPath: string
       action: "open_finder" | "open_terminal" | "open_editor"

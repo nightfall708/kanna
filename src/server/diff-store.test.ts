@@ -176,6 +176,41 @@ describe("DiffStore", () => {
     expect((await run(["git", "log", "-1", "--pretty=%s"], repoRoot)).trim()).toBe("Local only")
   })
 
+  test("commits tracked files inside newly ignored directories", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await mkdir(path.join(repoRoot, "build", ".wrangler"), { recursive: true })
+    await writeFile(path.join(repoRoot, "build", ".wrangler", "state.sqlite"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+
+    await writeFile(path.join(repoRoot, "build", ".gitignore"), ".wrangler/\n", "utf8")
+    await writeFile(path.join(repoRoot, "build", ".wrangler", "state.sqlite"), "changed\n", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("project-1", repoRoot)
+
+    const result = await store.commitFiles({
+      projectId: "project-1",
+      projectPath: repoRoot,
+      paths: ["build/.wrangler/state.sqlite"],
+      summary: "Commit tracked ignored file",
+      mode: "commit_only",
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      mode: "commit_only",
+      pushed: false,
+    })
+    expect((await run(["git", "log", "-1", "--pretty=%s"], repoRoot)).trim()).toBe("Commit tracked ignored file")
+
+    const snapshot = store.getProjectSnapshot("project-1")
+    expect(snapshot.files).toHaveLength(1)
+    expect(snapshot.files[0]?.path).toBe("build/.gitignore")
+  })
+
   test("refreshSnapshot reports origin presence before the first commit", async () => {
     const repoRoot = await createRepo()
     tempDirs.push(repoRoot)

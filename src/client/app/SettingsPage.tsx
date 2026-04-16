@@ -30,7 +30,8 @@ import {
 } from "../../shared/types"
 import { markdownComponents } from "../components/messages/shared"
 import { ChatPreferenceControls } from "../components/chat-ui/ChatPreferenceControls"
-import { buttonVariants } from "../components/ui/button"
+import { Button, buttonVariants } from "../components/ui/button"
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogTitle } from "../components/ui/dialog"
 import { Input } from "../components/ui/input"
 import { SettingsHeaderButton } from "../components/ui/settings-header-button"
 import type { EditorPreset } from "../../shared/protocol"
@@ -254,7 +255,7 @@ export function ChangelogSection({
       ) : null}
 
       {status === "error" ? (
-        <div className="rounded-2xl border border-destructive/20 bg-destructive/5 px-6 py-5">
+        <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-6 py-5">
           <div className="flex items-start justify-between gap-4">
             <div>
               <div className="text-sm font-medium text-foreground">Could not load changelog</div>
@@ -274,7 +275,7 @@ export function ChangelogSection({
       ) : null}
 
       {status === "success" && releases.length === 0 ? (
-        <div className="rounded-2xl border border-border bg-card/30 px-6 py-8">
+        <div className="rounded-lg border border-border bg-card/30 px-6 py-8">
           <div className="text-sm font-medium text-foreground">No releases yet</div>
           <div className="mt-2 text-sm text-muted-foreground">
             GitHub did not return any published releases for this repository.
@@ -492,9 +493,13 @@ export function SettingsPage() {
     baseUrl: "",
   })
   const [llmProviderError, setLlmProviderError] = useState<string | null>(null)
+  const [llmValidationStatus, setLlmValidationStatus] = useState<"idle" | "valid" | "invalid">("idle")
+  const [llmValidationError, setLlmValidationError] = useState<unknown | null>(null)
+  const [llmValidationDialogOpen, setLlmValidationDialogOpen] = useState(false)
   const updateSnapshot = state.updateSnapshot
   const handleReadLlmProvider = state.handleReadLlmProvider
   const handleWriteLlmProvider = state.handleWriteLlmProvider
+  const handleValidateLlmProvider = state.handleValidateLlmProvider
   const updateStatusLabel = updateSnapshot?.status === "checking"
     ? "Checking for updates…"
     : updateSnapshot?.status === "updating"
@@ -539,6 +544,11 @@ export function SettingsPage() {
       baseUrl: llmProvider.baseUrl,
     })
   }, [llmProvider])
+
+  useEffect(() => {
+    setLlmValidationStatus("idle")
+    setLlmValidationError(null)
+  }, [llmProviderDraft.provider, llmProviderDraft.apiKey, llmProviderDraft.model, llmProviderDraft.baseUrl])
 
   useEffect(() => {
     if (!sectionId) return
@@ -689,7 +699,15 @@ export function SettingsPage() {
     try {
       setLlmProviderError(null)
       await handleWriteLlmProvider(nextValue)
+      const validation = await handleValidateLlmProvider(nextValue)
+      setLlmValidationStatus(validation.ok ? "valid" : "invalid")
+      setLlmValidationError(validation.error)
     } catch (error) {
+      const fallbackError = error instanceof Error
+        ? { name: error.name, message: error.message }
+        : error
+      setLlmValidationStatus("invalid")
+      setLlmValidationError(fallbackError)
       setLlmProviderError(error instanceof Error ? error.message : "Unable to save quick response provider settings.")
     }
   }
@@ -735,6 +753,44 @@ export function SettingsPage() {
       ? getKeybindingsSubtitle(keybindingsFilePathDisplay)
       : selectedSection.subtitle
   const showFooter = !isConnecting
+  const llmValidationErrorText = llmValidationError ? JSON.stringify(llmValidationError, null, 2) : ""
+  const llmValidationDescription = (
+    <>
+      <span>
+        Use an OpenAI-compatible API for title and commit message generation before Claude and Codex. Stored in {llmProvider?.filePathDisplay ?? "the active llm-provider.json file"}.
+      </span>
+      <span
+        className={cn(
+          "mt-2 block text-sm font-medium",
+          llmValidationStatus === "valid"
+            ? "text-emerald-600 dark:text-emerald-400"
+            : llmValidationStatus === "invalid"
+              ? "text-destructive"
+              : "hidden"
+        )}
+      >
+        {llmValidationStatus === "valid" ? (
+          "Credentials valid & saved"
+        ) : llmValidationStatus === "invalid" ? (
+          <>
+            <span>Credentials invalid.</span>
+            {llmValidationError ? (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={() => setLlmValidationDialogOpen(true)}
+                  className="underline underline-offset-2"
+                >
+                  See error
+                </button>
+              </>
+            ) : null}
+          </>
+        ) : null}
+      </span>
+    </>
+  )
 
   async function handleSidebarSignOut() {
     if (signingOut) return
@@ -1159,12 +1215,12 @@ export function SettingsPage() {
 
                     <SettingsRow
                       title="Quick Response SDK"
-                      description={`Use an OpenAI-compatible API for title and commit message generation before Claude and Codex. Stored in ${llmProvider?.filePathDisplay ?? "the active llm-provider.json file"}.`}
+                      description={llmValidationDescription}
                       alignStart
                     >
                       <div className="flex w-full max-w-[420px] flex-col gap-3">
                         {llmProviderError ? (
-                          <div className="rounded-2xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                          <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
                             {llmProviderError}
                           </div>
                         ) : null}
@@ -1217,12 +1273,12 @@ export function SettingsPage() {
                 ) : selectedPage === "keybindings" ? (
                   <div className="border-b border-border">
                     {keybindingsError ? (
-                      <div className="mb-4 rounded-2xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                      <div className="mb-4 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
                         {keybindingsError}
                       </div>
                     ) : null}
                     {resolvedKeybindings.warning ? (
-                      <div className="mb-4 rounded-2xl border border-border bg-card/30 px-4 py-3 text-sm text-muted-foreground">
+                      <div className="mb-4 rounded-lg border border-border bg-card/30 px-4 py-3 text-sm text-muted-foreground">
                         {resolvedKeybindings.warning}
                       </div>
                     ) : null}
@@ -1299,7 +1355,7 @@ export function SettingsPage() {
             )}
 
             {state.commandError ? (
-              <div className="mx-auto mt-4 flex max-w-4xl items-start gap-3 rounded-2xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              <div className="mx-auto mt-4 flex max-w-4xl items-start gap-3 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
                 <Info className="mt-0.5 h-4 w-4 flex-shrink-0" />
                 <span>{state.commandError}</span>
               </div>
@@ -1333,6 +1389,21 @@ export function SettingsPage() {
           </div>
         </div>
       ) : null}
+      <Dialog open={llmValidationDialogOpen} onOpenChange={setLlmValidationDialogOpen}>
+        <DialogContent size="lg">
+          <DialogBody className="space-y-4">
+            <DialogTitle>Validation Error</DialogTitle>
+            <pre className="max-h-[60vh] overflow-auto rounded-lg border border-border bg-muted p-3 text-xs font-mono whitespace-pre-wrap break-words">
+              {llmValidationErrorText}
+            </pre>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="secondary" size="sm" onClick={() => setLlmValidationDialogOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

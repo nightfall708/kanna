@@ -270,6 +270,11 @@ export interface LlmProviderSnapshot {
   filePathDisplay: string
 }
 
+export interface LlmProviderValidationResult {
+  ok: boolean
+  error: unknown | null
+}
+
 export type UpdateStatus =
   | "idle"
   | "checking"

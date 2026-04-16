@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { getClipboardImageFiles, willExceedAttachmentLimit } from "./ChatInput"
+import { getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
 
 function createClipboardItem(args: {
   kind?: string
@@ -97,5 +97,23 @@ describe("getClipboardImageFiles", () => {
       "clipboard-789.png",
       "clipboard-789-1.webp",
     ])
+  })
+})
+
+describe("trimTrailingPastedNewlines", () => {
+  test("removes trailing unix newlines from pasted text", () => {
+    expect(trimTrailingPastedNewlines("hello\n\n")).toBe("hello")
+  })
+
+  test("removes trailing windows newlines from pasted text", () => {
+    expect(trimTrailingPastedNewlines("hello\r\n\r\n")).toBe("hello")
+  })
+
+  test("preserves internal newlines", () => {
+    expect(trimTrailingPastedNewlines("hello\nworld\n")).toBe("hello\nworld")
+  })
+
+  test("leaves text without trailing newlines unchanged", () => {
+    expect(trimTrailingPastedNewlines("hello")).toBe("hello")
   })
 })
