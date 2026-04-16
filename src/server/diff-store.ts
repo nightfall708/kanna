@@ -1817,21 +1817,8 @@ export class DiffStore {
       throw new Error("Project is not in a git repository")
     }
 
-    const [hasUpstream, originRemoteUrl] = await Promise.all([
-      hasUpstreamBranch(repo.repoRoot),
-      getOriginRemoteUrl(repo.repoRoot),
-    ])
-    const hasOriginRemote = originRemoteUrl !== null
+    const hasUpstream = await hasUpstreamBranch(repo.repoRoot)
     if (args.action === "publish") {
-      if (!hasOriginRemote) {
-        return {
-          ok: false,
-          action: args.action,
-          title: "No origin remote configured",
-          message: "This repository does not have an origin remote configured.",
-          snapshotChanged: false,
-        }
-      }
       const publishResult = await runGit(["push", "-u", "origin", "HEAD"], repo.repoRoot)
       if (publishResult.exitCode !== 0) {
         const detail = formatGitFailure(publishResult)

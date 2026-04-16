@@ -19,7 +19,7 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
             {message.attachments.map((attachment) => (
               <div
                 key={attachment.id}
-                className="max-w-[220px] rounded-xl border border-dotted border-border bg-transparent px-3 py-2 text-left"
+                className="max-w-[220px] rounded-xl border border-dashed border-border bg-transparent px-3 py-2 text-left"
               >
                 <div className="truncate text-[13px] font-medium text-foreground">{attachment.displayName}</div>
                 <div className="truncate text-[11px] text-muted-foreground">{attachment.mimeType}</div>
@@ -28,9 +28,11 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
           </div>
         ) : null}
         {message.content ? (
-          <div className="rounded-[20px] border border-dotted border-border bg-transparent px-3.5 py-1.5 prose prose-sm prose-invert text-primary [&_p]:whitespace-pre-line">
+          <div className="rounded-[20px] border border-dashed border-border bg-transparent px-3.5 py-1.5 prose prose-sm prose-invert text-primary [&_p]:whitespace-pre-line">
             <Markdown remarkPlugins={[remarkGfm]} components={createMarkdownComponents()}>{message.content}</Markdown>
+            
           </div>
+          
         ) : null}
         <div className="flex items-center gap-1 text-xs text-muted-foreground">
           <Button

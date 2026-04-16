@@ -59,6 +59,7 @@ function getReplayEventPriority(event: StoreEvent) {
   switch (event.type) {
     case "project_opened":
     case "project_removed":
+    case "sidebar_project_order_set":
       return 0
     case "chat_created":
       return 1
@@ -198,6 +199,7 @@ export class EventStore {
           unread: chat.unread ?? false,
         })
       }
+      this.state.sidebarProjectOrder = [...(parsed.sidebarProjectOrder ?? [])]
       if (parsed.queuedMessages?.length) {
         for (const queuedSet of parsed.queuedMessages) {
           this.state.queuedMessagesByChatId.set(queuedSet.chatId, queuedSet.entries.map((entry) => ({
@@ -223,6 +225,7 @@ export class EventStore {
     this.state.projectIdsByPath.clear()
     this.state.chatsById.clear()
     this.state.queuedMessagesByChatId.clear()
+    this.state.sidebarProjectOrder = []
     this.cachedTranscript = null
   }
 
@@ -320,6 +323,10 @@ export class EventStore {
         project.deletedAt = event.timestamp
         project.updatedAt = event.timestamp
         this.state.projectIdsByPath.delete(project.localPath)
+        break
+      }
+      case "sidebar_project_order_set": {
+        this.state.sidebarProjectOrder = [...event.projectIds]
         break
       }
       case "chat_created": {
@@ -523,6 +530,30 @@ export class EventStore {
       type: "project_removed",
       timestamp: Date.now(),
       projectId,
+    }
+    await this.append(this.projectsLogPath, event)
+  }
+
+  async setSidebarProjectOrder(projectIds: string[]) {
+    const validProjectIds = projectIds.filter((projectId) => {
+      const project = this.state.projectsById.get(projectId)
+      return Boolean(project && !project.deletedAt)
+    })
+
+    const uniqueProjectIds = [...new Set(validProjectIds)]
+    const current = this.state.sidebarProjectOrder
+    if (
+      uniqueProjectIds.length === current.length
+      && uniqueProjectIds.every((projectId, index) => current[index] === projectId)
+    ) {
+      return
+    }
+
+    const event: ProjectEvent = {
+      v: STORE_VERSION,
+      type: "sidebar_project_order_set",
+      timestamp: Date.now(),
+      projectIds: uniqueProjectIds,
     }
     await this.append(this.projectsLogPath, event)
   }
@@ -930,6 +961,7 @@ export class EventStore {
       v: STORE_VERSION,
       generatedAt: Date.now(),
       projects: this.listProjects().map((project) => ({ ...project })),
+      sidebarProjectOrder: [...this.state.sidebarProjectOrder],
       chats: [...this.state.chatsById.values()]
         .filter((chat) => !chat.deletedAt)
         .map((chat) => ({ ...chat })),

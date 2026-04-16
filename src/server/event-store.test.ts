@@ -345,6 +345,24 @@ describe("EventStore", () => {
     expect(store.getChat("chat-1")?.unread).toBe(false)
   })
 
+  test("persists sidebar project order across restart and compaction", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const first = await store.openProject("/tmp/project-a")
+    const second = await store.openProject("/tmp/project-b")
+
+    await store.setSidebarProjectOrder([second.id, first.id])
+    expect(store.state.sidebarProjectOrder).toEqual([second.id, first.id])
+
+    await store.compact()
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.state.sidebarProjectOrder).toEqual([second.id, first.id])
+  })
+
   test("prunes stale empty chats after thirty minutes", async () => {
     const dataDir = await createTempDataDir()
     const store = new EventStore(dataDir)

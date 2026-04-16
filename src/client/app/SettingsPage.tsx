@@ -12,12 +12,22 @@ import {
   Settings2,
   Sun,
   DownloadCloud,
+  LogOut,
 } from "lucide-react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { useNavigate, useOutletContext, useParams } from "react-router-dom"
 import { getKeybindingsFilePathDisplay, SDK_CLIENT_APP } from "../../shared/branding"
-import { DEFAULT_KEYBINDINGS, PROVIDERS, type AgentProvider, type KeybindingAction, type UpdateSnapshot } from "../../shared/types"
+import {
+  DEFAULT_KEYBINDINGS,
+  DEFAULT_OPENAI_SDK_MODEL,
+  DEFAULT_OPENROUTER_SDK_MODEL,
+  PROVIDERS,
+  type AgentProvider,
+  type KeybindingAction,
+  type LlmProviderKind,
+  type UpdateSnapshot,
+} from "../../shared/types"
 import { markdownComponents } from "../components/messages/shared"
 import { ChatPreferenceControls } from "../components/chat-ui/ChatPreferenceControls"
 import { buttonVariants } from "../components/ui/button"
@@ -102,6 +112,12 @@ const chatSoundPreferenceOptions: { value: ChatSoundPreference; label: string }[
   { value: "never", label: "Never" },
   { value: "unfocused", label: "When Unfocused" },
   { value: "always", label: "Always" },
+]
+
+const QUICK_RESPONSE_PROVIDER_OPTIONS: Array<{ value: LlmProviderKind; label: string }> = [
+  { value: "openai", label: "OpenAI" },
+  { value: "openrouter", label: "OpenRouter" },
+  { value: "custom", label: "Custom" },
 ]
 
 const GITHUB_RELEASES_URL = "https://api.github.com/repos/jakemor/kanna/releases"
@@ -433,6 +449,8 @@ export function SettingsPage() {
   const state = useOutletContext<KannaState>()
   const { theme, setTheme } = useTheme()
   const [changelogStatus, setChangelogStatus] = useState<ChangelogStatus>("idle")
+  const [signingOut, setSigningOut] = useState(false)
+  const [authEnabled, setAuthEnabled] = useState(false)
   const [releases, setReleases] = useState<GithubRelease[]>([])
   const [changelogError, setChangelogError] = useState<string | null>(null)
   const selectedPage = resolveSettingsSectionId(sectionId) ?? "general"
@@ -453,6 +471,7 @@ export function SettingsPage() {
   const setChatSoundPreference = useChatSoundPreferencesStore((store) => store.setChatSoundPreference)
   const setChatSoundId = useChatSoundPreferencesStore((store) => store.setChatSoundId)
   const keybindings = state.keybindings
+  const llmProvider = state.llmProvider
   const defaultProvider = useChatPreferencesStore((store) => store.defaultProvider)
   const providerDefaults = useChatPreferencesStore((store) => store.providerDefaults)
   const setDefaultProvider = useChatPreferencesStore((store) => store.setDefaultProvider)
@@ -466,7 +485,16 @@ export function SettingsPage() {
   const [editorCommandDraft, setEditorCommandDraft] = useState(editorCommandTemplate)
   const [keybindingDrafts, setKeybindingDrafts] = useState<Record<string, string>>({})
   const [keybindingsError, setKeybindingsError] = useState<string | null>(null)
+  const [llmProviderDraft, setLlmProviderDraft] = useState({
+    provider: "openai" as LlmProviderKind,
+    apiKey: "",
+    model: "",
+    baseUrl: "",
+  })
+  const [llmProviderError, setLlmProviderError] = useState<string | null>(null)
   const updateSnapshot = state.updateSnapshot
+  const handleReadLlmProvider = state.handleReadLlmProvider
+  const handleWriteLlmProvider = state.handleWriteLlmProvider
   const updateStatusLabel = updateSnapshot?.status === "checking"
     ? "Checking for updates…"
     : updateSnapshot?.status === "updating"
@@ -503,10 +531,53 @@ export function SettingsPage() {
   }, [resolvedKeybindings])
 
   useEffect(() => {
+    if (!llmProvider) return
+    setLlmProviderDraft({
+      provider: llmProvider.provider,
+      apiKey: llmProvider.apiKey,
+      model: llmProvider.model,
+      baseUrl: llmProvider.baseUrl,
+    })
+  }, [llmProvider])
+
+  useEffect(() => {
     if (!sectionId) return
     if (resolveSettingsSectionId(sectionId)) return
     navigate("/settings/general", { replace: true })
   }, [navigate, sectionId])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void fetch("/auth/status", {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+      },
+    })
+      .then(async (response) => {
+        if (!response.ok) return { enabled: false }
+        return await response.json() as { enabled?: boolean }
+      })
+      .then((payload) => {
+        if (cancelled) return
+        setAuthEnabled(payload.enabled === true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setAuthEnabled(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (selectedPage !== "providers" || isConnecting) return
+    void handleReadLlmProvider()
+  }, [handleReadLlmProvider, isConnecting, selectedPage])
 
   useEffect(() => {
     if (selectedPage !== "changelog" || isConnecting) return
@@ -614,6 +685,30 @@ export function SettingsPage() {
     }
   }
 
+  async function commitLlmProvider(nextValue = llmProviderDraft) {
+    try {
+      setLlmProviderError(null)
+      await handleWriteLlmProvider(nextValue)
+    } catch (error) {
+      setLlmProviderError(error instanceof Error ? error.message : "Unable to save quick response provider settings.")
+    }
+  }
+
+  function handleLlmProviderSelection(nextProvider: LlmProviderKind) {
+    const nextDraft = {
+      ...llmProviderDraft,
+      provider: nextProvider,
+      model: nextProvider === "openai"
+        ? DEFAULT_OPENAI_SDK_MODEL
+        : nextProvider === "openrouter"
+          ? DEFAULT_OPENROUTER_SDK_MODEL
+          : llmProviderDraft.model,
+      baseUrl: nextProvider === "custom" ? llmProviderDraft.baseUrl : "",
+    }
+    setLlmProviderDraft(nextDraft)
+    void commitLlmProvider(nextDraft)
+  }
+
   function retryChangelog() {
     changelogCache = null
     setChangelogStatus("loading")
@@ -641,6 +736,16 @@ export function SettingsPage() {
       : selectedSection.subtitle
   const showFooter = !isConnecting
 
+  async function handleSidebarSignOut() {
+    if (signingOut) return
+    setSigningOut(true)
+    try {
+      await state.handleSignOut()
+    } finally {
+      setSigningOut(false)
+    }
+  }
+
   return (
     <div className="relative flex h-full flex-1 min-w-0 bg-background">
       <div className="flex min-w-0 flex-1">
@@ -666,6 +771,21 @@ export function SettingsPage() {
                 </div>
               </button>
             ))}
+            {authEnabled ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleSidebarSignOut()
+                }}
+                disabled={signingOut}
+                className="cursor-pointer rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <div className="flex items-center gap-2.5">
+                  <LogOut className="h-4 w-4 shrink-0" />
+                  <span>{signingOut ? "Signing out..." : "Sign out"}</span>
+                </div>
+              </button>
+            ) : null}
           </div>
         </aside>
 
@@ -700,6 +820,23 @@ export function SettingsPage() {
                     <span className="whitespace-nowrap">{item.label}</span>
                   </button>
                 ))}
+                {authEnabled ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleSidebarSignOut()
+                    }}
+                    disabled={signingOut}
+                    className={cn(
+                      "flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-sm transition-colors",
+                      "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                      "disabled:cursor-not-allowed disabled:opacity-50"
+                    )}
+                  >
+                    <LogOut className="h-4 w-4 shrink-0" />
+                    <span className="whitespace-nowrap">{signingOut ? "Signing out..." : "Sign out"}</span>
+                  </button>
+                ) : null}
               </div>
             </div>
           </div>
@@ -1016,6 +1153,63 @@ export function SettingsPage() {
                           onPlanModeChange={(planMode) => setProviderDefaultPlanMode("codex", planMode)}
                           includePlanMode
                           className="justify-start flex-wrap"
+                        />
+                      </div>
+                    </SettingsRow>
+
+                    <SettingsRow
+                      title="Quick Response SDK"
+                      description={`Use an OpenAI-compatible API for title and commit message generation before Claude and Codex. Stored in ${llmProvider?.filePathDisplay ?? "the active llm-provider.json file"}.`}
+                      alignStart
+                    >
+                      <div className="flex w-full max-w-[420px] flex-col gap-3">
+                        {llmProviderError ? (
+                          <div className="rounded-2xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                            {llmProviderError}
+                          </div>
+                        ) : null}
+                        {llmProvider?.warning ? (
+                          <div className="rounded-lg border border-border bg-card/30 px-4 py-3 text-sm text-muted-foreground">
+                            {llmProvider.warning}
+                          </div>
+                        ) : null}
+                        <Select value={llmProviderDraft.provider} onValueChange={(value) => handleLlmProviderSelection(value as LlmProviderKind)}>
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              {QUICK_RESPONSE_PROVIDER_OPTIONS.map((option) => (
+                                <SelectItem key={option.value} value={option.value}>
+                                  {option.label}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        {llmProviderDraft.provider === "custom" ? (
+                          <Input
+                            value={llmProviderDraft.baseUrl}
+                            onChange={(event) => setLlmProviderDraft((current) => ({ ...current, baseUrl: event.target.value }))}
+                            onBlur={() => void commitLlmProvider()}
+                            onKeyDown={(event) => handleTextInputKeyDown(event, () => void commitLlmProvider())}
+                            placeholder="https://your-provider.example/v1"
+                          />
+                        ) : null}
+                        <Input
+                          type="password"
+                          value={llmProviderDraft.apiKey}
+                          onChange={(event) => setLlmProviderDraft((current) => ({ ...current, apiKey: event.target.value }))}
+                          onBlur={() => void commitLlmProvider()}
+                          onKeyDown={(event) => handleTextInputKeyDown(event, () => void commitLlmProvider())}
+                          placeholder="API key"
+                        />
+                        <Input
+                          value={llmProviderDraft.model}
+                          onChange={(event) => setLlmProviderDraft((current) => ({ ...current, model: event.target.value }))}
+                          onBlur={() => void commitLlmProvider()}
+                          onKeyDown={(event) => handleTextInputKeyDown(event, () => void commitLlmProvider())}
+                          placeholder="Model id"
                         />
                       </div>
                     </SettingsRow>

@@ -25,6 +25,7 @@ export interface StoreState {
   projectIdsByPath: Map<string, string>
   chatsById: Map<string, ChatRecord>
   queuedMessagesByChatId: Map<string, QueuedChatMessage[]>
+  sidebarProjectOrder: string[]
 }
 
 export interface SnapshotFile {
@@ -32,6 +33,7 @@ export interface SnapshotFile {
   generatedAt: number
   projects: ProjectRecord[]
   chats: ChatRecord[]
+  sidebarProjectOrder?: string[]
   queuedMessages?: Array<{ chatId: string; entries: QueuedChatMessage[] }>
   messages?: Array<{ chatId: string; entries: TranscriptEntry[] }>
 }
@@ -48,6 +50,11 @@ export type ProjectEvent = {
   type: "project_removed"
   timestamp: number
   projectId: string
+} | {
+  v: 2
+  type: "sidebar_project_order_set"
+  timestamp: number
+  projectIds: string[]
 }
 
 export type ChatEvent =
@@ -160,6 +167,7 @@ export function createEmptyState(): StoreState {
     projectIdsByPath: new Map(),
     chatsById: new Map(),
     queuedMessagesByChatId: new Map(),
+    sidebarProjectOrder: [],
   }
 }
 

@@ -12,6 +12,7 @@ import { ensureProjectDirectory } from "./paths"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
+import type { LlmProviderSnapshot } from "../shared/types"
 
 const DEFAULT_CHAT_RECENT_LIMIT = 200
 
@@ -96,6 +97,10 @@ interface CreateWsRouterArgs {
   agent: AgentCoordinator
   terminals: TerminalManager
   keybindings: KeybindingsManager
+  llmProvider?: {
+    read: () => Promise<LlmProviderSnapshot>
+    write: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderSnapshot>
+  }
   refreshDiscovery: () => Promise<DiscoveredProject[]>
   getDiscoveredProjects: () => DiscoveredProject[]
   machineDisplayName: string
@@ -110,6 +115,13 @@ interface SnapshotBroadcastFilter {
   chatIds?: Set<string>
   projectIds?: Set<string>
   terminalIds?: Set<string>
+}
+
+interface SnapshotComputationCache {
+  sidebar?: {
+    data: ReturnType<typeof deriveSidebarData>
+    signature: string
+  }
 }
 
 function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
@@ -132,6 +144,7 @@ export function createWsRouter({
   agent,
   terminals,
   keybindings,
+  llmProvider,
   refreshDiscovery,
   getDiscoveredProjects,
   machineDisplayName,
@@ -159,6 +172,37 @@ export function createWsRouter({
     discardFile: async () => ({ snapshotChanged: false }),
     ignoreFile: async () => ({ snapshotChanged: false }),
     readPatch: async () => ({ patch: "" }),
+  }
+  const resolvedLlmProvider = llmProvider ?? {
+    read: async () => ({
+      provider: "openai" as const,
+      apiKey: "",
+      model: "gpt-5.4-mini",
+      baseUrl: "",
+      resolvedBaseUrl: "https://api.openai.com/v1",
+      enabled: false,
+      warning: null,
+      filePathDisplay: "~/.kanna/llm-provider.json",
+    }),
+    write: async ({ provider, apiKey, model, baseUrl }: {
+      provider: "openai" | "openrouter" | "custom"
+      apiKey: string
+      model: string
+      baseUrl: string
+    }) => ({
+      provider,
+      apiKey,
+      model,
+      baseUrl,
+      resolvedBaseUrl: provider === "openrouter"
+        ? "https://openrouter.ai/api/v1"
+        : provider === "custom"
+          ? baseUrl
+          : "https://api.openai.com/v1",
+      enabled: false,
+      warning: null,
+      filePathDisplay: "~/.kanna/llm-provider.json",
+    }),
   }
 
   function getProtectedChatIds() {
@@ -241,28 +285,50 @@ export function createWsRouter({
     return true
   }
 
-  function createEnvelope(id: string, topic: SubscriptionTopic): ServerEnvelope {
+  function getSidebarSnapshotCacheEntry(cache?: SnapshotComputationCache) {
+    if (cache?.sidebar) {
+      return cache.sidebar
+    }
+
+    const startedAt = performance.now()
+    const data = deriveSidebarData(store.state, agent.getActiveStatuses())
+    if (isSendToStartingProfilingEnabled()) {
+      const totalChats = data.projectGroups.reduce((count, group) => count + group.chats.length, 0)
+      console.log("[kanna/send->starting][server]", JSON.stringify({
+        stage: "ws.sidebar_snapshot_built",
+        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
+        projectGroupCount: data.projectGroups.length,
+        chatCount: totalChats,
+        totalChatCount: store.state.chatsById.size,
+        totalProjectCount: store.state.projectsById.size,
+      }))
+    }
+
+    const sidebar = {
+      data,
+      signature: JSON.stringify({
+        type: "sidebar" as const,
+        data,
+      }),
+    }
+
+    if (cache) {
+      cache.sidebar = sidebar
+    }
+
+    return sidebar
+  }
+
+  function createEnvelope(id: string, topic: SubscriptionTopic, cache?: SnapshotComputationCache): ServerEnvelope {
     if (topic.type === "sidebar") {
-      const startedAt = performance.now()
-      const data = deriveSidebarData(store.state, agent.getActiveStatuses())
-      if (isSendToStartingProfilingEnabled()) {
-        const totalChats = data.projectGroups.reduce((count, group) => count + group.chats.length, 0)
-        console.log("[kanna/send->starting][server]", JSON.stringify({
-          stage: "ws.sidebar_snapshot_built",
-          elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
-          projectGroupCount: data.projectGroups.length,
-          chatCount: totalChats,
-          totalChatCount: store.state.chatsById.size,
-          totalProjectCount: store.state.projectsById.size,
-        }))
-      }
+      const sidebar = getSidebarSnapshotCacheEntry(cache)
       return {
         v: PROTOCOL_VERSION,
         type: "snapshot",
         id,
         snapshot: {
           type: "sidebar",
-          data,
+          data: sidebar.data,
         },
       }
     }
@@ -360,7 +426,7 @@ export function createWsRouter({
 
   async function pushSnapshots(
     ws: ServerWebSocket<ClientState>,
-    options?: { skipPrune?: boolean; filter?: SnapshotBroadcastFilter }
+    options?: { skipPrune?: boolean; filter?: SnapshotBroadcastFilter; cache?: SnapshotComputationCache }
   ) {
     const pushStartedAt = performance.now()
     if (!options?.skipPrune) {
@@ -374,11 +440,13 @@ export function createWsRouter({
         continue
       }
       const envelopeStartedAt = performance.now()
-      const envelope = createEnvelope(id, topic)
+      const envelope = createEnvelope(id, topic, options?.cache)
       const createdAt = performance.now()
       if (envelope.type !== "snapshot") continue
-      const signature = JSON.stringify(envelope.snapshot)
-      const signatureReadyAt = performance.now()
+      const signature = topic.type === "sidebar"
+        ? getSidebarSnapshotCacheEntry(options?.cache).signature
+        : JSON.stringify(envelope.snapshot)
+      const signatureReadyAt = topic.type === "sidebar" ? createdAt : performance.now()
       if (snapshotSignatures.get(id) === signature) {
         skippedCount += 1
         continue
@@ -420,9 +488,10 @@ export function createWsRouter({
   async function broadcastSnapshots() {
     const startedAt = performance.now()
     let socketCount = 0
+    const cache: SnapshotComputationCache = {}
     for (const ws of sockets) {
       socketCount += 1
-      await pushSnapshots(ws, { skipPrune: true })
+      await pushSnapshots(ws, { skipPrune: true, cache })
     }
     if (isSendToStartingProfilingEnabled()) {
       console.log("[kanna/send->starting][server]", JSON.stringify({
@@ -439,9 +508,10 @@ export function createWsRouter({
   async function broadcastFilteredSnapshots(filter: SnapshotBroadcastFilter) {
     const startedAt = performance.now()
     let socketCount = 0
+    const cache: SnapshotComputationCache = {}
     for (const ws of sockets) {
       socketCount += 1
-      await pushSnapshots(ws, { skipPrune: true, filter })
+      await pushSnapshots(ws, { skipPrune: true, filter, cache })
     }
     if (isSendToStartingProfilingEnabled()) {
       console.log("[kanna/send->starting][server]", JSON.stringify({
@@ -646,6 +716,20 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
         }
+        case "settings.readLlmProvider": {
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: await resolvedLlmProvider.read() })
+          return
+        }
+        case "settings.writeLlmProvider": {
+          const snapshot = await resolvedLlmProvider.write({
+            provider: command.provider,
+            apiKey: command.apiKey,
+            model: command.model,
+            baseUrl: command.baseUrl,
+          })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          return
+        }
         case "project.open": {
           await ensureProjectDirectory(command.localPath)
           const project = await store.openProject(command.localPath)
@@ -672,6 +756,12 @@ export function createWsRouter({
           await store.removeProject(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
+        }
+        case "sidebar.reorderProjectGroups": {
+          await store.setSidebarProjectOrder(command.projectIds)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastFilteredSnapshots({ includeSidebar: true })
+          return
         }
         case "project.readDiffPatch": {
           const project = store.getProject(command.projectId)

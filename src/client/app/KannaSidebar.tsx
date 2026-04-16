@@ -3,14 +3,12 @@ import { Flower, Loader2, PanelLeft, X, Menu, Plus, Settings } from "lucide-reac
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
 import { Button } from "../components/ui/button"
-import { shouldDefaultCollapseSidebarProject } from "../lib/sidebarChats"
 import { cn } from "../lib/utils"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
 import { getResolvedKeybindings } from "../lib/keybindings"
 import type { KeybindingsSnapshot, SidebarData, SidebarChatRow, UpdateSnapshot } from "../../shared/types"
 import type { SocketStatus } from "./socket"
-import { useProjectGroupOrderStore } from "../stores/projectGroupOrderStore"
 import {
   getSidebarJumpTargetIndex,
   getSidebarNumberJumpHint,
@@ -39,6 +37,7 @@ interface KannaSidebarProps {
   onCopyPath: (localPath: string) => void
   onOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => void
   onRemoveProject: (projectId: string) => void
+  onReorderProjectGroups: (projectIds: string[]) => void
   editorLabel: string
   updateSnapshot: UpdateSnapshot | null
   onOpenChangelog: () => void
@@ -64,6 +63,7 @@ function KannaSidebarImpl({
   onCopyPath,
   onOpenExternalPath,
   onRemoveProject,
+  onReorderProjectGroups,
   editorLabel,
   updateSnapshot,
   onOpenChangelog,
@@ -76,35 +76,12 @@ function KannaSidebarImpl({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [showNumberJumpHints, setShowNumberJumpHints] = useState(false)
-  const chatsPerProject = 10
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
-
-  const savedOrder = useProjectGroupOrderStore((s) => s.order)
-  const setGroupOrder = useProjectGroupOrderStore((s) => s.setOrder)
-
-  const orderedProjectGroups = useMemo(() => {
-    if (savedOrder.length === 0) return data.projectGroups
-
-    const groupMap = new Map(data.projectGroups.map((g) => [g.groupKey, g]))
-    const ordered = savedOrder
-      .filter((key) => groupMap.has(key))
-      .map((key) => groupMap.get(key)!)
-
-    const orderedKeys = new Set(savedOrder)
-    for (const group of data.projectGroups) {
-      if (!orderedKeys.has(group.groupKey)) ordered.push(group)
-    }
-
-    return ordered
-  }, [data.projectGroups, savedOrder])
-  const handleReorderGroups = useCallback(
-    (newOrder: string[]) => setGroupOrder(newOrder),
-    [setGroupOrder]
-  )
   const visibleChats = useMemo(
-    () => getVisibleSidebarChats(orderedProjectGroups, collapsedSections, expandedGroups, chatsPerProject, nowMs),
-    [chatsPerProject, collapsedSections, expandedGroups, nowMs, orderedProjectGroups]
+    () => getVisibleSidebarChats(data.projectGroups, collapsedSections, expandedGroups),
+    [collapsedSections, data.projectGroups, expandedGroups]
   )
+  const visibleChatsRef = useRef(visibleChats)
   const visibleIndexByChatId = useMemo(
     () => new Map(visibleChats.map((entry) => [entry.chat.chatId, entry.visibleIndex])),
     [visibleChats]
@@ -118,9 +95,13 @@ function KannaSidebarImpl({
   const activeVisibleCount = visibleChats.length
 
   useEffect(() => {
+    visibleChatsRef.current = visibleChats
+  }, [visibleChats])
+
+  useEffect(() => {
     setCollapsedSections((previous) => {
       const next = new Set<string>()
-      const projectKeys = new Set(orderedProjectGroups.map((group) => group.groupKey))
+      const projectKeys = new Set(data.projectGroups.map((group) => group.groupKey))
       const initializedKeys = initializedCollapsedGroupKeysRef.current
 
       for (const key of previous) {
@@ -133,10 +114,10 @@ function KannaSidebarImpl({
         [...initializedKeys].filter((key) => projectKeys.has(key))
       )
 
-      for (const group of orderedProjectGroups) {
+      for (const group of data.projectGroups) {
         if (initializedCollapsedGroupKeysRef.current.has(group.groupKey)) continue
         initializedCollapsedGroupKeysRef.current.add(group.groupKey)
-        if (shouldDefaultCollapseSidebarProject(group.chats, nowMs)) {
+        if (group.defaultCollapsed) {
           next.add(group.groupKey)
         }
       }
@@ -147,7 +128,7 @@ function KannaSidebarImpl({
 
       return next
     })
-  }, [nowMs, orderedProjectGroups])
+  }, [data.projectGroups])
 
   const toggleSection = useCallback((key: string) => {
     setCollapsedSections((previous) => {
@@ -225,7 +206,7 @@ function KannaSidebarImpl({
         return
       }
 
-      const targetChat = visibleChats[targetIndex - 1]?.chat
+      const targetChat = visibleChatsRef.current[targetIndex - 1]?.chat
       if (!targetChat) {
         return
       }
@@ -252,7 +233,7 @@ function KannaSidebarImpl({
       window.removeEventListener("keyup", handleKeyUp)
       window.removeEventListener("blur", clearHints)
     }
-  }, [currentProjectId, navigate, onClose, onCreateChat, onOpenAddProjectModal, resolvedKeybindings, visibleChats])
+  }, [currentProjectId, navigate, onClose, onCreateChat, onOpenAddProjectModal, resolvedKeybindings])
 
   useEffect(() => {
     if (!activeChatId || !scrollContainerRef.current) return
@@ -420,16 +401,14 @@ function KannaSidebarImpl({
             ) : null}
 
             <LocalProjectsSection
-              projectGroups={orderedProjectGroups}
+              projectGroups={data.projectGroups}
               editorLabel={editorLabel}
-              onReorderGroups={handleReorderGroups}
+              onReorderGroups={onReorderProjectGroups}
               collapsedSections={collapsedSections}
               expandedGroups={expandedGroups}
               onToggleSection={toggleSection}
               onToggleExpandedGroup={toggleExpandedGroup}
               renderChatRow={renderChatRow}
-              chatsPerProject={chatsPerProject}
-              nowMs={nowMs}
               onNewLocalChat={(localPath) => {
                 const projectId = projectIdByPath.get(localPath)
                 if (projectId) {

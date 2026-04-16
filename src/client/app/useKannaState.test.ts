@@ -60,6 +60,9 @@ function createSidebarData(): SidebarData {
             hasAutomation: false,
           },
         ],
+        previewChats: [],
+        olderChats: [],
+        defaultCollapsed: false,
       },
       {
         groupKey: "project-2",
@@ -78,6 +81,9 @@ function createSidebarData(): SidebarData {
             hasAutomation: false,
           },
         ],
+        previewChats: [],
+        olderChats: [],
+        defaultCollapsed: true,
       },
     ],
   }

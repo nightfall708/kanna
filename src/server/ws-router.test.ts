@@ -1,8 +1,32 @@
 import { describe, expect, test } from "bun:test"
-import type { KeybindingsSnapshot, UpdateSnapshot } from "../shared/types"
+import type { KeybindingsSnapshot, LlmProviderSnapshot, UpdateSnapshot } from "../shared/types"
 import { PROTOCOL_VERSION } from "../shared/types"
 import { createEmptyState } from "./events"
 import { createWsRouter } from "./ws-router"
+
+function withSidebarGroupDefaults(group: {
+  groupKey: string
+  localPath: string
+  chats: Array<{
+    _id: string
+    _creationTime: number
+    chatId: string
+    title: string
+    status: "idle" | "starting" | "running" | "waiting_for_user" | "failed"
+    unread: boolean
+    localPath: string
+    provider: "claude" | "codex" | null
+    lastMessageAt?: number
+    hasAutomation: boolean
+  }>
+}) {
+  return {
+    ...group,
+    previewChats: group.chats,
+    olderChats: [],
+    defaultCollapsed: true,
+  }
+}
 
 class FakeWebSocket {
   readonly sent: unknown[] = []
@@ -40,6 +64,17 @@ const DEFAULT_UPDATE_SNAPSHOT: UpdateSnapshot = {
   error: null,
   installAction: "restart",
   reloadRequestedAt: null,
+}
+
+const DEFAULT_LLM_PROVIDER_SNAPSHOT: LlmProviderSnapshot = {
+  provider: "openai",
+  apiKey: "",
+  model: "",
+  baseUrl: "",
+  resolvedBaseUrl: "https://api.openai.com/v1",
+  enabled: false,
+  warning: null,
+  filePathDisplay: "~/.kanna/llm-provider.json",
 }
 
 describe("ws-router", () => {
@@ -81,6 +116,94 @@ describe("ws-router", () => {
         id: "ping-1",
       },
     ])
+  })
+
+  test("reads and writes llm provider settings via commands", async () => {
+    const writes: Array<Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">> = []
+    const router = createWsRouter({
+      store: { state: createEmptyState() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      llmProvider: {
+        read: async () => DEFAULT_LLM_PROVIDER_SNAPSHOT,
+        write: async (value) => {
+          writes.push(value)
+          return {
+            ...DEFAULT_LLM_PROVIDER_SNAPSHOT,
+            ...value,
+            resolvedBaseUrl: value.provider === "custom" ? value.baseUrl : "https://api.openai.com/v1",
+            enabled: Boolean(value.apiKey && value.model),
+          }
+        },
+      },
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "llm-read-1",
+        command: { type: "settings.readLlmProvider" },
+      })
+    )
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "llm-write-1",
+        command: {
+          type: "settings.writeLlmProvider",
+          provider: "custom",
+          apiKey: "test-key",
+          model: "gpt-test",
+          baseUrl: "https://example.com/v1",
+        },
+      })
+    )
+
+    expect(ws.sent).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "llm-read-1",
+        result: DEFAULT_LLM_PROVIDER_SNAPSHOT,
+      },
+      {
+        v: PROTOCOL_VERSION,
+        type: "ack",
+        id: "llm-write-1",
+        result: {
+          ...DEFAULT_LLM_PROVIDER_SNAPSHOT,
+          provider: "custom",
+          apiKey: "test-key",
+          model: "gpt-test",
+          baseUrl: "https://example.com/v1",
+          resolvedBaseUrl: "https://example.com/v1",
+          enabled: true,
+        },
+      },
+    ])
+    expect(writes).toEqual([{
+      provider: "custom",
+      apiKey: "test-key",
+      model: "gpt-test",
+      baseUrl: "https://example.com/v1",
+    }])
   })
 
   test("acks terminal.input without rebroadcasting terminal snapshots", async () => {
@@ -181,6 +304,54 @@ describe("ws-router", () => {
       type: "ack",
       id: "chat-sub-1",
     })
+  })
+
+  test("reuses one sidebar derivation across sockets in the same broadcast pass", async () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+
+    let activeStatusCalls = 0
+    const router = createWsRouter({
+      store: { state } as never,
+      agent: {
+        getActiveStatuses: () => {
+          activeStatusCalls += 1
+          return new Map()
+        },
+        getDrainingChatIds: () => new Set(),
+      } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+
+    const wsA = new FakeWebSocket()
+    const wsB = new FakeWebSocket()
+    router.handleOpen(wsA as never)
+    router.handleOpen(wsB as never)
+    wsA.data.subscriptions.set("sidebar-a", { type: "sidebar" })
+    wsB.data.subscriptions.set("sidebar-b", { type: "sidebar" })
+
+    await router.broadcastSnapshots()
+
+    expect(activeStatusCalls).toBe(1)
+    expect(wsA.sent).toHaveLength(1)
+    expect(wsB.sent).toHaveLength(1)
   })
 
   test("subscribes to project git snapshots independently from chat snapshots", async () => {
@@ -625,7 +796,7 @@ describe("ws-router", () => {
       snapshot: {
         type: "sidebar",
         data: {
-          projectGroups: [{
+          projectGroups: [withSidebarGroupDefaults({
             groupKey: "project-1",
             localPath: "/tmp/project",
             chats: [{
@@ -637,10 +808,9 @@ describe("ws-router", () => {
               unread: false,
               localPath: "/tmp/project",
               provider: null,
-              lastMessageAt: undefined,
               hasAutomation: false,
             }],
-          }],
+          })],
         },
       },
     })
@@ -651,7 +821,7 @@ describe("ws-router", () => {
       snapshot: {
         type: "sidebar",
         data: {
-          projectGroups: [{
+          projectGroups: [withSidebarGroupDefaults({
             groupKey: "project-1",
             localPath: "/tmp/project",
             chats: [{
@@ -663,10 +833,102 @@ describe("ws-router", () => {
               unread: false,
               localPath: "/tmp/project",
               provider: null,
-              lastMessageAt: undefined,
               hasAutomation: false,
             }],
-          }],
+          })],
+        },
+      },
+    })
+  })
+
+  test("reorders sidebar project groups on the server and rebroadcasts the snapshot", async () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project-1",
+      title: "Project 1",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.projectsById.set("project-2", {
+      id: "project-2",
+      localPath: "/tmp/project-2",
+      title: "Project 2",
+      createdAt: 2,
+      updatedAt: 2,
+    })
+
+    const setSidebarProjectOrderCalls: string[][] = []
+    const router = createWsRouter({
+      store: {
+        state,
+        async setSidebarProjectOrder(projectIds: string[]) {
+          setSidebarProjectOrderCalls.push(projectIds)
+          state.sidebarProjectOrder = [...projectIds]
+        },
+      } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "subscribe",
+        id: "sidebar-sub-1",
+        topic: { type: "sidebar" },
+      })
+    )
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "sidebar-reorder-1",
+        command: { type: "sidebar.reorderProjectGroups", projectIds: ["project-1", "project-2"] },
+      })
+    )
+
+    expect(setSidebarProjectOrderCalls).toEqual([["project-1", "project-2"]])
+    expect(ws.sent.at(-2)).toEqual({
+      v: PROTOCOL_VERSION,
+      type: "ack",
+      id: "sidebar-reorder-1",
+    })
+    expect(ws.sent.at(-1)).toEqual({
+      v: PROTOCOL_VERSION,
+      type: "snapshot",
+      id: "sidebar-sub-1",
+      snapshot: {
+        type: "sidebar",
+        data: {
+          projectGroups: [
+            withSidebarGroupDefaults({
+              groupKey: "project-1",
+              localPath: "/tmp/project-1",
+              chats: [],
+            }),
+            withSidebarGroupDefaults({
+              groupKey: "project-2",
+              localPath: "/tmp/project-2",
+              chats: [],
+            }),
+          ],
         },
       },
     })
@@ -741,9 +1003,11 @@ describe("ws-router", () => {
         type: "sidebar",
         data: {
           projectGroups: [{
-            groupKey: "project-1",
-            localPath: "/tmp/project",
-            chats: [],
+            ...withSidebarGroupDefaults({
+              groupKey: "project-1",
+              localPath: "/tmp/project",
+              chats: [],
+            }),
           }],
         },
       },
