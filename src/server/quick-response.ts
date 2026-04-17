@@ -98,7 +98,7 @@ export async function runClaudeStructured(args: Omit<StructuredQuickResponseArgs
     prompt: args.prompt,
     options: {
       cwd: args.cwd,
-      model: "haiku",
+      model: "claude-haiku-4-5-20251001",
       tools: [],
       systemPrompt: "",
       effort: "low",

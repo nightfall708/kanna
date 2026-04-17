@@ -91,6 +91,19 @@ export function getClipboardImageFiles(items: Iterable<ClipboardFileItem>, times
   return files
 }
 
+export function trimTrailingPastedNewlines(text: string) {
+  return text.replace(/(?:\r\n|\r|\n)+$/, "")
+}
+
+function replaceTextSelection(args: {
+  value: string
+  insertedText: string
+  selectionStart: number
+  selectionEnd: number
+}) {
+  return `${args.value.slice(0, args.selectionStart)}${args.insertedText}${args.value.slice(args.selectionEnd)}`
+}
+
 interface ComposerAttachment extends ChatAttachment {
   status: "uploading" | "uploaded" | "failed"
   previewUrl?: string
@@ -575,9 +588,35 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
     const files = getClipboardImageFiles(event.clipboardData.items, Date.now())
-    if (files.length === 0) return
+    const pastedText = event.clipboardData.getData("text/plain")
+    const trimmedText = trimTrailingPastedNewlines(pastedText)
+    const shouldTrimTrailingNewlines = pastedText.length > 0 && trimmedText !== pastedText
 
-    enqueueFiles(files)
+    if (files.length === 0 && !shouldTrimTrailingNewlines) return
+
+    if (files.length > 0) {
+      enqueueFiles(files)
+    }
+
+    if (shouldTrimTrailingNewlines) {
+      event.preventDefault()
+      const textarea = event.currentTarget
+      const nextValue = replaceTextSelection({
+        value,
+        insertedText: trimmedText,
+        selectionStart: textarea.selectionStart,
+        selectionEnd: textarea.selectionEnd,
+      })
+      const nextCaretPosition = textarea.selectionStart + trimmedText.length
+      setValue(nextValue)
+      if (chatId) setDraft(chatId, nextValue)
+      autoResize()
+      requestAnimationFrame(() => {
+        textarea.selectionStart = nextCaretPosition
+        textarea.selectionEnd = nextCaretPosition
+      })
+      return
+    }
 
     if (!hasClipboardTextPayload(event.clipboardData)) {
       event.preventDefault()

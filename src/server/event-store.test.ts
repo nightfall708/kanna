@@ -181,7 +181,7 @@ describe("EventStore", () => {
       content: "second queued",
       attachments: [],
       provider: "claude",
-      model: "sonnet",
+      model: "claude-sonnet-4-6",
       planMode: true,
     })
 

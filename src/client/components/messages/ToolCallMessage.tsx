@@ -120,6 +120,9 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
     if (message.toolKind === "edit_file") {
       return `Edit ${stripWorkspacePath(message.input.filePath, localPath)}`
     }
+    if (message.toolKind === "delete_file") {
+      return `Delete ${stripWorkspacePath(message.input.filePath, localPath)}`
+    }
     if (message.toolKind === "mcp_generic") {
       return `${toTitleCase(message.input.tool)} from ${toTitleCase(message.input.server)}`
     }
@@ -139,6 +142,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
   const isBashTool = message.toolKind === "bash"
   const isWriteTool = message.toolKind === "write_file"
   const isEditTool = message.toolKind === "edit_file"
+  const isDeleteTool = message.toolKind === "delete_file"
   const isReadTool = message.toolKind === "read_file"
 
   const resultText = useMemo(() => {
@@ -174,6 +178,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
       case "bash":
         return message.input.command
       case "write_file":
+      case "delete_file":
         return message.input.content
       default:
         return JSON.stringify(message.input, null, 2)
@@ -192,6 +197,10 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
                   isDiff
                   oldString={message.input.oldString}
                   newString={message.input.newString}
+                />
+              ) : isDeleteTool ? (
+                <FileContentView
+                  content={message.input.content}
                 />
               ) : !isReadTool && !isWriteTool && (
                 <MetaCodeBlock label={
@@ -229,7 +238,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
                   content={message.input.content}
                 />
               )}
-              {hasResult && !isReadTool && !(isWriteTool && !message.isError) && !(isEditTool && !message.isError) && (
+              {hasResult && !isReadTool && !(isWriteTool && !message.isError) && !(isEditTool && !message.isError) && !(isDeleteTool && !message.isError) && (
                 <MetaCodeBlock label={message.isError ? "Error" : "Result"} copyText={resultText}>
                   {resultText}
                 </MetaCodeBlock>

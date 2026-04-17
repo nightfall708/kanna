@@ -62,7 +62,7 @@ describe("read models", () => {
       attachments: [],
       createdAt: 2,
       provider: "claude",
-      model: "sonnet",
+      model: "claude-sonnet-4-6",
       planMode: true,
     }])
 

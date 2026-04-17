@@ -119,6 +119,26 @@ export function isClaudeContextWindow(value: unknown): value is ClaudeContextWin
   return CLAUDE_CONTEXT_WINDOW_OPTIONS.some((option) => option.id === value)
 }
 
+export function normalizeClaudeModelId(modelId?: string): string {
+  switch (modelId) {
+    case "opus":
+    case "claude-opus-4-7":
+      return "claude-opus-4-7"
+    case "sonnet":
+    case "claude-sonnet-4-6":
+      return "claude-sonnet-4-6"
+    case "haiku":
+    case "claude-haiku-4-5-20251001":
+      return "claude-haiku-4-5-20251001"
+    default:
+      return modelId ?? "claude-opus-4-7"
+  }
+}
+
+export function isClaudeOpusModelId(modelId: string): boolean {
+  return normalizeClaudeModelId(modelId).startsWith("claude-opus-")
+}
+
 export interface ProviderCatalogEntry {
   id: AgentProvider
   label: string
@@ -133,13 +153,13 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
   {
     id: "claude",
     label: "Claude",
-    defaultModel: "sonnet",
+    defaultModel: "claude-sonnet-4-6",
     defaultEffort: "high",
     supportsPlanMode: true,
     models: [
-      { id: "opus", label: "Opus", supportsEffort: true, contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS] },
-      { id: "sonnet", label: "Sonnet", supportsEffort: true, contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS] },
-      { id: "haiku", label: "Haiku", supportsEffort: true },
+      { id: "claude-opus-4-7", label: "Opus 4.7", supportsEffort: true, contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS] },
+      { id: "claude-sonnet-4-6", label: "Sonnet 4.6", supportsEffort: true, contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS] },
+      { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", supportsEffort: true },
     ],
     efforts: [...CLAUDE_REASONING_OPTIONS],
   },
@@ -268,6 +288,11 @@ export interface LlmProviderSnapshot {
   enabled: boolean
   warning: string | null
   filePathDisplay: string
+}
+
+export interface LlmProviderValidationResult {
+  ok: boolean
+  error: unknown | null
 }
 
 export type UpdateStatus =
@@ -415,6 +440,9 @@ export interface WriteFileToolCall
 export interface EditFileToolCall
   extends ToolCallBase<"edit_file", { filePath: string; oldString: string; newString: string }> { }
 
+export interface DeleteFileToolCall
+  extends ToolCallBase<"delete_file", { filePath: string; content: string }> { }
+
 export interface SubagentTaskToolCall
   extends ToolCallBase<"subagent_task", { subagentType?: string }> { }
 
@@ -436,6 +464,7 @@ export type NormalizedToolCall =
   | ReadFileToolCall
   | WriteFileToolCall
   | EditFileToolCall
+  | DeleteFileToolCall
   | SubagentTaskToolCall
   | McpGenericToolCall
   | UnknownToolCall
@@ -778,6 +807,9 @@ export type HydratedWriteFileToolCall =
 export type HydratedEditFileToolCall =
   HydratedToolCallBase<"edit_file", EditFileToolCall["input"], unknown>
 
+export type HydratedDeleteFileToolCall =
+  HydratedToolCallBase<"delete_file", DeleteFileToolCall["input"], unknown>
+
 export type HydratedSubagentTaskToolCall =
   HydratedToolCallBase<"subagent_task", SubagentTaskToolCall["input"], unknown>
 
@@ -799,6 +831,7 @@ export type HydratedToolCall =
   | HydratedReadFileToolCall
   | HydratedWriteFileToolCall
   | HydratedEditFileToolCall
+  | HydratedDeleteFileToolCall
   | HydratedSubagentTaskToolCall
   | HydratedMcpGenericToolCall
   | HydratedUnknownToolCall

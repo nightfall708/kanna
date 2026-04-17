@@ -142,6 +142,10 @@ describe("ws-router", () => {
             enabled: Boolean(value.apiKey && value.model),
           }
         },
+        validate: async () => ({
+          ok: true,
+          error: null,
+        }),
       },
       refreshDiscovery: async () => [],
       getDiscoveredProjects: () => [],

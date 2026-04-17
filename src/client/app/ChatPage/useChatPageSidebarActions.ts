@@ -209,27 +209,36 @@ export function useChatPageSidebarActions({
     if (!chatId) {
       return null
     }
-    const result = await state.socket.command<DiffCommitResult>({
-      type: "chat.commitDiffs",
-      chatId,
-      paths: args.paths,
-      summary: args.summary,
-      description: args.description,
-      mode: args.mode,
-    })
-    if (result.snapshotChanged) {
-      refreshDiffs()
-    }
-    if (!result.ok) {
+    try {
+      const result = await state.socket.command<DiffCommitResult>({
+        type: "chat.commitDiffs",
+        chatId,
+        paths: args.paths,
+        summary: args.summary,
+        description: args.description,
+        mode: args.mode,
+      })
+      if (result.snapshotChanged) {
+        refreshDiffs()
+      }
+      if (!result.ok) {
+        await dialog.alert({
+          title: result.title,
+          description: result.localCommitCreated
+            ? `${result.message}\n\nA local commit was created, but the push did not complete.${result.detail ? `\n\n${result.detail}` : ""}`
+            : `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+          closeLabel: "OK",
+        })
+      }
+      return result
+    } catch (error) {
       await dialog.alert({
-        title: result.title,
-        description: result.localCommitCreated
-          ? `${result.message}\n\nA local commit was created, but the push did not complete.${result.detail ? `\n\n${result.detail}` : ""}`
-          : `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+        title: "Commit failed",
+        description: error instanceof Error ? error.message : String(error),
         closeLabel: "OK",
       })
+      return null
     }
-    return result
   }, [dialog, refreshDiffs, state.socket])
 
   const handleSyncBranch = useCallback(async (action: "fetch" | "pull" | "push" | "publish") => {
@@ -238,22 +247,31 @@ export function useChatPageSidebarActions({
       return null
     }
 
-    const result = await state.socket.command<ChatSyncResult>({
-      type: "chat.syncBranch",
-      chatId,
-      action,
-    })
-    if (result.snapshotChanged) {
-      refreshDiffs()
-    }
-    if (!result.ok) {
+    try {
+      const result = await state.socket.command<ChatSyncResult>({
+        type: "chat.syncBranch",
+        chatId,
+        action,
+      })
+      if (result.snapshotChanged) {
+        refreshDiffs()
+      }
+      if (!result.ok) {
+        await dialog.alert({
+          title: result.title,
+          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+          closeLabel: "OK",
+        })
+      }
+      return result
+    } catch (error) {
       await dialog.alert({
-        title: result.title,
-        description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+        title: "Git sync failed",
+        description: error instanceof Error ? error.message : String(error),
         closeLabel: "OK",
       })
+      return null
     }
-    return result
   }, [dialog, refreshDiffs, state.socket])
 
   const handleGenerateCommitMessage = useCallback(async (args: { paths: string[] }) => {
