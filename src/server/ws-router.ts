@@ -15,7 +15,7 @@ import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
 import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
-import { ensureProjectDirectory, resolveLocalPath } from "./paths"
+import { cloneRepository, ensureProjectDirectory, resolveClonePath, resolveLocalPath } from "./paths"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
@@ -1226,6 +1226,14 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           await broadcastFilteredSnapshots({ includeSidebar: true })
           return
+        }
+        case "project.clone": {
+          const cloneDest = await resolveClonePath(command.localPath, command.fallbackPath)
+          await cloneRepository(command.cloneUrl, cloneDest)
+          const project = await store.openProject(cloneDest, command.title)
+          await refreshDiscovery()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id, localPath: cloneDest } })
+          break
         }
         case "project.remove": {
           await store.removeProject(command.projectId)
