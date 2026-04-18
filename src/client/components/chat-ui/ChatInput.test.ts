@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
+import { createElement } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
+import { PROVIDERS } from "../../../shared/types"
+import { ChatInput, getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
 
 function createClipboardItem(args: {
   kind?: string
@@ -115,5 +118,22 @@ describe("trimTrailingPastedNewlines", () => {
 
   test("leaves text without trailing newlines unchanged", () => {
     expect(trimTrailingPastedNewlines("hello")).toBe("hello")
+  })
+})
+
+describe("ChatInput", () => {
+  test("renders the mobile attachment trigger as a native file input target", () => {
+    const html = renderToStaticMarkup(createElement(ChatInput, {
+      onSubmit: async () => undefined,
+      disabled: false,
+      canCancel: false,
+      activeProvider: null,
+      availableProviders: PROVIDERS,
+    }))
+
+    expect(html).toContain('aria-label="Add attachment"')
+    expect(html).toContain('type="file"')
+    expect(html).toContain("absolute inset-0 cursor-pointer opacity-0")
+    expect(html).not.toContain('type="file" multiple="" class="hidden"')
   })
 })

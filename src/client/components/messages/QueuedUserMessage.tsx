@@ -3,7 +3,7 @@ import remarkGfm from "remark-gfm"
 import type { QueuedChatMessage } from "../../../shared/types"
 import { Button } from "../ui/button"
 import { createMarkdownComponents } from "./shared"
-import { ArrowUp, Delete, X } from "lucide-react";
+import { X } from "lucide-react"
 
 interface QueuedUserMessageProps {
   message: QueuedChatMessage
@@ -14,7 +14,7 @@ interface QueuedUserMessageProps {
 export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMessageProps) {
   return (
     <div className="flex justify-end py-2">
-      <div className="flex max-w-[85%] sm:max-w-[80%] flex-col items-end gap-1.5 text-right">
+      <div className="flex max-w-[85%] sm:max-w-[80%] flex-col items-end gap-1.5">
         {message.attachments.length > 0 ? (
           <div className="flex flex-wrap justify-end gap-2">
             {message.attachments.map((attachment) => (
@@ -30,7 +30,7 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
         ) : null}
         {message.content ? (
           <div className="relative">
-            <div className="rounded-[20px] border border-dashed border-border bg-transparent px-3.5 py-1.5 prose prose-sm prose-invert text-primary [&_p]:whitespace-pre-line">
+            <div className="rounded-[20px] border border-dashed border-border bg-transparent px-3.5 py-1.5 prose prose-sm prose-invert text-left text-primary [&_p]:whitespace-pre-line">
               <Markdown remarkPlugins={[remarkGfm]} components={createMarkdownComponents()}>{message.content}</Markdown>
               
             </div>
