@@ -11,7 +11,7 @@ import {
   normalizeClaudeContextWindow,
   resolveClaudeContextWindowTokens,
 } from "../../../shared/types"
-import { Button } from "../ui/button"
+import { Button, buttonVariants } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
 import { cn } from "../../lib/utils"
@@ -204,7 +204,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const storedComposerState = useChatPreferencesStore((state) => state.chatStates[composerChatId])
   const composerState = storedComposerState ?? getComposerState(composerChatId)
   const [value, setValue] = useState(() => (chatId ? getDraft(chatId) : ""))
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : []))
@@ -652,10 +651,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
   }
 
-  function handleMobileFilePicker() {
-    fileInputRef.current?.click()
-  }
-
   return (
     <div>
       <div className={cn("px-3 pt-0", isStandalone && "px-5")}>
@@ -690,32 +685,30 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           ) : null}
 
           <div className="flex items-end max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] pr-1.5">
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(event) => {
-                const files = [...(event.target.files ?? [])]
-                if (files.length > 0) {
-                  enqueueFiles(files)
-                }
-                event.target.value = ""
-              }}
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onPointerDown={(event) => {
-                event.preventDefault()
-                handleMobileFilePicker()
-              }}
-              disabled={disabled}
-              className="md:hidden flex-shrink-0 ml-1 mb-1 h-10 w-10 rounded-full text-muted-foreground hover:text-foreground"
+            <label
+              aria-label="Add attachment"
+              className={cn(
+                buttonVariants({ variant: "ghost", size: "icon" }),
+                "relative md:hidden flex-shrink-0 ml-1 mb-1 h-10 w-10 rounded-full text-muted-foreground hover:text-foreground",
+                disabled && "pointer-events-none opacity-50",
+              )}
             >
               <Paperclip className="h-5 w-5" />
-            </Button>
+              <input
+                type="file"
+                multiple
+                disabled={disabled}
+                aria-label="Add attachment"
+                className="absolute inset-0 cursor-pointer opacity-0"
+                onChange={(event) => {
+                  const files = [...(event.target.files ?? [])]
+                  if (files.length > 0) {
+                    enqueueFiles(files)
+                  }
+                  event.target.value = ""
+                }}
+              />
+            </label>
             <Textarea
               ref={setTextareaRefs}
               placeholder="Build something..."
