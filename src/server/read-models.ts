@@ -25,6 +25,18 @@ function getSidebarChatSortTimestamp(chat: ChatRecord) {
   return chat.lastMessageAt ?? chat.createdAt
 }
 
+function canForkChat(
+  chat: ChatRecord,
+  activeStatuses: Map<string, KannaStatus>,
+  drainingChatIds: Set<string>,
+) {
+  if (!chat.provider) return false
+  if (!chat.sessionToken && !chat.pendingForkSessionToken) return false
+  if (activeStatuses.has(chat.id)) return false
+  if (drainingChatIds.has(chat.id)) return false
+  return true
+}
+
 function getSidebarChatTimestamp(chat: Pick<SidebarChatRow, "lastMessageAt" | "_creationTime">) {
   return chat.lastMessageAt ?? chat._creationTime
 }
@@ -52,9 +64,11 @@ export function deriveSidebarData(
   options?: {
     nowMs?: number
     sidebarProjectOrder?: string[]
+    drainingChatIds?: Set<string>
   }
 ): SidebarData {
   const nowMs = options?.nowMs ?? Date.now()
+  const drainingChatIds = options?.drainingChatIds ?? new Set<string>()
   const chatsByProjectId = new Map<string, ChatRecord[]>()
   for (const chat of state.chatsById.values()) {
     if (chat.deletedAt) continue
@@ -94,6 +108,7 @@ export function deriveSidebarData(
         provider: chat.provider,
         lastMessageAt: chat.lastMessageAt,
         hasAutomation: false,
+        canFork: canForkChat(chat, activeStatuses, drainingChatIds) || undefined,
       }))
     const { previewChats, olderChats } = getSidebarChatBuckets(chats, nowMs)
 

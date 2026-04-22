@@ -276,6 +276,7 @@ export interface SidebarChatRow {
   provider: AgentProvider | null
   lastMessageAt?: number
   hasAutomation: boolean
+  canFork?: boolean
 }
 
 export interface SidebarProjectGroup {

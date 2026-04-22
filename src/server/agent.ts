@@ -106,6 +106,7 @@ interface AgentCoordinatorArgs {
     effort?: string
     planMode: boolean
     sessionToken: string | null
+    forkSession: boolean
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   }) => Promise<ClaudeSessionHandle>
 }
@@ -552,6 +553,7 @@ async function startClaudeSession(args: {
   effort?: string
   planMode: boolean
   sessionToken: string | null
+  forkSession: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
 }): Promise<ClaudeSessionHandle> {
   const canUseTool: CanUseTool = async (toolName, input, options) => {
@@ -618,6 +620,7 @@ async function startClaudeSession(args: {
       model: args.model,
       effort: args.effort as "low" | "medium" | "high" | "max" | undefined,
       resume: args.sessionToken ?? undefined,
+      forkSession: args.forkSession,
       permissionMode: args.planMode ? "plan" : "acceptEdits",
       canUseTool,
       tools: [...CLAUDE_TOOLSET],
@@ -920,7 +923,8 @@ export class AgentCoordinator {
         model: args.model,
         effort: args.effort,
         planMode: args.planMode,
-        sessionToken: chat.sessionToken,
+        sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
+        forkSession: Boolean(chat.pendingForkSessionToken),
         onToolRequest,
       })
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
@@ -934,13 +938,17 @@ export class AgentCoordinator {
         provider: args.provider,
         model: args.model,
       })
-      await this.codexManager.startSession({
+      const sessionToken = await this.codexManager.startSession({
         chatId: args.chatId,
         cwd: project.localPath,
         model: args.model,
         serviceTier: args.serviceTier,
         sessionToken: chat.sessionToken,
+        pendingForkSessionToken: chat.pendingForkSessionToken,
       })
+      if (chat.pendingForkSessionToken && sessionToken) {
+        await this.store.setPendingForkSessionToken(args.chatId, null)
+      }
       logSendToStartingProfile(args.profile, "start_turn.session_ready", {
         chatId: args.chatId,
         provider: args.provider,
@@ -1043,11 +1051,12 @@ export class AgentCoordinator {
     effort?: string
     planMode: boolean
     sessionToken: string | null
+    forkSession: boolean
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   }): Promise<HarnessTurn> {
     let session = this.claudeSessions.get(args.chatId)
 
-    if (!session || session.localPath !== args.localPath || session.effort !== args.effort) {
+    if (!session || session.localPath !== args.localPath || session.effort !== args.effort || args.forkSession) {
       if (session) {
         session.session.close()
         this.claudeSessions.delete(args.chatId)
@@ -1059,6 +1068,7 @@ export class AgentCoordinator {
         effort: args.effort,
         planMode: args.planMode,
         sessionToken: args.sessionToken,
+        forkSession: args.forkSession,
         onToolRequest: args.onToolRequest,
       })
 
@@ -1206,6 +1216,22 @@ export class AgentCoordinator {
     await this.store.removeQueuedMessage(command.chatId, command.queuedMessageId)
   }
 
+  async forkChat(chatId: string) {
+    const chat = this.store.requireChat(chatId)
+    if (this.activeTurns.has(chatId) || this.drainingStreams.has(chatId)) {
+      throw new Error("Chat must be idle before forking")
+    }
+    if (!chat.provider) {
+      throw new Error("Chat must have a provider before forking")
+    }
+    if (!chat.sessionToken && !chat.pendingForkSessionToken) {
+      throw new Error("Chat has no session to fork")
+    }
+
+    const forked = await this.store.forkChat(chatId)
+    return { chatId: forked.id }
+  }
+
   private async runClaudeSession(session: ClaudeSessionState) {
     try {
       for await (const event of session.session.stream) {
@@ -1221,6 +1247,14 @@ export class AgentCoordinator {
         const active = this.activeTurns.get(session.chatId)
         if (event.entry.kind === "system_init" && active) {
           active.status = "running"
+          const chat = this.store.getChat(session.chatId)
+          if (
+            chat?.pendingForkSessionToken
+            && session.sessionToken
+            && session.sessionToken !== chat.pendingForkSessionToken
+          ) {
+            await this.store.setPendingForkSessionToken(session.chatId, null)
+          }
           logClaudeSteer("claude_event_system_init", {
             chatId: session.chatId,
             sessionId: session.id,
@@ -1320,6 +1354,13 @@ export class AgentCoordinator {
 
         if (event.type === "session_token" && event.sessionToken) {
           await this.store.setSessionToken(active.chatId, event.sessionToken)
+          const chat = this.store.getChat(active.chatId)
+          if (
+            chat?.pendingForkSessionToken
+            && event.sessionToken !== chat.pendingForkSessionToken
+          ) {
+            await this.store.setPendingForkSessionToken(active.chatId, null)
+          }
           this.emitStateChange(active.chatId)
           continue
         }

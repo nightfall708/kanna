@@ -511,4 +511,30 @@ describe("EventStore", () => {
     expect(pruned).toEqual([])
     expect(store.getChat(chat.id)?.id).toBe(chat.id)
   })
+
+  test("forks a chat with copied transcript and pending fork session token", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const source = await store.createChat(project.id)
+    await store.setChatProvider(source.id, "claude")
+    await store.setPlanMode(source.id, true)
+    await store.setSessionToken(source.id, "session-1")
+    await store.appendMessage(source.id, entry("user_prompt", source.createdAt + 1, { content: "analyze this" }))
+    await store.appendMessage(source.id, entry("assistant_text", source.createdAt + 2, { text: "done" }))
+
+    const forked = await store.forkChat(source.id)
+
+    expect(forked.id).not.toBe(source.id)
+    expect(forked.title).toBe("Fork: New Chat")
+    expect(forked.provider).toBe("claude")
+    expect(forked.planMode).toBe(true)
+    expect(forked.sessionToken).toBeNull()
+    expect(forked.pendingForkSessionToken).toBe("session-1")
+    expect(forked.lastTurnOutcome).toBeNull()
+    expect(forked.lastMessageAt).toBeUndefined()
+    expect(store.getMessages(forked.id)).toEqual(store.getMessages(source.id))
+  })
 })

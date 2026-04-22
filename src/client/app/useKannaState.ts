@@ -545,6 +545,7 @@ export interface KannaState {
   closeAddProjectModal: () => void
   loadOlderHistory: () => Promise<void>
   handleCreateChat: (projectId: string) => Promise<void>
+  handleForkChat: (chat: SidebarChatRow) => Promise<void>
   handleOpenLocalProject: (localPath: string) => Promise<void>
   handleCreateProject: (project: ProjectRequest) => Promise<void>
   handleCheckForUpdates: (options?: { force?: boolean }) => Promise<void>
@@ -1215,6 +1216,25 @@ export function useKannaState(activeChatId: string | null): KannaState {
     await startChatFromIntent({ kind: "project_id", projectId })
   }, [startChatFromIntent])
 
+  const handleForkChat = useCallback(async (chat: SidebarChatRow) => {
+    try {
+      const result = await socket.command<{ chatId: string }>({
+        type: "chat.fork",
+        chatId: chat.chatId,
+      })
+      const chatPreferences = useChatPreferencesStore.getState()
+      chatPreferences.initializeComposerForChat(result.chatId, {
+        sourceState: chatPreferences.getComposerState(chat.chatId),
+      })
+      setPendingChatId(result.chatId)
+      navigate(`/chat/${result.chatId}`)
+      setSidebarOpen(false)
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [navigate, socket])
+
   const handleOpenLocalProject = useCallback(async (localPath: string) => {
     await startChatFromIntent({ kind: "local_path", localPath })
   }, [startChatFromIntent])
@@ -1689,6 +1709,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     closeAddProjectModal,
     loadOlderHistory,
     handleCreateChat,
+    handleForkChat,
     handleOpenLocalProject,
     handleCreateProject,
     handleCheckForUpdates,

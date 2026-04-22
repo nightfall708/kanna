@@ -94,6 +94,8 @@ function getReplayEventPriority(event: StoreEvent) {
       return 5
     case "session_token_set":
       return 6
+    case "pending_fork_session_token_set":
+      return 6
     case "turn_cancelled":
       return 7
     case "turn_finished":
@@ -128,6 +130,12 @@ function getHistorySnapshot(page: TranscriptPageResult, recentLimit: number): Ch
     olderCursor: page.olderCursor,
     recentLimit,
   }
+}
+
+function getForkedChatTitle(title: string) {
+  const trimmed = title.trim()
+  if (!trimmed) return "Fork: New Chat"
+  return trimmed.startsWith("Fork: ") ? trimmed : `Fork: ${trimmed}`
 }
 
 export class EventStore {
@@ -220,6 +228,7 @@ export class EventStore {
         this.state.chatsById.set(chat.id, {
           ...chat,
           unread: chat.unread ?? false,
+          pendingForkSessionToken: chat.pendingForkSessionToken ?? null,
         })
       }
       this.legacySidebarProjectOrder = normalizeSidebarProjectOrder(parsed.sidebarProjectOrder)
@@ -443,6 +452,7 @@ export class EventStore {
           provider: null,
           planMode: false,
           sessionToken: null,
+          pendingForkSessionToken: null,
           hasMessages: false,
           lastTurnOutcome: null,
         }
@@ -552,6 +562,13 @@ export class EventStore {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.sessionToken = event.sessionToken
+        chat.updatedAt = event.timestamp
+        break
+      }
+      case "pending_fork_session_token_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        chat.pendingForkSessionToken = event.pendingForkSessionToken
         chat.updatedAt = event.timestamp
         break
       }
@@ -674,6 +691,50 @@ export class EventStore {
       title: "New Chat",
     }
     await this.append(this.chatsLogPath, event)
+    return this.state.chatsById.get(chatId)!
+  }
+
+  async forkChat(sourceChatId: string) {
+    const sourceChat = this.requireChat(sourceChatId)
+    const sourceSessionToken = sourceChat.sessionToken ?? sourceChat.pendingForkSessionToken ?? null
+    if (!sourceChat.provider || !sourceSessionToken) {
+      throw new Error("Chat cannot be forked")
+    }
+
+    const chatId = crypto.randomUUID()
+    const createdAt = Date.now()
+    const createEvent: ChatEvent = {
+      v: STORE_VERSION,
+      type: "chat_created",
+      timestamp: createdAt,
+      chatId,
+      projectId: sourceChat.projectId,
+      title: getForkedChatTitle(sourceChat.title),
+    }
+    await this.append(this.chatsLogPath, createEvent)
+    await this.setChatProvider(chatId, sourceChat.provider)
+    await this.setPlanMode(chatId, sourceChat.planMode)
+    await this.setPendingForkSessionToken(chatId, sourceSessionToken)
+
+    const sourceEntries = this.getMessages(sourceChatId)
+    if (sourceEntries.length > 0) {
+      const transcriptPath = this.transcriptPath(chatId)
+      const payload = sourceEntries.map((entry) => JSON.stringify(entry)).join("\n")
+      this.writeChain = this.writeChain.then(async () => {
+        await mkdir(this.transcriptsDir, { recursive: true })
+        await writeFile(transcriptPath, `${payload}\n`, "utf8")
+        const chat = this.state.chatsById.get(chatId)
+        if (chat) {
+          chat.hasMessages = true
+          chat.updatedAt = Math.max(chat.updatedAt, createdAt)
+        }
+        if (this.cachedTranscript?.chatId === chatId) {
+          this.cachedTranscript = { chatId, entries: cloneTranscriptEntries(sourceEntries) }
+        }
+      })
+      await this.writeChain
+    }
+
     return this.state.chatsById.get(chatId)!
   }
 
@@ -907,6 +968,19 @@ export class EventStore {
       timestamp: Date.now(),
       chatId,
       sessionToken,
+    }
+    await this.append(this.turnsLogPath, event)
+  }
+
+  async setPendingForkSessionToken(chatId: string, pendingForkSessionToken: string | null) {
+    const chat = this.requireChat(chatId)
+    if ((chat.pendingForkSessionToken ?? null) === pendingForkSessionToken) return
+    const event: TurnEvent = {
+      v: STORE_VERSION,
+      type: "pending_fork_session_token_set",
+      timestamp: Date.now(),
+      chatId,
+      pendingForkSessionToken,
     }
     await this.append(this.turnsLogPath, event)
   }
