@@ -3,17 +3,19 @@ import { PROTOCOL_VERSION } from "../shared/types"
 import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
 import { isClientEnvelope } from "../shared/protocol"
 import type { AgentCoordinator } from "./agent"
+import type { AnalyticsReporter } from "./analytics"
+import { NoopAnalyticsReporter } from "./analytics"
+import type { AppSettingsManager } from "./app-settings"
 import type { DiscoveredProject } from "./discovery"
 import { DiffStore } from "./diff-store"
 import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
-import { ensureProjectDirectory } from "./paths"
+import { ensureProjectDirectory, resolveLocalPath } from "./paths"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
-import type { LlmProviderSnapshot } from "../shared/types"
-import type { LlmProviderValidationResult } from "../shared/types"
+import type { AppSettingsSnapshot, LlmProviderSnapshot, LlmProviderValidationResult } from "../shared/types"
 
 const DEFAULT_CHAT_RECENT_LIMIT = 200
 
@@ -98,6 +100,8 @@ interface CreateWsRouterArgs {
   agent: AgentCoordinator
   terminals: TerminalManager
   keybindings: KeybindingsManager
+  appSettings?: Pick<AppSettingsManager, "getSnapshot" | "write">
+  analytics?: AnalyticsReporter
   llmProvider?: {
     read: () => Promise<LlmProviderSnapshot>
     write: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderSnapshot>
@@ -152,6 +156,8 @@ export function createWsRouter({
   agent,
   terminals,
   keybindings,
+  appSettings,
+  analytics,
   llmProvider,
   refreshDiscovery,
   getDiscoveredProjects,
@@ -219,6 +225,19 @@ export function createWsRouter({
       },
     }),
   }
+  const resolvedAppSettings = appSettings ?? {
+    getSnapshot: () => ({
+      analyticsEnabled: true,
+      warning: null,
+      filePathDisplay: "~/.kanna/data/settings.json",
+    } satisfies AppSettingsSnapshot),
+    write: async ({ analyticsEnabled }: { analyticsEnabled: boolean }) => ({
+      analyticsEnabled,
+      warning: null,
+      filePathDisplay: "~/.kanna/data/settings.json",
+    } satisfies AppSettingsSnapshot),
+  }
+  const resolvedAnalytics = analytics ?? NoopAnalyticsReporter
 
   function getProtectedChatIds() {
     const activeStatuses = agent.getActiveStatuses()
@@ -734,6 +753,22 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
         }
+        case "settings.readAppSettings": {
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: resolvedAppSettings.getSnapshot() })
+          return
+        }
+        case "settings.writeAppSettings": {
+          const previousAnalyticsEnabled = resolvedAppSettings.getSnapshot().analyticsEnabled
+          if (previousAnalyticsEnabled && !command.analyticsEnabled) {
+            resolvedAnalytics.track("analytics_disabled")
+          }
+          const snapshot = await resolvedAppSettings.write({ analyticsEnabled: command.analyticsEnabled })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          if (!previousAnalyticsEnabled && command.analyticsEnabled) {
+            resolvedAnalytics.track("analytics_enabled")
+          }
+          return
+        }
         case "settings.readLlmProvider": {
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: await resolvedLlmProvider.read() })
           return
@@ -760,21 +795,33 @@ export function createWsRouter({
         }
         case "project.open": {
           await ensureProjectDirectory(command.localPath)
+          const normalizedPath = resolveLocalPath(command.localPath)
+          const existingProjectId = store.state.projectIdsByPath.get(normalizedPath)
           const project = await store.openProject(command.localPath)
           await refreshDiscovery()
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id } })
+          if (!existingProjectId) {
+            resolvedAnalytics.track("project_opened")
+          }
           break
         }
         case "project.create": {
           await ensureProjectDirectory(command.localPath)
+          const normalizedPath = resolveLocalPath(command.localPath)
+          const existingProjectId = store.state.projectIdsByPath.get(normalizedPath)
           const project = await store.openProject(command.localPath, command.title)
           await refreshDiscovery()
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id } })
+          if (!existingProjectId) {
+            resolvedAnalytics.track("project_opened")
+            resolvedAnalytics.track("project_created")
+          }
           break
         }
         case "project.remove": {
           const project = store.getProject(command.projectId)
-          for (const chat of store.listChatsByProject(command.projectId)) {
+          const chats = store.listChatsByProject(command.projectId)
+          for (const chat of chats) {
             await agent.cancel(chat.id)
             await agent.closeChat(chat.id)
           }
@@ -783,6 +830,10 @@ export function createWsRouter({
           }
           await store.removeProject(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          resolvedAnalytics.track("project_removed")
+          for (const _chat of chats) {
+            resolvedAnalytics.track("chat_deleted")
+          }
           break
         }
         case "sidebar.reorderProjectGroups": {
@@ -811,6 +862,7 @@ export function createWsRouter({
         case "chat.create": {
           const chat = await store.createChat(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { chatId: chat.id } })
+          resolvedAnalytics.track("chat_created")
           await broadcastChatAndSidebar(chat.id)
           return
         }
@@ -831,6 +883,7 @@ export function createWsRouter({
           await agent.closeChat(command.chatId)
           await store.deleteChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          resolvedAnalytics.track("chat_deleted")
           await broadcastFilteredSnapshots({ includeSidebar: true })
           return
         }

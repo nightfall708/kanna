@@ -2,6 +2,41 @@ import { describe, expect, test } from "bun:test"
 import { UpdateManager } from "./update-manager"
 
 describe("UpdateManager", () => {
+  test("tracks update lifecycle events", async () => {
+    const events: Array<{ name: string; properties?: Record<string, unknown> }> = []
+    const manager = new UpdateManager({
+      currentVersion: "0.12.0",
+      fetchLatestVersion: async () => "0.13.0",
+      installVersion: () => ({
+        ok: true,
+        errorCode: null,
+        userTitle: null,
+        userMessage: null,
+      }),
+      trackEvent: (eventName, properties) => {
+        events.push({ name: eventName, properties })
+      },
+    })
+
+    await manager.checkForUpdates({ force: true })
+    await manager.installUpdate()
+
+    expect(events).toEqual([
+      {
+        name: "update_checked",
+        properties: {
+          latest_version: "0.13.0",
+        },
+      },
+      {
+        name: "update_installed",
+        properties: {
+          latest_version: "0.13.0",
+        },
+      },
+    ])
+  })
+
   test("detects available updates", async () => {
     const manager = new UpdateManager({
       currentVersion: "0.12.0",

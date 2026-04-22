@@ -1,4 +1,5 @@
 import type {
+  AppSettingsSnapshot,
   AgentProvider,
   ChatAttachment,
   ChatDiffSnapshot,
@@ -58,6 +59,8 @@ export type ClientCommand =
   | { type: "update.install" }
   | { type: "settings.readKeybindings" }
   | { type: "settings.writeKeybindings"; bindings: KeybindingsSnapshot["bindings"] }
+  | { type: "settings.readAppSettings" }
+  | { type: "settings.writeAppSettings"; analyticsEnabled: boolean }
   | { type: "settings.readLlmProvider" }
   | {
       type: "settings.writeLlmProvider"
@@ -207,6 +210,7 @@ export type ServerSnapshot =
   | { type: "local-projects"; data: LocalProjectsSnapshot }
   | { type: "update"; data: UpdateSnapshot }
   | { type: "keybindings"; data: KeybindingsSnapshot }
+  | { type: "app-settings"; data: AppSettingsSnapshot }
   | { type: "llm-provider"; data: LlmProviderSnapshot }
   | { type: "chat"; data: ChatSnapshot | null }
   | { type: "project-git"; data: ChatDiffSnapshot | null }

@@ -13,6 +13,8 @@ import type {
 import { normalizeToolCall } from "../shared/tools"
 import type { ClientCommand } from "../shared/protocol"
 import { EventStore } from "./event-store"
+import type { AnalyticsReporter } from "./analytics"
+import { NoopAnalyticsReporter } from "./analytics"
 import { CodexAppServerManager } from "./codex-app-server"
 import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
@@ -98,6 +100,7 @@ interface ClaudeSessionState {
 interface AgentCoordinatorArgs {
   store: EventStore
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
+  analytics?: AnalyticsReporter
   codexManager?: CodexAppServerManager
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   startClaudeSession?: (args: {
@@ -669,6 +672,7 @@ async function startClaudeSession(args: {
 export class AgentCoordinator {
   private readonly store: EventStore
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
+  private readonly analytics: AnalyticsReporter
   private readonly codexManager: CodexAppServerManager
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
@@ -680,6 +684,7 @@ export class AgentCoordinator {
   constructor(args: AgentCoordinatorArgs) {
     this.store = args.store
     this.onStateChange = args.onStateChange
+    this.analytics = args.analytics ?? NoopAnalyticsReporter
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
@@ -1126,6 +1131,7 @@ export class AgentCoordinator {
       }
       const created = await this.store.createChat(command.projectId)
       chatId = created.id
+      this.analytics.track("chat_created")
       logSendToStartingProfile(profile, "chat_send.chat_created", {
         chatId,
         projectId: command.projectId,
@@ -1134,6 +1140,7 @@ export class AgentCoordinator {
 
     const chat = this.store.requireChat(chatId)
     if (this.activeTurns.has(chatId)) {
+      this.analytics.track("message_sent")
       const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
         provider: command.provider,
         model: command.model,
@@ -1146,6 +1153,7 @@ export class AgentCoordinator {
 
     const provider = this.resolveProvider(command, chat.provider)
     const settings = this.getProviderSettings(provider, command)
+    this.analytics.track("message_sent")
     await this.startTurnForChat({
       chatId,
       provider,
@@ -1169,6 +1177,7 @@ export class AgentCoordinator {
   }
 
   async enqueue(command: Extract<ClientCommand, { type: "message.enqueue" }>) {
+    this.analytics.track("message_sent")
     const queuedMessage = await this.enqueueMessage(command.chatId, command.content, command.attachments ?? [], {
       provider: command.provider,
       model: command.model,
@@ -1229,6 +1238,7 @@ export class AgentCoordinator {
     }
 
     const forked = await this.store.forkChat(chatId)
+    this.analytics.track("chat_created")
     return { chatId: forked.id }
   }
 

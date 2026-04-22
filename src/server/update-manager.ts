@@ -9,6 +9,7 @@ export interface UpdateManagerDeps {
   fetchLatestVersion: (packageName: string) => Promise<string>
   installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
   devMode?: boolean
+  trackEvent?: (eventName: string, properties?: Record<string, unknown>) => void
 }
 
 export class UpdateManager {
@@ -81,6 +82,9 @@ export class UpdateManager {
 
   async installUpdate(): Promise<UpdateInstallResult> {
     if (this.deps.devMode) {
+      this.deps.trackEvent?.("update_installed", {
+        latest_version: this.snapshot.latestVersion,
+      })
       this.setSnapshot({
         ...this.snapshot,
         status: "updating",
@@ -145,6 +149,9 @@ export class UpdateManager {
         reloadRequestedAt: null,
       }
       this.setSnapshot(nextSnapshot)
+      this.deps.trackEvent?.("update_checked", {
+        latest_version: latestVersion,
+      })
       return nextSnapshot
     } catch (error) {
       const nextSnapshot: UpdateSnapshot = {
@@ -155,6 +162,9 @@ export class UpdateManager {
         reloadRequestedAt: null,
       }
       this.setSnapshot(nextSnapshot)
+      this.deps.trackEvent?.("update_failed", {
+        latest_version: this.snapshot.latestVersion,
+      })
       return nextSnapshot
     }
   }
@@ -188,6 +198,9 @@ export class UpdateManager {
         error: "Unable to determine which version to install.",
         reloadRequestedAt: null,
       })
+      this.deps.trackEvent?.("update_failed", {
+        latest_version: null,
+      })
       return {
         ok: false,
         action: "restart",
@@ -205,6 +218,9 @@ export class UpdateManager {
         error: installed.userMessage ?? "Unable to install the latest version.",
         reloadRequestedAt: null,
       })
+      this.deps.trackEvent?.("update_failed", {
+        latest_version: targetVersion,
+      })
       return {
         ok: false,
         action: "restart",
@@ -221,6 +237,9 @@ export class UpdateManager {
       updateAvailable: false,
       error: null,
       reloadRequestedAt: Date.now(),
+    })
+    this.deps.trackEvent?.("update_installed", {
+      latest_version: targetVersion,
     })
     return {
       ok: true,
