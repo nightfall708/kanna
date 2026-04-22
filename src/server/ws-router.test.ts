@@ -17,6 +17,7 @@ function withSidebarGroupDefaults(group: {
     localPath: string
     provider: "claude" | "codex" | null
     lastMessageAt?: number
+    canFork?: boolean
     hasAutomation: boolean
   }>
 }) {
@@ -739,7 +740,10 @@ describe("ws-router", () => {
 
     const router = createWsRouter({
       store: store as never,
-      agent: { getActiveStatuses: () => new Map() } as never,
+      agent: {
+        getActiveStatuses: () => new Map(),
+        getDrainingChatIds: () => new Set(),
+      } as never,
       terminals: {
         getSnapshot: () => null,
         onEvent: () => () => {},
@@ -863,12 +867,16 @@ describe("ws-router", () => {
     })
 
     const setSidebarProjectOrderCalls: string[][] = []
+    let sidebarProjectOrder: string[] = []
     const router = createWsRouter({
       store: {
         state,
+        getSidebarProjectOrder() {
+          return [...sidebarProjectOrder]
+        },
         async setSidebarProjectOrder(projectIds: string[]) {
           setSidebarProjectOrderCalls.push(projectIds)
-          state.sidebarProjectOrder = [...projectIds]
+          sidebarProjectOrder = [...projectIds]
         },
       } as never,
       agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set() } as never,
@@ -933,6 +941,135 @@ describe("ws-router", () => {
               chats: [],
             }),
           ],
+        },
+      },
+    })
+  })
+
+  test("forks a chat through the agent and rebroadcasts the sidebar snapshot", async () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "project-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      unread: false,
+      provider: "claude",
+      planMode: false,
+      sessionToken: "session-1",
+      pendingForkSessionToken: null,
+      lastTurnOutcome: null,
+    })
+
+    const forkChatCalls: string[] = []
+    const router = createWsRouter({
+      store: { state } as never,
+      agent: {
+        getActiveStatuses: () => new Map(),
+        getDrainingChatIds: () => new Set(),
+          forkChat: async (chatId: string) => {
+          forkChatCalls.push(chatId)
+          state.chatsById.set("chat-fork-1", {
+            id: "chat-fork-1",
+            projectId: "project-1",
+            title: "Fork: Chat",
+            createdAt: 2,
+            updatedAt: 2,
+            unread: false,
+            provider: "claude",
+            planMode: false,
+            sessionToken: null,
+            pendingForkSessionToken: "session-1",
+            lastTurnOutcome: null,
+          })
+          return { chatId: "chat-fork-1" }
+        },
+      } as never,
+      terminals: {
+        getSnapshot: () => null,
+        onEvent: () => () => {},
+      } as never,
+      keybindings: {
+        getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT,
+        onChange: () => () => {},
+      } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Local Machine",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "subscribe",
+        id: "sidebar-sub-1",
+        topic: { type: "sidebar" },
+      })
+    )
+
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({
+        v: 1,
+        type: "command",
+        id: "fork-1",
+        command: { type: "chat.fork", chatId: "chat-1" },
+      })
+    )
+
+    expect(forkChatCalls).toEqual(["chat-1"])
+    expect(ws.sent.at(-2)).toEqual({
+      v: PROTOCOL_VERSION,
+      type: "ack",
+      id: "fork-1",
+      result: { chatId: "chat-fork-1" },
+    })
+    expect(ws.sent.at(-1)).toEqual({
+      v: PROTOCOL_VERSION,
+      type: "snapshot",
+      id: "sidebar-sub-1",
+      snapshot: {
+        type: "sidebar",
+        data: {
+          projectGroups: [withSidebarGroupDefaults({
+            groupKey: "project-1",
+            localPath: "/tmp/project",
+            chats: [{
+              _id: "chat-fork-1",
+              _creationTime: 2,
+              chatId: "chat-fork-1",
+              title: "Fork: Chat",
+              status: "idle",
+              unread: false,
+              localPath: "/tmp/project",
+              provider: "claude",
+              canFork: true,
+              hasAutomation: false,
+            }, {
+              _id: "chat-1",
+              _creationTime: 1,
+              chatId: "chat-1",
+              title: "Chat",
+              status: "idle",
+              unread: false,
+              localPath: "/tmp/project",
+              provider: "claude",
+              canFork: true,
+              hasAutomation: false,
+            }],
+          })],
         },
       },
     })

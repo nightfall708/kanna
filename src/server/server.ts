@@ -58,8 +58,16 @@ export async function persistUploadedFiles(args: {
 export interface StartKannaServerOptions {
   port?: number
   host?: string
+  dataDir?: string
   password?: string | null
   strictPort?: boolean
+  /**
+   * When true, the auth layer trusts X-Forwarded-Proto for CSRF origin
+   * checks, redirect URLs, and the Secure cookie flag. The hostname still
+   * comes from the request URL / Host header. Only enable when the server is
+   * reachable solely through a trusted reverse proxy such as cloudflared.
+   */
+  trustProxy?: boolean
   onMigrationProgress?: (message: string) => void
   update?: {
     version: string
@@ -72,8 +80,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const port = options.port ?? 3210
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
-  const auth = options.password ? createAuthManager(options.password) : null
-  const store = new EventStore()
+  const auth = options.password ? createAuthManager(options.password, { trustProxy: options.trustProxy ?? false }) : null
+  const store = new EventStore(options.dataDir)
   const diffStore = new DiffStore(store.dataDir)
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
@@ -168,7 +176,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
           if (auth) {
             if (url.pathname === "/auth/login") {
               if (req.method === "GET") {
-                return auth.renderLoginPage(req)
+                return auth.redirectToApp(req)
               }
               if (req.method === "POST") {
                 return auth.handleLogin(req, "/")
@@ -183,8 +191,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
               if (!auth.isAuthenticated(req)) {
                 return new Response("Unauthorized", { status: 401 })
               }
-            } else if (!auth.isAuthenticated(req)) {
-              return auth.unauthorizedResponse(req)
+            } else if (url.pathname.startsWith("/api/") && !auth.isAuthenticated(req)) {
+              return Response.json({ error: "Unauthorized" }, { status: 401 })
             }
           }
 
@@ -445,7 +453,9 @@ async function serveStatic(distDir: string, pathname: string) {
 
   const file = Bun.file(filePath)
   if (await file.exists()) {
-    return new Response(file)
+    return new Response(file, {
+      headers: getStaticHeaders(requestedPath),
+    })
   }
 
   const indexFile = Bun.file(indexPath)
@@ -453,6 +463,7 @@ async function serveStatic(distDir: string, pathname: string) {
     return new Response(indexFile, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
       },
     })
   }
@@ -461,4 +472,14 @@ async function serveStatic(distDir: string, pathname: string) {
     `${APP_NAME} client bundle not found. Run \`bun run build\` inside workbench/ first.`,
     { status: 503 }
   )
+}
+
+function getStaticHeaders(requestedPath: string) {
+  if (requestedPath.endsWith(".html")) {
+    return {
+      "Cache-Control": "no-store",
+    }
+  }
+
+  return undefined
 }

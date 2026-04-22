@@ -126,6 +126,12 @@ interface SnapshotComputationCache {
   }
 }
 
+function getSidebarProjectOrder(store: EventStore) {
+  return typeof store.getSidebarProjectOrder === "function"
+    ? store.getSidebarProjectOrder()
+    : []
+}
+
 function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
   const payload = JSON.stringify(message)
   ws.send(payload)
@@ -300,7 +306,10 @@ export function createWsRouter({
     }
 
     const startedAt = performance.now()
-    const data = deriveSidebarData(store.state, agent.getActiveStatuses())
+    const data = deriveSidebarData(store.state, agent.getActiveStatuses(), {
+      sidebarProjectOrder: getSidebarProjectOrder(store),
+      drainingChatIds: agent.getDrainingChatIds(),
+    })
     if (isSendToStartingProfilingEnabled()) {
       const totalChats = data.projectGroups.reduce((count, group) => count + group.chats.length, 0)
       console.log("[kanna/send->starting][server]", JSON.stringify({
@@ -803,6 +812,12 @@ export function createWsRouter({
           const chat = await store.createChat(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { chatId: chat.id } })
           await broadcastChatAndSidebar(chat.id)
+          return
+        }
+        case "chat.fork": {
+          const result = await agent.forkChat(command.chatId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await broadcastFilteredSnapshots({ includeSidebar: true })
           return
         }
         case "chat.rename": {

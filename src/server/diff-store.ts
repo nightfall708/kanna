@@ -121,7 +121,6 @@ type SelectedBranch =
       remoteRef?: string
     }
 
-
 async function runGit(args: string[], cwd: string) {
   const process = Bun.spawn(["git", "-C", cwd, ...args], {
     stdout: "pipe",

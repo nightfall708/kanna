@@ -15,6 +15,7 @@ export interface ChatRecord {
   provider: AgentProvider | null
   planMode: boolean
   sessionToken: string | null
+  pendingForkSessionToken?: string | null
   hasMessages?: boolean
   lastMessageAt?: number
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
@@ -25,7 +26,6 @@ export interface StoreState {
   projectIdsByPath: Map<string, string>
   chatsById: Map<string, ChatRecord>
   queuedMessagesByChatId: Map<string, QueuedChatMessage[]>
-  sidebarProjectOrder: string[]
 }
 
 export interface SnapshotFile {
@@ -50,11 +50,6 @@ export type ProjectEvent = {
   type: "project_removed"
   timestamp: number
   projectId: string
-} | {
-  v: 2
-  type: "sidebar_project_order_set"
-  timestamp: number
-  projectIds: string[]
 }
 
 export type ChatEvent =
@@ -158,6 +153,13 @@ export type TurnEvent =
       chatId: string
       sessionToken: string | null
     }
+  | {
+      v: 2
+      type: "pending_fork_session_token_set"
+      timestamp: number
+      chatId: string
+      pendingForkSessionToken: string | null
+    }
 
 export type StoreEvent = ProjectEvent | ChatEvent | MessageEvent | QueuedMessageEvent | TurnEvent
 
@@ -167,7 +169,6 @@ export function createEmptyState(): StoreState {
     projectIdsByPath: new Map(),
     chatsById: new Map(),
     queuedMessagesByChatId: new Map(),
-    sidebarProjectOrder: [],
   }
 }
 

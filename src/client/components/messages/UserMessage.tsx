@@ -1,13 +1,12 @@
-import { SquircleDashed } from "lucide-react"
 import { useMemo, useState } from "react"
 import type { ChatAttachment } from "../../../shared/types"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
+import { CornerUpLeft } from "lucide-react"
 import { createMarkdownComponents } from "./shared"
 import { classifyAttachmentPreview } from "./attachmentPreview"
 import { AttachmentFileCard, AttachmentImageCard } from "./AttachmentCard"
 import { AttachmentPreviewModal } from "./AttachmentPreviewModal"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../ui/tooltip"
 
 interface Props {
   content: string
@@ -80,19 +79,14 @@ export function UserMessage({ content, attachments = [], steered = false }: Prop
         {(parsedContent.body || (!parsedContent.body && attachments.length === 0 && content && !parsedContent.systemMessage)) ? (
           <div className="flex max-w-[85%] items-center gap-2 sm:max-w-[80%]">
             {steered ? (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span
-                      aria-label="Sent mid-turn"
-                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors"
-                    >
-                      <SquircleDashed className="h-4 w-4" />
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>Sent mid-turn</TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+              <span
+                aria-label="Sent mid-turn"
+                role="img"
+                title="Sent mid-turn"
+                className="shrink-0 text-muted-foreground"
+              >
+                <CornerUpLeft className="h-4 w-4" />
+              </span>
             ) : null}
             <div className="min-w-0 flex-1 rounded-[20px] border border-border bg-muted px-3.5 py-1.5 text-primary prose prose-sm prose-invert [&_p]:whitespace-pre-line">
               <Markdown remarkPlugins={[remarkGfm]} components={createMarkdownComponents()}>{parsedContent.body}</Markdown>

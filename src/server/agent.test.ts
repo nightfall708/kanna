@@ -1452,6 +1452,77 @@ describe("AgentCoordinator claude integration", () => {
 
     events.close()
   })
+
+  test("uses Claude forkSession when starting a forked chat", async () => {
+    const startSessionCalls: Array<{ sessionToken: string | null; forkSession: boolean }> = []
+    const events = new AsyncEventQueue<any>()
+    const store = createFakeStore()
+    store.chat.provider = "claude"
+    store.chat.pendingForkSessionToken = "claude-parent-1"
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async (args) => {
+        startSessionCalls.push({
+          sessionToken: args.sessionToken,
+          forkSession: args.forkSession,
+        })
+
+        return {
+          provider: "claude",
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => {},
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          sendPrompt: async () => {
+            events.push({ type: "session_token" as const, sessionToken: "claude-fork-1" })
+            events.push({
+              type: "transcript" as const,
+              entry: timestamped({
+                kind: "system_init",
+                provider: "claude",
+                model: "claude-opus-4-1",
+                tools: [],
+                agents: [],
+                slashCommands: [],
+                mcpServers: [],
+              }),
+            })
+            events.push({
+              type: "transcript" as const,
+              entry: timestamped({
+                kind: "result",
+                subtype: "success",
+                isError: false,
+                durationMs: 0,
+                result: "done",
+              }),
+            })
+          },
+        }
+      },
+    })
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "branch this",
+      model: "claude-opus-4-1",
+    })
+
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    expect(startSessionCalls).toEqual([{
+      sessionToken: "claude-parent-1",
+      forkSession: true,
+    }])
+    expect(store.chat.pendingForkSessionToken).toBeNull()
+    events.close()
+  })
 })
 
 function createFakeStore() {
@@ -1462,6 +1533,7 @@ function createFakeStore() {
     provider: null as "claude" | "codex" | null,
     planMode: false,
     sessionToken: null as string | null,
+    pendingForkSessionToken: null as string | null,
   }
   const project = {
     id: "project-1",
@@ -1473,6 +1545,10 @@ function createFakeStore() {
     messages: [] as TranscriptEntry[],
     queuedMessages: [] as any[],
     requireChat(chatId: string) {
+      expect(chatId).toBe("chat-1")
+      return chat
+    },
+    getChat(chatId: string) {
       expect(chatId).toBe("chat-1")
       return chat
     },
@@ -1506,8 +1582,20 @@ function createFakeStore() {
     async setSessionToken(_chatId: string, sessionToken: string | null) {
       chat.sessionToken = sessionToken
     },
+    async setPendingForkSessionToken(_chatId: string, pendingForkSessionToken: string | null) {
+      chat.pendingForkSessionToken = pendingForkSessionToken
+    },
     async createChat() {
       return chat
+    },
+    async forkChat() {
+      return {
+        ...chat,
+        id: "chat-fork-1",
+        title: "Fork: New Chat",
+        sessionToken: null,
+        pendingForkSessionToken: chat.sessionToken ?? chat.pendingForkSessionToken,
+      }
     },
     async enqueueMessage(_chatId: string, message: any) {
       const queuedMessage = {

@@ -25,6 +25,18 @@ function getSidebarChatSortTimestamp(chat: ChatRecord) {
   return chat.lastMessageAt ?? chat.createdAt
 }
 
+function canForkChat(
+  chat: ChatRecord,
+  activeStatuses: Map<string, KannaStatus>,
+  drainingChatIds: Set<string>,
+) {
+  if (!chat.provider) return false
+  if (!chat.sessionToken && !chat.pendingForkSessionToken) return false
+  if (activeStatuses.has(chat.id)) return false
+  if (drainingChatIds.has(chat.id)) return false
+  return true
+}
+
 function getSidebarChatTimestamp(chat: Pick<SidebarChatRow, "lastMessageAt" | "_creationTime">) {
   return chat.lastMessageAt ?? chat._creationTime
 }
@@ -49,8 +61,14 @@ function getSidebarChatBuckets(chats: SidebarChatRow[], nowMs: number) {
 export function deriveSidebarData(
   state: StoreState,
   activeStatuses: Map<string, KannaStatus>,
-  nowMs = Date.now()
+  options?: {
+    nowMs?: number
+    sidebarProjectOrder?: string[]
+    drainingChatIds?: Set<string>
+  }
 ): SidebarData {
+  const nowMs = options?.nowMs ?? Date.now()
+  const drainingChatIds = options?.drainingChatIds ?? new Set<string>()
   const chatsByProjectId = new Map<string, ChatRecord[]>()
   for (const chat of state.chatsById.values()) {
     if (chat.deletedAt) continue
@@ -67,7 +85,7 @@ export function deriveSidebarData(
   const unorderedProjects = allProjects
     .sort((a, b) => b.updatedAt - a.updatedAt)
   const projectById = new Map(unorderedProjects.map((project) => [project.id, project]))
-  const orderedProjects = state.sidebarProjectOrder
+  const orderedProjects = (options?.sidebarProjectOrder ?? [])
     .map((projectId) => projectById.get(projectId))
     .filter((project): project is NonNullable<typeof project> => Boolean(project))
   const orderedProjectIds = new Set(orderedProjects.map((project) => project.id))
@@ -90,6 +108,7 @@ export function deriveSidebarData(
         provider: chat.provider,
         lastMessageAt: chat.lastMessageAt,
         hasAutomation: false,
+        canFork: canForkChat(chat, activeStatuses, drainingChatIds) || undefined,
       }))
     const { previewChats, olderChats } = getSidebarChatBuckets(chats, nowMs)
 
