@@ -2,9 +2,12 @@ import path from "node:path"
 import { stat } from "node:fs/promises"
 import { APP_NAME, getRuntimeProfile } from "../shared/branding"
 import type { ChatAttachment } from "../shared/types"
+import type { ShareMode } from "../shared/share"
 import { createAuthManager } from "./auth"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
+import { KannaAnalyticsReporter } from "./analytics"
+import { AppSettingsManager } from "./app-settings"
 import { DiffStore } from "./diff-store"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
@@ -58,6 +61,8 @@ export async function persistUploadedFiles(args: {
 export interface StartKannaServerOptions {
   port?: number
   host?: string
+  openBrowser?: boolean
+  share?: ShareMode
   dataDir?: string
   password?: string | null
   strictPort?: boolean
@@ -80,6 +85,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const port = options.port ?? 3210
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
+  const runtimeProfile = getRuntimeProfile()
   const auth = options.password ? createAuthManager(options.password, { trustProxy: options.trustProxy ?? false }) : null
   const store = new EventStore(options.dataDir)
   const diffStore = new DiffStore(store.dataDir)
@@ -100,17 +106,26 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   let router: ReturnType<typeof createWsRouter>
   const terminals = new TerminalManager()
   const keybindings = new KeybindingsManager()
+  const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"))
+  await appSettings.initialize()
   await keybindings.initialize()
+  const analytics = new KannaAnalyticsReporter({
+    settings: appSettings,
+    currentVersion: options.update?.version ?? "unknown",
+    environment: runtimeProfile === "dev" ? "dev" : "prod",
+  })
   const updateManager = options.update
     ? new UpdateManager({
       currentVersion: options.update.version,
       fetchLatestVersion: options.update.fetchLatestVersion,
       installVersion: options.update.installVersion,
-      devMode: getRuntimeProfile() === "dev",
+      devMode: runtimeProfile === "dev",
+      trackEvent: analytics.track.bind(analytics),
     })
     : null
   const agent = new AgentCoordinator({
     store,
+    analytics,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
       if (chatId) {
         if (options?.immediate) {
@@ -129,6 +144,8 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     agent,
     terminals,
     keybindings,
+    appSettings,
+    analytics,
     llmProvider: {
       read: readLlmProviderSnapshot,
       write: writeLlmProviderSnapshot,
@@ -256,12 +273,22 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     }
   }
 
+  analytics.trackLaunch({
+    port: actualPort,
+    host: hostname,
+    openBrowser: options.openBrowser ?? true,
+    share: options.share ?? false,
+    password: options.password ?? null,
+    strictPort,
+  })
+
   const shutdown = async () => {
     clearInterval(staleEmptyChatPruneInterval)
     for (const chatId of [...agent.activeTurns.keys()]) {
       await agent.cancel(chatId)
     }
     router.dispose()
+    appSettings.dispose()
     keybindings.dispose()
     terminals.closeAll()
     await store.compact()

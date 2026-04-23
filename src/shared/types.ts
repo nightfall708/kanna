@@ -308,6 +308,12 @@ export interface LocalProjectsSnapshot {
   projects: LocalProjectSummary[]
 }
 
+export interface AppSettingsSnapshot {
+  analyticsEnabled: boolean
+  warning: string | null
+  filePathDisplay: string
+}
+
 export interface LlmProviderFile {
   provider?: LlmProviderKind
   apiKey?: string

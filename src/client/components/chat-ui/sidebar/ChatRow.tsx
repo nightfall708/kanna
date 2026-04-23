@@ -47,7 +47,7 @@ function ChatRowImpl({
       onClick={() => onSelectChat(chat.chatId)}
     >
       {loadingStatuses.has(chat.status) ? (
-        <Loader2 className="size-3.5 flex-shrink-0 animate-spin text-muted-foreground" />
+        <Loader2 className="size-3.5 flex-shrink-0 animate-spin text-logo" />
       ) : chat.status === "waiting_for_user" ? (
         <div className="relative ">
           <div className=" rounded-full z-0 size-3.5 flex items-center justify-center ">
@@ -71,9 +71,9 @@ function ChatRowImpl({
           >
             {chat.title}
           </AnimatedShinyText>
-        ) : (
-          chat.title
-        )}
+        ) : 
+          chat.status !== 'idle' || activeChatId === normalizedChatId || chat.unread ? <span className="">{chat.title}</span> : <span className="text-slate-500 dark:text-slate-400">{chat.title}</span>
+        }
       </span>
       <div className={cn("relative h-7 mr-[2px] shrink-0", chat.canFork ? "w-12" : "w-6")}>
         {trailingLabel ? (
