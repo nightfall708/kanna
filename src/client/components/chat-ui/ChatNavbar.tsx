@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { ChevronDown, Flower, GitBranch, Loader2, Menu, PanelLeft, PanelRight, Share, Share2, SquarePen, Terminal, UserRound, UserRoundPlus } from "lucide-react"
+import { ChevronDown, Flower, GitBranch, Loader2, Menu, PanelLeft, PanelRight, SquarePen, Terminal, UserRoundPlus } from "lucide-react"
 import type { EditorOpenSettings, EditorPreset } from "../../../shared/protocol"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
