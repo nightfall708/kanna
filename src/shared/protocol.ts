@@ -11,10 +11,12 @@ import type {
   LocalProjectsSnapshot,
   ModelOptions,
   SidebarData,
+  StandaloneTranscriptAttachmentMode,
+  StandaloneTranscriptExportResult,
   UpdateSnapshot,
 } from "./types"
 
-export type EditorPreset = "cursor" | "vscode" | "windsurf" | "custom"
+export type EditorPreset = "cursor" | "vscode" | "xcode" | "windsurf" | "custom"
 
 export interface EditorOpenSettings {
   preset: EditorPreset
@@ -173,6 +175,12 @@ export type ClientCommand =
   | { type: "chat.ignoreDiffFile"; chatId: string; path: string }
   | { type: "chat.cancel"; chatId: string }
   | { type: "chat.stopDraining"; chatId: string }
+  | {
+      type: "chat.exportStandalone"
+      chatId: string
+      theme: "light" | "dark"
+      attachmentMode: StandaloneTranscriptAttachmentMode
+    }
   | { type: "chat.loadHistory"; chatId: string; beforeCursor: string; limit: number }
   | { type: "chat.respondTool"; chatId: string; toolUseId: string; result: unknown }
   | {
@@ -219,7 +227,7 @@ export type ServerSnapshot =
 export type ServerEnvelope =
   | { v: 1; type: "snapshot"; id: string; snapshot: ServerSnapshot }
   | { v: 1; type: "event"; id: string; event: TerminalEvent }
-  | { v: 1; type: "ack"; id: string; result?: unknown | ChatHistoryPage }
+  | { v: 1; type: "ack"; id: string; result?: unknown | ChatHistoryPage | StandaloneTranscriptExportResult }
   | { v: 1; type: "error"; id?: string; message: string }
 
 export function isClientEnvelope(value: unknown): value is ClientEnvelope {

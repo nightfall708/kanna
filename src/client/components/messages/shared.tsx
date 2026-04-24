@@ -33,6 +33,7 @@ import {
 } from "lucide-react"
 import { cn } from "../../lib/utils"
 import { parseLocalFileLink } from "../../lib/pathUtils"
+import { useTranscriptRenderOptions } from "./render-context"
 
 type OpenLocalLinkTarget = { path: string; line?: number; column?: number }
 type OpenLocalLinkHandler = (target: OpenLocalLinkTarget) => void
@@ -366,7 +367,16 @@ export function createMarkdownComponents(options?: {
     ...markdownComponents,
     a: ({ children, href, onClick, ...props }: ComponentPropsWithoutRef<"a">) => {
       const onOpenLocalLink = options?.onOpenLocalLink ?? useContext(OpenLocalLinkContext)
+      const renderOptions = useTranscriptRenderOptions()
       const parsedLocalLink = parseLocalFileLink(href)
+
+      if (parsedLocalLink && renderOptions.localLinkMode === "text") {
+        return (
+          <span className="transition-all underline decoration-2 text-logo decoration-logo/50">
+            {children}
+          </span>
+        )
+      }
 
       return (
         <a

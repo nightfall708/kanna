@@ -47,6 +47,7 @@ interface ChatTranscriptViewportProps {
   isEmptyStateTypingComplete: boolean
   isPageFileDragActive: boolean
   showEmptyState: boolean
+  headerOffsetPx?: number
 }
 
 export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
@@ -77,6 +78,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   isEmptyStateTypingComplete,
   isPageFileDragActive,
   showEmptyState,
+  headerOffsetPx = CHAT_NAVBAR_OFFSET_PX,
 }: ChatTranscriptViewportProps) {
   const previousRowCountRef = useRef(0)
   const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
@@ -185,7 +187,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   ), [handleToolGroupExpandedChange, onAskUserQuestionSubmit, onExitPlanModeConfirm, toolGroupExpanded])
 
   const listHeader = (
-    <div className="mx-auto w-full max-w-[800px] pt-[72px]">
+    <div className="mx-auto w-full max-w-[800px]" style={{ paddingTop: `${headerOffsetPx}px` }}>
       {isHistoryLoading ? (
         <div className="flex justify-center pb-4">
           <span className="text-sm translate-y-[-0.5px]">
@@ -251,7 +253,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
         <div
           className="pointer-events-none absolute inset-x-4 animate-fade-in"
           style={{
-            top: CHAT_NAVBAR_OFFSET_PX,
+            top: headerOffsetPx,
             bottom: transcriptPaddingBottom,
           }}
         >

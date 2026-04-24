@@ -5,6 +5,7 @@ import { useOutletContext } from "react-router-dom"
 import type { ChatInputHandle } from "../../components/chat-ui/ChatInput"
 import { ChatNavbar } from "../../components/chat-ui/ChatNavbar"
 import { RightSidebar } from "../../components/chat-ui/RightSidebar"
+import { StandaloneShareDialog } from "../../components/chat-ui/StandaloneShareDialog"
 import { useAppDialog } from "../../components/ui/app-dialog"
 import { Card, CardContent } from "../../components/ui/card"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../../components/ui/resizable"
@@ -445,6 +446,7 @@ export function ChatPage() {
   const chatInputRef = useRef<ChatInputHandle | null>(null)
   const { inputRef, syncInputHeight, transcriptPaddingBottom } = useTranscriptPaddingBottom()
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const [standaloneShareUrl, setStandaloneShareUrl] = useState<string | null>(null)
   const showEmptyState = state.messages.length === 0 && state.runtime?.title === "New Chat"
   const projectId = state.activeProjectId
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
@@ -462,6 +464,8 @@ export function ChatPage() {
   const setRightSidebarSize = useRightSidebarStore((store) => store.setSize)
   const scrollback = useTerminalPreferencesStore((store) => store.scrollbackLines)
   const minColumnWidth = useTerminalPreferencesStore((store) => store.minColumnWidth)
+  const editorPreset = useTerminalPreferencesStore((store) => store.editorPreset)
+  const editorCommandTemplate = useTerminalPreferencesStore((store) => store.editorCommandTemplate)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(state.keybindings), [state.keybindings])
   const baseContextWindowSnapshotRef = useRef<ReturnType<typeof deriveLatestContextWindowSnapshot>>(null)
   const contextWindowSnapshot = useMemo(() => {
@@ -652,9 +656,49 @@ export function ChatPage() {
     void state.handleCancel()
   }, [state.handleCancel])
 
-  const handleOpenExternal = useCallback((action: "open_finder" | "open_editor" | "open_terminal") => {
-    void state.handleOpenExternal(action)
+  const handleOpenExternal = useCallback<NonNullable<ComponentProps<typeof ChatNavbar>["onOpenExternal"]>>((action, editor) => {
+    void state.handleOpenExternal(action, editor)
   }, [state.handleOpenExternal])
+
+  const handleShareTranscript = useCallback(async () => {
+    if (!state.activeChatId || state.isExportingStandalone) {
+      return
+    }
+    const result = await state.handleExportStandalone()
+    if (result?.shareUrl) {
+      setStandaloneShareUrl(result.shareUrl)
+    }
+  }, [state.activeChatId, state.handleExportStandalone, state.isExportingStandalone])
+
+  const handleCopyStandaloneShareLink = useCallback(async () => {
+    if (!standaloneShareUrl) {
+      return false
+    }
+
+    try {
+      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+        throw new Error("Clipboard is not available")
+      }
+      await navigator.clipboard.writeText(standaloneShareUrl)
+      return true
+    } catch (error) {
+      await dialog.alert({
+        title: "Copy failed",
+        description: error instanceof Error ? error.message : String(error),
+        closeLabel: "Close",
+      })
+      return false
+    }
+  }, [dialog, standaloneShareUrl])
+
+  const handleOpenStandaloneShareLink = useCallback(() => {
+    if (!standaloneShareUrl) {
+      return
+    }
+
+    window.open(standaloneShareUrl, "_blank", "noopener,noreferrer")
+    setStandaloneShareUrl(null)
+  }, [standaloneShareUrl])
 
   const handleRemoveTerminal = useCallback((currentProjectId: string, terminalId: string) => {
     void state.socket.command({ type: "terminal.close", terminalId }).catch(() => {})
@@ -874,7 +918,12 @@ export function ChatPage() {
           rightSidebarVisible={showRightSidebar}
           onToggleRightSidebar={projectId ? handleToggleRightSidebar : undefined}
           onOpenExternal={handleOpenExternal}
-          editorLabel={state.editorLabel}
+          onExportTranscript={state.activeChatId ? handleShareTranscript : undefined}
+          canExportTranscript={Boolean(state.activeChatId) && !state.isExportingStandalone}
+          isExportingTranscript={state.isExportingStandalone}
+          editorPreset={editorPreset}
+          editorCommandTemplate={editorCommandTemplate}
+          platform={state.localProjects?.machine.platform}
           finderShortcut={resolvedKeybindings.bindings.openInFinder}
           editorShortcut={resolvedKeybindings.bindings.openInEditor}
           terminalShortcut={resolvedKeybindings.bindings.toggleEmbeddedTerminal}
@@ -913,6 +962,18 @@ export function ChatPage() {
           showEmptyState={showEmptyState}
         />
       </CardContent>
+
+      <StandaloneShareDialog
+        open={Boolean(standaloneShareUrl)}
+        shareUrl={standaloneShareUrl ?? ""}
+        onOpenChange={(open) => {
+          if (!open) {
+            setStandaloneShareUrl(null)
+          }
+        }}
+        onOpenLink={handleOpenStandaloneShareLink}
+        onCopyLink={handleCopyStandaloneShareLink}
+      />
 
       <ChatInputDock
         inputRef={inputRef}

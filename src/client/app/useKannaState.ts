@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
 import { APP_NAME } from "../../shared/branding"
-import { PROVIDERS, type AgentProvider, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
+import { PROVIDERS, type AgentProvider, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type StandaloneTranscriptExportResult, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
@@ -11,10 +11,12 @@ import { useChatInputStore } from "../stores/chatInputStore"
 import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
 import type { AskUserQuestionItem } from "../components/messages/types"
 import { useAppDialog } from "../components/ui/app-dialog"
+import { useTheme } from "../hooks/useTheme"
 import { processTranscriptMessages } from "../lib/parseTranscript"
 import { generateUUID } from "../lib/utils"
 import { canCancelStatus, getLatestToolIds, isProcessingStatus } from "./derived"
 import { KannaSocket, type SocketStatus } from "./socket"
+import type { EditorOpenSettings } from "../../shared/protocol"
 
 function sameRuntime(left: ChatSnapshot["runtime"] | null | undefined, right: ChatSnapshot["runtime"] | null | undefined) {
   if (left === right) return true
@@ -538,6 +540,7 @@ export interface KannaState {
   isProcessing: boolean
   canCancel: boolean
   isDraining: boolean
+  isExportingStandalone: boolean
   navbarLocalPath?: string
   editorLabel: string
   hasSelectedProject: boolean
@@ -570,7 +573,7 @@ export interface KannaState {
   handleRemoveProject: (projectId: string) => Promise<void>
   handleReorderProjectGroups: (projectIds: string[]) => Promise<void>
   handleCopyPath: (localPath: string) => Promise<void>
-  handleOpenExternal: (action: "open_finder" | "open_terminal" | "open_editor") => Promise<void>
+  handleOpenExternal: (action: "open_finder" | "open_terminal" | "open_editor", editor?: EditorOpenSettings) => Promise<void>
   handleOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => Promise<void>
   handleOpenLocalLink: (target: { path: string; line?: number; column?: number }) => Promise<void>
   handleCompose: () => void
@@ -585,12 +588,14 @@ export interface KannaState {
     clearContext?: boolean,
     message?: string
   ) => Promise<void>
+  handleExportStandalone: () => Promise<StandaloneTranscriptExportResult | null>
 }
 
 export function useKannaState(activeChatId: string | null): KannaState {
   const navigate = useNavigate()
   const socket = useKannaSocket()
   const dialog = useAppDialog()
+  const { resolvedTheme } = useTheme()
 
   const [sidebarData, setSidebarData] = useState<SidebarData>({ projectGroups: [] })
   const [optimisticSidebarProjectOrder, setOptimisticSidebarProjectOrder] = useState<string[] | null>(null)
@@ -614,6 +619,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [addProjectModalOpen, setAddProjectModalOpen] = useState(false)
   const [commandError, setCommandError] = useState<string | null>(null)
+  const [isExportingStandalone, setIsExportingStandalone] = useState(false)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
   const [optimisticUserPrompts, setOptimisticUserPrompts] = useState<OptimisticUserPrompt[]>([])
@@ -1582,6 +1588,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     localPath: string
     line?: number
     column?: number
+    editor?: EditorOpenSettings
   }) => {
     const preferences = useTerminalPreferencesStore.getState()
     setCommandError(null)
@@ -1589,7 +1596,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
       type: "system.openExternal",
       ...command,
       editor: command.action === "open_editor"
-        ? {
+        ? command.editor ?? {
             preset: preferences.editorPreset,
             commandTemplate: preferences.editorCommandTemplate,
           }
@@ -1597,13 +1604,14 @@ export function useKannaState(activeChatId: string | null): KannaState {
     })
   }, [socket])
 
-  const handleOpenExternal = useCallback(async (action: "open_finder" | "open_terminal" | "open_editor") => {
+  const handleOpenExternal = useCallback(async (action: "open_finder" | "open_terminal" | "open_editor", editor?: EditorOpenSettings) => {
     const localPath = runtime?.localPath ?? localProjects?.projects[0]?.localPath ?? sidebarProjectGroups[0]?.localPath
     if (!localPath) return
     try {
       await openExternal({
         action,
         localPath,
+        editor,
       })
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
@@ -1645,6 +1653,29 @@ export function useKannaState(activeChatId: string | null): KannaState {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
   }, [openExternal])
+
+  const handleExportStandalone = useCallback(async () => {
+    if (!activeChatId || isExportingStandalone) {
+      return null
+    }
+
+    setIsExportingStandalone(true)
+    try {
+      const result = await socket.command<StandaloneTranscriptExportResult>({
+        type: "chat.exportStandalone",
+        chatId: activeChatId,
+        theme: resolvedTheme,
+        attachmentMode: "bundle",
+      })
+      setCommandError(null)
+      return result
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+      return null
+    } finally {
+      setIsExportingStandalone(false)
+    }
+  }, [activeChatId, isExportingStandalone, resolvedTheme, socket])
 
   const handleCompose = useCallback(() => {
     const intent = resolveComposeIntent({
@@ -1737,6 +1768,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     isProcessing,
     canCancel,
     isDraining,
+    isExportingStandalone,
     navbarLocalPath,
     editorLabel,
     hasSelectedProject,
@@ -1775,5 +1807,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleCompose,
     handleAskUserQuestion,
     handleExitPlanMode,
+    handleExportStandalone,
   }
 }

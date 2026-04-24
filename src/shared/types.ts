@@ -7,6 +7,8 @@ export const DEFAULT_OPENAI_SDK_MODEL = "gpt-5.4-mini"
 export const DEFAULT_OPENROUTER_SDK_MODEL = "moonshotai/kimi-k2.5:nitro"
 
 export type AttachmentKind = "image" | "file"
+export type StandaloneTranscriptAttachmentMode = "metadata" | "bundle"
+export type StandaloneTranscriptTheme = "light" | "dark"
 
 export interface ChatAttachment {
   id: string
@@ -17,6 +19,30 @@ export interface ChatAttachment {
   contentUrl: string
   mimeType: string
   size: number
+}
+
+export interface StandaloneTranscriptBundle {
+  version: 1
+  chatId: string
+  title: string
+  localPath: string
+  exportedAt: string
+  viewerVersion: string
+  theme: StandaloneTranscriptTheme
+  attachmentMode: StandaloneTranscriptAttachmentMode
+  messages: TranscriptEntry[]
+}
+
+export interface StandaloneTranscriptExportResult {
+  outputDir: string
+  indexHtmlPath: string
+  transcriptJsonPath: string
+  attachmentMode: StandaloneTranscriptAttachmentMode
+  totalAttachmentCount: number
+  bundledAttachmentCount: number
+  shareSlug: string
+  shareUrl: string
+  uploadedFileCount: number
 }
 
 export interface QueuedChatMessage {
@@ -166,9 +192,10 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
   {
     id: "codex",
     label: "Codex",
-    defaultModel: "gpt-5.4",
+    defaultModel: "gpt-5.5",
     supportsPlanMode: true,
     models: [
+      { id: "gpt-5.5", label: "GPT-5.5", supportsEffort: false },
       { id: "gpt-5.4", label: "GPT-5.4", supportsEffort: false },
       { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", supportsEffort: false, aliases: ["gpt-5-codex"] },
       { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", supportsEffort: false },
@@ -207,7 +234,7 @@ export function normalizeClaudeModelId(modelId?: string, fallbackModelId = "clau
   return normalizeProviderModelId("claude", modelId, fallbackModelId)
 }
 
-export function normalizeCodexModelId(modelId?: string, fallbackModelId = "gpt-5.4"): string {
+export function normalizeCodexModelId(modelId?: string, fallbackModelId = "gpt-5.5"): string {
   return normalizeProviderModelId("codex", modelId, fallbackModelId)
 }
 
@@ -304,6 +331,7 @@ export interface LocalProjectsSnapshot {
   machine: {
     id: "local"
     displayName: string
+    platform: NodeJS.Platform
   }
   projects: LocalProjectSummary[]
 }

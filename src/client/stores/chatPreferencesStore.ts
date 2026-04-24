@@ -152,6 +152,40 @@ function normalizeCodexPreference(value?: {
   }
 }
 
+function forcePersistedCodexPreference<T extends {
+  model?: string
+  effort?: string
+  modelOptions?: Partial<CodexModelOptions>
+  planMode?: boolean
+}>(value?: T): T | undefined {
+  if (!value) return value
+  return {
+    ...value,
+    model: "gpt-5.5",
+  }
+}
+
+function forcePersistedCodexComposerState<T extends PersistedComposerState | ComposerState>(value?: T): T | undefined {
+  if (!value || value.provider !== "codex") return value
+  return {
+    ...value,
+    model: "gpt-5.5",
+  }
+}
+
+function forcePersistedCodexChatStates(
+  value?: Record<string, PersistedComposerState | ComposerState>
+): Record<string, PersistedComposerState | ComposerState> | undefined {
+  if (!value) return value
+
+  return Object.fromEntries(
+    Object.entries(value).map(([chatId, composerState]) => [
+      chatId,
+      forcePersistedCodexComposerState(composerState) ?? composerState,
+    ])
+  )
+}
+
 function createDefaultProviderDefaults(): ChatProviderPreferences {
   return {
     claude: {
@@ -160,7 +194,7 @@ function createDefaultProviderDefaults(): ChatProviderPreferences {
       planMode: false,
     },
     codex: {
-      model: "gpt-5.4",
+      model: "gpt-5.5",
       modelOptions: { ...DEFAULT_CODEX_MODEL_OPTIONS },
       planMode: false,
     },
@@ -385,21 +419,27 @@ interface ChatPreferencesState {
 export function migrateChatPreferencesState(
   persistedState: Partial<PersistedChatPreferencesState> | undefined
 ): Pick<ChatPreferencesState, "defaultProvider" | "providerDefaults" | "chatStates" | "legacyComposerState"> {
-  const providerDefaults = normalizeProviderDefaults(persistedState?.providerDefaults)
+  const providerDefaults = normalizeProviderDefaults({
+    ...persistedState?.providerDefaults,
+    codex: forcePersistedCodexPreference(persistedState?.providerDefaults?.codex),
+  })
   const legacyComposerState = normalizePersistedComposerState(
-    persistedState?.legacyComposerState ?? persistedState?.composerState,
+    forcePersistedCodexComposerState(persistedState?.legacyComposerState ?? persistedState?.composerState),
     providerDefaults
   )
 
   return {
     defaultProvider: normalizeDefaultProvider(persistedState?.defaultProvider),
     providerDefaults,
-    chatStates: normalizeChatStates(persistedState?.chatStates, providerDefaults),
+    chatStates: normalizeChatStates(forcePersistedCodexChatStates(persistedState?.chatStates), providerDefaults),
     legacyComposerState: legacyComposerState ?? normalizeComposerState(
       undefined,
       providerDefaults,
       persistedState?.liveProvider,
-      persistedState?.livePreferences
+      {
+        ...persistedState?.livePreferences,
+        codex: forcePersistedCodexPreference(persistedState?.livePreferences?.codex),
+      }
     ),
   }
 }
@@ -570,7 +610,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
     }),
     {
       name: "chat-preferences",
-      version: 6,
+      version: 7,
       migrate: (persistedState) => migrateChatPreferencesState(persistedState as Partial<PersistedChatPreferencesState> | undefined),
     }
   )
