@@ -35,7 +35,14 @@ import { cn } from "../../lib/utils"
 import { parseLocalFileLink } from "../../lib/pathUtils"
 import { useTranscriptRenderOptions } from "./render-context"
 
-type OpenLocalLinkTarget = { path: string; line?: number; column?: number }
+export type OpenLocalLinkTarget = {
+  path: string
+  line?: number
+  column?: number
+  clientX?: number
+  clientY?: number
+  trigger?: "click" | "contextmenu"
+}
 type OpenLocalLinkHandler = (target: OpenLocalLinkTarget) => void
 
 const defaultOpenLocalLink: OpenLocalLinkHandler = () => {}
@@ -388,7 +395,22 @@ export function createMarkdownComponents(options?: {
             onClick?.(event)
             if (event.defaultPrevented || !parsedLocalLink || onOpenLocalLink === defaultOpenLocalLink) return
             event.preventDefault()
-            onOpenLocalLink(parsedLocalLink)
+            onOpenLocalLink({
+              ...parsedLocalLink,
+              clientX: event.clientX,
+              clientY: event.clientY,
+              trigger: "click",
+            })
+          }}
+          onContextMenu={(event) => {
+            if (!parsedLocalLink || onOpenLocalLink === defaultOpenLocalLink) return
+            event.preventDefault()
+            onOpenLocalLink({
+              ...parsedLocalLink,
+              clientX: event.clientX,
+              clientY: event.clientY,
+              trigger: "contextmenu",
+            })
           }}
           {...props}
         >

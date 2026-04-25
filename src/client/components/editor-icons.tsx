@@ -8,9 +8,11 @@ export const EDITOR_OPTIONS: Array<{ value: EditorPreset; label: string }> = [
   { value: "custom", label: "Custom" },
 ]
 
-const ICON_SRC: Record<"cursor" | "finder" | "xcode" | "terminal" | "windsurf" | "custom", string> = {
+const ICON_SRC: Record<"cursor" | "finder" | "preview" | "defaultApp" | "xcode" | "terminal" | "windsurf" | "custom", string> = {
   cursor: "/editor-icons/cursor.png",
+  defaultApp: "/editor-icons/default-app.png",
   finder: "/editor-icons/finder.png",
+  preview: "/editor-icons/preview.png",
   xcode: "/editor-icons/xcode.png",
   terminal: "/editor-icons/terminal.png",
   windsurf: "/editor-icons/windsurf.png",
@@ -38,6 +40,14 @@ export function EditorIcon({ preset, className }: { preset: EditorPreset; classN
 
 export function FinderIcon({ className }: { className?: string }) {
   return <AppIcon src={ICON_SRC.finder} className={className} />
+}
+
+export function PreviewIcon({ className }: { className?: string }) {
+  return <AppIcon src={ICON_SRC.preview} className={className} />
+}
+
+export function DefaultAppIcon({ className }: { className?: string }) {
+  return <AppIcon src={ICON_SRC.defaultApp} className={className} />
 }
 
 export function FolderFallbackIcon({ className }: { className?: string }) {

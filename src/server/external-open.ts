@@ -20,7 +20,7 @@ const DEFAULT_EDITOR_SETTINGS: EditorOpenSettings = {
 export async function openExternal(command: OpenExternalCommand) {
   const resolvedPath = resolveLocalPath(command.localPath)
   const platform = process.platform
-  const info = command.action === "open_editor" || command.action === "open_finder"
+  const info = command.action === "open_editor" || command.action === "open_finder" || command.action === "open_preview" || command.action === "open_default"
     ? await stat(resolvedPath).catch(() => null)
     : null
 
@@ -41,6 +41,29 @@ export async function openExternal(command: OpenExternalCommand) {
   }
 
   if (platform === "darwin") {
+    if (command.action === "open_default") {
+      if (!info) {
+        throw new Error(`Path not found: ${resolvedPath}`)
+      }
+      const defaultCommand = buildDefaultOpenCommand({ localPath: resolvedPath, platform })
+      await spawnDetached(defaultCommand.command, defaultCommand.args)
+      return
+    }
+    if (command.action === "open_preview") {
+      if (!info) {
+        throw new Error(`Path not found: ${resolvedPath}`)
+      }
+      if (!canOpenMacApp("Preview")) {
+        throw new Error("Preview is not installed")
+      }
+      const previewCommand = buildPreviewCommand({
+        localPath: resolvedPath,
+        isDirectory: info.isDirectory(),
+        platform,
+      })
+      await spawnDetached(previewCommand.command, previewCommand.args)
+      return
+    }
     if (command.action === "open_finder") {
       if (info?.isDirectory()) {
         await spawnDetached("open", [resolvedPath])
@@ -59,6 +82,14 @@ export async function openExternal(command: OpenExternalCommand) {
   }
 
   if (platform === "win32") {
+    if (command.action === "open_default") {
+      if (!info) {
+        throw new Error(`Path not found: ${resolvedPath}`)
+      }
+      const defaultCommand = buildDefaultOpenCommand({ localPath: resolvedPath, platform })
+      await spawnDetached(defaultCommand.command, defaultCommand.args)
+      return
+    }
     if (command.action === "open_finder") {
       if (info?.isDirectory()) {
         await spawnDetached("explorer", [resolvedPath])
@@ -75,6 +106,19 @@ export async function openExternal(command: OpenExternalCommand) {
       await spawnDetached("cmd", ["/c", "start", "", "cmd", "/K", `cd /d ${resolvedPath}`])
       return
     }
+  }
+
+  if (command.action === "open_preview") {
+    throw new Error("Preview is only available on macOS")
+  }
+
+  if (command.action === "open_default") {
+    if (!info) {
+      throw new Error(`Path not found: ${resolvedPath}`)
+    }
+    const defaultCommand = buildDefaultOpenCommand({ localPath: resolvedPath, platform })
+    await spawnDetached(defaultCommand.command, defaultCommand.args)
+    return
   }
 
   if (command.action === "open_finder") {
@@ -115,6 +159,33 @@ export function buildEditorCommand(args: {
     })
   }
   return buildPresetEditorCommand(args, editor.preset)
+}
+
+export function buildPreviewCommand(args: {
+  localPath: string
+  isDirectory: boolean
+  platform: NodeJS.Platform
+}): CommandSpec {
+  if (args.platform !== "darwin") {
+    throw new Error("Preview is only available on macOS")
+  }
+  if (args.isDirectory) {
+    throw new Error("Preview cannot open directories")
+  }
+  return { command: "open", args: ["-a", "Preview", args.localPath] }
+}
+
+export function buildDefaultOpenCommand(args: {
+  localPath: string
+  platform: NodeJS.Platform
+}): CommandSpec {
+  if (args.platform === "darwin") {
+    return { command: "open", args: [args.localPath] }
+  }
+  if (args.platform === "win32") {
+    return { command: "cmd", args: ["/c", "start", "", args.localPath] }
+  }
+  return { command: "xdg-open", args: [args.localPath] }
 }
 
 function buildPresetEditorCommand(

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildEditorCommand, tokenizeCommandTemplate } from "./external-open"
+import { buildDefaultOpenCommand, buildEditorCommand, buildPreviewCommand, tokenizeCommandTemplate } from "./external-open"
 
 describe("tokenizeCommandTemplate", () => {
   test("keeps quoted arguments together", () => {
@@ -71,6 +71,42 @@ describe("buildEditorCommand", () => {
     ).toEqual({
       command: "xed",
       args: ["-l", "24", "/Users/jake/Projects/kanna/App.swift"],
+    })
+  })
+})
+
+describe("buildPreviewCommand", () => {
+  test("builds a native macOS Preview open command", () => {
+    expect(
+      buildPreviewCommand({
+        localPath: "/Users/jake/Projects/kanna/mock.png",
+        isDirectory: false,
+        platform: "darwin",
+      })
+    ).toEqual({
+      command: "open",
+      args: ["-a", "Preview", "/Users/jake/Projects/kanna/mock.png"],
+    })
+  })
+
+  test("rejects non-macOS platforms", () => {
+    expect(() => buildPreviewCommand({
+      localPath: "/Users/jake/Projects/kanna/mock.png",
+      isDirectory: false,
+      platform: "linux",
+    })).toThrow("Preview is only available on macOS")
+  })
+})
+
+describe("buildDefaultOpenCommand", () => {
+  test("builds default open commands for supported platforms", () => {
+    expect(buildDefaultOpenCommand({ localPath: "/Users/jake/Projects/kanna/mock.png", platform: "darwin" })).toEqual({
+      command: "open",
+      args: ["/Users/jake/Projects/kanna/mock.png"],
+    })
+    expect(buildDefaultOpenCommand({ localPath: "/tmp/mock.png", platform: "linux" })).toEqual({
+      command: "xdg-open",
+      args: ["/tmp/mock.png"],
     })
   })
 })

@@ -4,9 +4,12 @@ import { ArrowDown, Flower, Upload } from "lucide-react"
 import { AnimatedShinyText } from "../../components/ui/animated-shiny-text"
 import { DrainingIndicator } from "../../components/messages/DrainingIndicator"
 import { QueuedUserMessage } from "../../components/messages/QueuedUserMessage"
-import { OpenLocalLinkProvider } from "../../components/messages/shared"
+import { OpenLocalLinkProvider, type OpenLocalLinkTarget } from "../../components/messages/shared"
 import { ProcessingMessage } from "../../components/messages/ProcessingMessage"
+import { ContextMenu, ContextMenuTrigger } from "../../components/ui/context-menu"
+import { OpenExternalContextMenuContent } from "../../components/open-external-menu"
 import { cn } from "../../lib/utils"
+import { shouldOpenLocalFileLinkInEditor } from "../../lib/pathUtils"
 import {
   buildResolvedTranscriptRows,
   KannaTranscriptRow,
@@ -18,6 +21,7 @@ import {
   CHAT_NAVBAR_OFFSET_PX,
   EMPTY_STATE_TEXT,
 } from "./utils"
+import type { EditorPreset } from "../../../shared/protocol"
 
 interface ChatTranscriptViewportProps {
   activeChatId: string | null
@@ -47,6 +51,9 @@ interface ChatTranscriptViewportProps {
   isEmptyStateTypingComplete: boolean
   isPageFileDragActive: boolean
   showEmptyState: boolean
+  editorPreset?: EditorPreset
+  editorCommandTemplate?: string
+  platform?: NodeJS.Platform
   headerOffsetPx?: number
 }
 
@@ -78,10 +85,16 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   isEmptyStateTypingComplete,
   isPageFileDragActive,
   showEmptyState,
+  editorPreset = "cursor",
+  editorCommandTemplate,
+  platform = "darwin",
   headerOffsetPx = CHAT_NAVBAR_OFFSET_PX,
 }: ChatTranscriptViewportProps) {
   const previousRowCountRef = useRef(0)
+  const localLinkMenuTriggerRef = useRef<HTMLSpanElement | null>(null)
   const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
+  const [localLinkMenuTarget, setLocalLinkMenuTarget] = useState<OpenLocalLinkTarget | null>(null)
+  const isMac = platform === "darwin"
 
   const rawRows = useMemo(() => buildResolvedTranscriptRows(messages, {
     isLoading: isProcessing,
@@ -174,6 +187,29 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
     void loadOlderHistory()
   }, [hasOlderHistory, isHistoryLoading, loadOlderHistory])
 
+  const handleOpenLocalLinkClick = useCallback((target: OpenLocalLinkTarget) => {
+    if (target.trigger !== "contextmenu") {
+      const action = shouldOpenLocalFileLinkInEditor(target.path) ? "open_editor" : "open_default"
+      void onOpenLocalLink(target, action)
+      return
+    }
+
+    setLocalLinkMenuTarget(target)
+    window.requestAnimationFrame(() => {
+      const trigger = localLinkMenuTriggerRef.current
+      if (!trigger) return
+      const clientX = target.clientX ?? window.innerWidth / 2
+      const clientY = target.clientY ?? window.innerHeight / 2
+      trigger.dispatchEvent(new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX,
+        clientY,
+        view: window,
+      }))
+    })
+  }, [onOpenLocalLink])
+
   const renderItem = useCallback(({ item }: { item: ResolvedTranscriptRow }) => (
     <div className="mx-auto w-full max-w-[800px] pb-5" data-transcript-row-id={item.id}>
       <KannaTranscriptRow
@@ -227,7 +263,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
 
   return (
     <>
-      <OpenLocalLinkProvider onOpenLocalLink={onOpenLocalLink}>
+      <OpenLocalLinkProvider onOpenLocalLink={handleOpenLocalLinkClick}>
         <LegendList<ResolvedTranscriptRow>
           ref={listRef}
           data={resolvedRows}
@@ -248,6 +284,37 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
           ListFooterComponent={listFooter}
         />
       </OpenLocalLinkProvider>
+
+      <ContextMenu onOpenChange={(open) => {
+        if (!open) {
+          setLocalLinkMenuTarget(null)
+        }
+      }}>
+        <ContextMenuTrigger asChild>
+          <span
+            ref={localLinkMenuTriggerRef}
+            aria-hidden="true"
+            className="pointer-events-none fixed size-px opacity-0"
+            style={{
+              left: localLinkMenuTarget?.clientX ?? 0,
+              top: localLinkMenuTarget?.clientY ?? 0,
+            }}
+          />
+        </ContextMenuTrigger>
+        {localLinkMenuTarget ? (
+          <OpenExternalContextMenuContent
+            isMac={isMac}
+            editorPreset={editorPreset}
+            editorCommandTemplate={editorCommandTemplate}
+            includeFinder
+            includePreview
+            includeDefault
+            onOpenExternal={(action, editor) => {
+              void onOpenLocalLink(localLinkMenuTarget, action, editor)
+            }}
+          />
+        ) : null}
+      </ContextMenu>
 
       {showEmptyState ? (
         <div

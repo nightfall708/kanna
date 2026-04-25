@@ -1,155 +1,92 @@
-import { useEffect, useMemo, useState } from "react"
-import { ChevronDown, Flower, GitBranch, Loader2, Menu, PanelLeft, PanelRight, SquarePen, Terminal, UserRoundPlus } from "lucide-react"
-import type { EditorOpenSettings, EditorPreset } from "../../../shared/protocol"
+import { type MouseEvent as ReactMouseEvent } from "react"
+import { Check, Flower, GitBranch, Loader2, Menu, MoreHorizontal, PanelLeft, PanelRight, SquarePen, Terminal, UserRoundPlus } from "lucide-react"
+import type { EditorOpenSettings, EditorPreset, OpenExternalAction } from "../../../shared/protocol"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
 import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "../ui/tooltip"
 import { cn } from "../../lib/utils"
-import { getDefaultEditorCommandTemplate } from "../../stores/terminalPreferencesStore"
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "../ui/select"
-import { EDITOR_OPTIONS, EditorIcon, FinderIcon, FolderFallbackIcon, TerminalIcon } from "../editor-icons"
+import { OpenExternalSelect } from "../open-external-menu"
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "../ui/context-menu"
 
-type OpenExternalAction = "open_finder" | "open_terminal" | "open_editor"
-type OpenSelectValue = "finder" | "terminal" | `editor:${EditorPreset}`
-
-const OPEN_SELECT_STORAGE_KEY = "kanna:last-open-external"
-
-function getEditorSettings(preset: EditorPreset, customTemplate?: string): EditorOpenSettings {
-  return {
-    preset,
-    commandTemplate: preset === "custom"
-      ? customTemplate?.trim() || getDefaultEditorCommandTemplate(preset)
-      : getDefaultEditorCommandTemplate(preset),
-  }
+function openContextMenuFromButton(event: ReactMouseEvent<HTMLButtonElement>) {
+  event.preventDefault()
+  event.stopPropagation()
+  const rect = event.currentTarget.getBoundingClientRect()
+  event.currentTarget.dispatchEvent(new MouseEvent("contextmenu", {
+    bubbles: true,
+    cancelable: true,
+    clientX: rect.left + rect.width / 2,
+    clientY: rect.bottom,
+    view: window,
+  }))
 }
 
-function getOpenSelectLabel(value: OpenSelectValue, isMac: boolean) {
-  if (value === "finder") return isMac ? "Finder" : "Folder"
-  if (value === "terminal") return "Terminal"
-  const preset = value.replace("editor:", "") as EditorPreset
-  if (preset === "vscode") return "VS Code"
-  return EDITOR_OPTIONS.find((option) => option.value === preset)?.label ?? "Editor"
-}
-
-function OpenSelectIcon({ value, isMac, className }: { value: OpenSelectValue; isMac: boolean; className?: string }) {
-  if (value === "finder") {
-    return isMac ? <FinderIcon className={className} /> : <FolderFallbackIcon className={className} />
-  }
-  if (value === "terminal") {
-    return <TerminalIcon className={className} />
-  }
-  return <EditorIcon preset={value.replace("editor:", "") as EditorPreset} className={className} />
-}
-
-function normalizeOpenSelectValue(value: string | null, fallback: OpenSelectValue): OpenSelectValue {
-  if (value === "finder" || value === "terminal") return value
-  if (value?.startsWith("editor:")) {
-    const preset = value.slice("editor:".length)
-    if (preset === "vscode" || EDITOR_OPTIONS.some((option) => option.value === preset)) {
-      return value as OpenSelectValue
-    }
-  }
-  return fallback
-}
-
-function OpenExternalSelect({
-  isMac,
-  editorPreset,
-  editorCommandTemplate,
-  finderShortcut,
-  editorShortcut,
-  onOpenExternal,
+function NavbarOverflowMenu({
+  showOnDesktop,
+  onToggleEmbeddedTerminal,
+  onExportTranscript,
+  canExportTranscript,
+  isExportingTranscript,
+  exportTranscriptComplete,
 }: {
-  isMac: boolean
-  editorPreset: EditorPreset
-  editorCommandTemplate?: string
-  finderShortcut?: string[]
-  editorShortcut?: string[]
-  onOpenExternal: (action: OpenExternalAction, editor?: EditorOpenSettings) => void
+  showOnDesktop: boolean
+  onToggleEmbeddedTerminal?: () => void
+  onExportTranscript?: () => void
+  canExportTranscript: boolean
+  isExportingTranscript: boolean
+  exportTranscriptComplete: boolean
 }) {
-  const fallbackValue = `editor:${editorPreset}` as OpenSelectValue
-  const [lastValue, setLastValue] = useState<OpenSelectValue>(fallbackValue)
-
-  useEffect(() => {
-    setLastValue(normalizeOpenSelectValue(window.localStorage.getItem(OPEN_SELECT_STORAGE_KEY), fallbackValue))
-  }, [fallbackValue])
-
-  const items = useMemo<Array<{ value: OpenSelectValue; label: string }>>(() => {
-    const editorItems: Array<{ value: OpenSelectValue; label: string }> = [
-      { value: "editor:cursor", label: "Cursor" },
-      { value: "editor:xcode", label: "Xcode" },
-      { value: "editor:windsurf", label: "Windsurf" },
-      ...(editorPreset === "custom" ? [{ value: "editor:custom" as OpenSelectValue, label: "Custom" }] : []),
-    ]
-    const defaultEditorValue = `editor:${editorPreset}` as OpenSelectValue
-    const sortedEditorItems = [
-      ...editorItems.filter((item) => item.value === defaultEditorValue),
-      ...editorItems.filter((item) => item.value !== defaultEditorValue),
-    ]
-    return [
-      ...sortedEditorItems,
-      { value: "finder", label: isMac ? "Finder" : "Folder" },
-      { value: "terminal", label: "Terminal" },
-    ]
-  }, [editorPreset, isMac])
-
-  function openValue(value: OpenSelectValue) {
-    setLastValue(value)
-    window.localStorage.setItem(OPEN_SELECT_STORAGE_KEY, value)
-    if (value === "finder") {
-      onOpenExternal("open_finder")
-      return
-    }
-    if (value === "terminal") {
-      onOpenExternal("open_terminal")
-      return
-    }
-    const preset = value.replace("editor:", "") as EditorPreset
-    onOpenExternal("open_editor", getEditorSettings(preset, editorCommandTemplate))
-  }
+  if (!onToggleEmbeddedTerminal && !onExportTranscript) return null
 
   return (
-    <div className="grid grid-cols-[1fr_auto]">
-      <HotkeyTooltip>
-        <HotkeyTooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="none"
-            onClick={() => openValue(lastValue)}
-            title={`Open in ${getOpenSelectLabel(lastValue, isMac)}`}
-            className="border-0 !pl-2.5 !pr-1 hover:!border-border/0 hover:!bg-transparent"
-          >
-            <OpenSelectIcon value={lastValue} isMac={isMac} className="size-6" />
-          </Button>
-        </HotkeyTooltipTrigger>
-        <HotkeyTooltipContent
-          side="bottom"
-          shortcut={lastValue === "finder" ? finderShortcut : lastValue === `editor:${editorPreset}` ? editorShortcut : undefined}
-        />
-      </HotkeyTooltip>
-      <Select value={undefined} onValueChange={(value) => openValue(value as OpenSelectValue)}>
-        <SelectTrigger
-          aria-label="Choose open destination"
-          className="!pl-1 !pr-2.5 border-0 bg-transparent hover:bg-transparent focus:ring-0 focus:ring-offset-0 [&>svg]:hidden"
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="none"
+          onClick={openContextMenuFromButton}
+          title="More actions"
+          className={cn(
+            "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent",
+            showOnDesktop ? "flex" : "flex md:hidden"
+          )}
         >
-          <span className="flex items-center justify-center">
-            <ChevronDown className="h-4 w-4 opacity-60" />
-          </span>
-        </SelectTrigger>
-        <SelectContent align="end" className="min-w-[210px]">
-          <SelectGroup>
-            {items.map((item) => (
-              <SelectItem key={item.value} value={item.value} className="py-2 pl-2 pr-8">
-                <span className="flex items-center gap-3">
-                  <OpenSelectIcon value={item.value} isMac={isMac} className="h-5 w-5 shrink-0" />
-                  <span>{item.label}</span>
-                </span>
-              </SelectItem>
-            ))}
-          </SelectGroup>
-        </SelectContent>
-      </Select>
-    </div>
+          <MoreHorizontal strokeWidth={2} className="h-4.5" />
+        </Button>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        {onToggleEmbeddedTerminal ? (
+          <ContextMenuItem
+            onSelect={(event) => {
+              event.preventDefault()
+              onToggleEmbeddedTerminal()
+            }}
+          >
+            <Terminal strokeWidth={2} className="h-3.5 w-3.5" />
+            <span className="text-xs font-medium">Toggle Terminal</span>
+          </ContextMenuItem>
+        ) : null}
+        {onExportTranscript ? (
+          <ContextMenuItem
+            disabled={!canExportTranscript || isExportingTranscript}
+            onSelect={(event) => {
+              event.preventDefault()
+              if (!canExportTranscript || isExportingTranscript) return
+              onExportTranscript()
+            }}
+          >
+            {isExportingTranscript ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : exportTranscriptComplete ? (
+              <Check className="h-3.5 w-3.5 text-emerald-400" />
+            ) : (
+              <UserRoundPlus strokeWidth={2} className="h-3.5 w-3.5" />
+            )}
+            <span className="text-xs font-medium">Share Chat</span>
+          </ContextMenuItem>
+        ) : null}
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
 
@@ -167,6 +104,7 @@ interface Props {
   onExportTranscript?: () => void
   canExportTranscript?: boolean
   isExportingTranscript?: boolean
+  exportTranscriptComplete?: boolean
   editorPreset?: EditorPreset
   editorCommandTemplate?: string
   platform?: NodeJS.Platform
@@ -193,6 +131,7 @@ export function ChatNavbar({
   onExportTranscript,
   canExportTranscript = false,
   isExportingTranscript = false,
+  exportTranscriptComplete = false,
   editorPreset = "cursor",
   editorCommandTemplate,
   platform = "darwin",
@@ -273,6 +212,14 @@ export function ChatNavbar({
             ) : null}
             {(onToggleEmbeddedTerminal || onToggleRightSidebar || onExportTranscript) ? (
               <div className="flex items-center border border-border rounded-2xl px-2 py-0.5 backdrop-blur-lg">
+                <NavbarOverflowMenu
+                  showOnDesktop={rightSidebarVisible}
+                  onToggleEmbeddedTerminal={onToggleEmbeddedTerminal}
+                  onExportTranscript={onExportTranscript}
+                  canExportTranscript={canExportTranscript}
+                  isExportingTranscript={isExportingTranscript}
+                  exportTranscriptComplete={exportTranscriptComplete}
+                />
                 {onToggleEmbeddedTerminal ? (
                 <HotkeyTooltip>
                   <HotkeyTooltipTrigger asChild>
@@ -281,6 +228,7 @@ export function ChatNavbar({
                       size="none"
                       onClick={onToggleEmbeddedTerminal}
                       className={cn(
+                        rightSidebarVisible ? "hidden" : "hidden md:flex",
                         "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent",
                         embeddedTerminalVisible && "text-foreground"
                       )}
@@ -297,10 +245,20 @@ export function ChatNavbar({
                     size="none"
                     onClick={onExportTranscript}
                     disabled={!canExportTranscript || isExportingTranscript}
-                    title="Export standalone transcript"
-                    className="border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent disabled:opacity-50"
+                    title="Share chat"
+                    aria-label="Share chat"
+                    className={cn(
+                      rightSidebarVisible ? "hidden" : "hidden md:flex",
+                      "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent disabled:opacity-50"
+                    )}
                   >
-                    {isExportingTranscript ? <Loader2 className="h-4.5 animate-spin" /> : <UserRoundPlus strokeWidth={2} className="h-4.5" />}
+                    {isExportingTranscript ? (
+                      <Loader2 className="h-4.5 animate-spin" />
+                    ) : exportTranscriptComplete ? (
+                      <Check className="h-4.5 text-emerald-400" />
+                    ) : (
+                      <UserRoundPlus strokeWidth={2} className="h-4.5" />
+                    )}
                   </Button>
                 ) : null}
                 {onToggleRightSidebar ? (
