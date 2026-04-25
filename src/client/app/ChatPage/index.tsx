@@ -983,6 +983,9 @@ export function ChatPage() {
           onSteerQueuedMessage={state.handleSteerQueuedMessage}
           onRemoveQueuedMessage={state.handleRemoveQueuedMessage}
           onOpenLocalLink={state.handleOpenLocalLink}
+          editorPreset={editorPreset}
+          editorCommandTemplate={editorCommandTemplate}
+          platform={state.localProjects?.machine.platform}
           onAskUserQuestionSubmit={state.handleAskUserQuestion}
           onExitPlanModeConfirm={state.handleExitPlanMode}
           showScrollButton={showScrollToBottom && state.messages.length > 0}

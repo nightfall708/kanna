@@ -12,13 +12,14 @@ import { useAppSettingsStore } from "../stores/appSettingsStore"
 import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
 import type { AskUserQuestionItem } from "../components/messages/types"
+import type { OpenLocalLinkTarget } from "../components/messages/shared"
 import { useAppDialog } from "../components/ui/app-dialog"
 import { useTheme } from "../hooks/useTheme"
 import { processTranscriptMessages } from "../lib/parseTranscript"
 import { generateUUID } from "../lib/utils"
 import { canCancelStatus, getLatestToolIds, isProcessingStatus } from "./derived"
 import { KannaSocket, type SocketStatus } from "./socket"
-import type { EditorOpenSettings } from "../../shared/protocol"
+import type { EditorOpenSettings, OpenExternalAction } from "../../shared/protocol"
 
 function sameRuntime(left: ChatSnapshot["runtime"] | null | undefined, right: ChatSnapshot["runtime"] | null | undefined) {
   if (left === right) return true
@@ -685,9 +686,9 @@ export interface KannaState {
   handleRemoveProject: (projectId: string) => Promise<void>
   handleReorderProjectGroups: (projectIds: string[]) => Promise<void>
   handleCopyPath: (localPath: string) => Promise<void>
-  handleOpenExternal: (action: "open_finder" | "open_terminal" | "open_editor", editor?: EditorOpenSettings) => Promise<void>
+  handleOpenExternal: (action: OpenExternalAction, editor?: EditorOpenSettings) => Promise<void>
   handleOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => Promise<void>
-  handleOpenLocalLink: (target: { path: string; line?: number; column?: number }) => Promise<void>
+  handleOpenLocalLink: (target: OpenLocalLinkTarget, action?: OpenExternalAction, editor?: EditorOpenSettings) => Promise<void>
   handleCompose: () => void
   handleAskUserQuestion: (
     toolUseId: string,
@@ -1718,7 +1719,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   }, [socket])
 
   const openExternal = useCallback(async (command: {
-    action: "open_finder" | "open_terminal" | "open_editor"
+    action: OpenExternalAction
     localPath: string
     line?: number
     column?: number
@@ -1738,7 +1739,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     })
   }, [socket])
 
-  const handleOpenExternal = useCallback(async (action: "open_finder" | "open_terminal" | "open_editor", editor?: EditorOpenSettings) => {
+  const handleOpenExternal = useCallback(async (action: OpenExternalAction, editor?: EditorOpenSettings) => {
     const localPath = runtime?.localPath ?? localProjects?.projects[0]?.localPath ?? sidebarProjectGroups[0]?.localPath
     if (!localPath) return
     try {
@@ -1764,13 +1765,18 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [])
 
-  const handleOpenLocalLink = useCallback(async (target: { path: string; line?: number; column?: number }) => {
+  const handleOpenLocalLink = useCallback(async (
+    target: OpenLocalLinkTarget,
+    action: OpenExternalAction = "open_editor",
+    editor?: EditorOpenSettings,
+  ) => {
     try {
       await openExternal({
-        action: "open_editor",
+        action,
         localPath: target.path,
         line: target.line,
         column: target.column,
+        editor,
       })
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))

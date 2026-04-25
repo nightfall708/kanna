@@ -16,7 +16,7 @@ import { CompactBoundaryMessage, ContextClearedMessage } from "../components/mes
 import { CompactSummaryMessage } from "../components/messages/CompactSummaryMessage"
 import { StatusMessage } from "../components/messages/StatusMessage"
 import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
-import { OpenLocalLinkProvider } from "../components/messages/shared"
+import { OpenLocalLinkProvider, type OpenLocalLinkTarget } from "../components/messages/shared"
 import { CHAT_SELECTION_ZONE_ATTRIBUTE } from "./chatFocusPolicy"
 
 const SPECIAL_TOOL_NAMES = new Set(["AskUserQuestion", "ExitPlanMode", "TodoWrite"])
@@ -567,7 +567,7 @@ interface KannaTranscriptProps {
   isLoading: boolean
   localPath?: string
   latestToolIds: Record<string, string | null>
-  onOpenLocalLink: (target: { path: string; line?: number; column?: number }) => void
+  onOpenLocalLink: (target: OpenLocalLinkTarget) => void
   onAskUserQuestionSubmit: (
     toolUseId: string,
     questions: AskUserQuestionItem[],

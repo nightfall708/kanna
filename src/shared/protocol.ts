@@ -85,7 +85,7 @@ export type ClientCommand =
   | {
       type: "system.openExternal"
       localPath: string
-      action: "open_finder" | "open_terminal" | "open_editor"
+      action: "open_finder" | "open_terminal" | "open_editor" | "open_preview" | "open_default"
       line?: number
       column?: number
       editor?: EditorOpenSettings
@@ -211,6 +211,8 @@ export type ClientCommand =
   | { type: "terminal.input"; terminalId: string; data: string }
   | { type: "terminal.resize"; terminalId: string; cols: number; rows: number }
   | { type: "terminal.close"; terminalId: string }
+
+export type OpenExternalAction = Extract<ClientCommand, { type: "system.openExternal" }>["action"]
 
 export type ClientEnvelope =
   | { v: 1; type: "subscribe"; id: string; topic: SubscriptionTopic }
