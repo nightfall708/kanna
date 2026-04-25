@@ -21,6 +21,7 @@ import {
 } from "../../stores/rightSidebarStore"
 import { DEFAULT_PROJECT_TERMINAL_LAYOUT, useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
 import { useTerminalPreferencesStore } from "../../stores/terminalPreferencesStore"
+import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import { shouldCloseTerminalPane } from "../terminalLayoutResize"
 import { TERMINAL_TOGGLE_ANIMATION_DURATION_MS } from "../terminalToggleAnimation"
 import { useRightSidebarToggleAnimation } from "../useRightSidebarToggleAnimation"
@@ -468,6 +469,7 @@ export function ChatPage() {
   const projectRightSidebarVisibility = useRightSidebarStore((store) => (projectId ? store.projects[projectId] : undefined))
   const rightSidebarVisibility = projectRightSidebarVisibility ?? DEFAULT_RIGHT_SIDEBAR_VISIBILITY_STATE
   const globalRightSidebarSize = useRightSidebarStore((store) => store.size)
+  const transcriptAutoScroll = useAppSettingsStore((store) => store.settings?.transcriptAutoScroll ?? true)
   const addTerminal = useTerminalLayoutStore((store) => store.addTerminal)
   const removeTerminal = useTerminalLayoutStore((store) => store.removeTerminal)
   const toggleVisibility = useTerminalLayoutStore((store) => store.toggleVisibility)
@@ -875,7 +877,7 @@ export function ChatPage() {
   }, [handleCloseRightSidebar, isMobileRightSidebarOverlay, showRightSidebar])
 
   useEffect(() => {
-    if (!isAtEndRef.current) {
+    if (!transcriptAutoScroll || !isAtEndRef.current) {
       return
     }
 
@@ -894,6 +896,7 @@ export function ChatPage() {
       }
     }
   }, [
+    transcriptAutoScroll,
     state.commandError,
     state.isDraining,
     state.isProcessing,

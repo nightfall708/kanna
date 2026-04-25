@@ -1113,6 +1113,25 @@ export function SettingsPage() {
                       </SettingsRow>
 
                       <SettingsRow
+                        title="Auto-scroll"
+                        description="Automatically follow new messages in the chat transcript"
+                      >
+                        <SegmentedControl
+                          value={appSettings?.transcriptAutoScroll !== false ? "on" : "off"}
+                          onValueChange={(value) => {
+                            void handleWriteAppSettings({ transcriptAutoScroll: value === "on" }).catch((error) => {
+                              setAppSettingsError(error instanceof Error ? error.message : "Unable to save auto-scroll settings.")
+                            })
+                          }}
+                          options={[
+                            { value: "on", label: "On" },
+                            { value: "off", label: "Off" },
+                          ]}
+                          size="sm"
+                        />
+                      </SettingsRow>
+
+                      <SettingsRow
                         title="Default Editor"
                         description="Used when opening transcript links or files from the git diff menu"
                         alignStart

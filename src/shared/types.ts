@@ -384,6 +384,7 @@ export interface AppSettingsSnapshot {
   }
   defaultProvider: DefaultProviderPreference
   providerDefaults: ChatProviderPreferences
+  transcriptAutoScroll: boolean
   warning: string | null
   filePathDisplay: string
 }
@@ -401,6 +402,7 @@ export interface AppSettingsPatch {
     claude?: Partial<ProviderPreference<ClaudeModelOptions>>
     codex?: Partial<ProviderPreference<CodexModelOptions>>
   }
+  transcriptAutoScroll?: boolean
 }
 
 export interface LlmProviderFile {

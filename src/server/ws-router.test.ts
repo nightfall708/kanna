@@ -92,6 +92,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       planMode: false,
     },
   },
+  transcriptAutoScroll: true,
   warning: null,
   filePathDisplay: "~/.kanna/data/settings.json",
 }
