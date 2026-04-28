@@ -344,6 +344,7 @@ export interface SidebarProjectGroup {
   chats: SidebarChatRow[]
   previewChats: SidebarChatRow[]
   olderChats: SidebarChatRow[]
+  archivedChats?: SidebarChatRow[]
   defaultCollapsed: boolean
 }
 

@@ -93,6 +93,8 @@ export type ClientCommand =
   | { type: "chat.create"; projectId: string }
   | { type: "chat.fork"; chatId: string }
   | { type: "chat.rename"; chatId: string; title: string }
+  | { type: "chat.archive"; chatId: string }
+  | { type: "chat.unarchive"; chatId: string }
   | { type: "chat.delete"; chatId: string }
   | { type: "chat.setDraftProtection"; chatIds: string[] }
   | { type: "chat.markRead"; chatId: string }

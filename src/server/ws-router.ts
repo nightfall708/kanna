@@ -940,21 +940,9 @@ export function createWsRouter({
           break
         }
         case "project.remove": {
-          const project = store.getProject(command.projectId)
-          const chats = store.listChatsByProject(command.projectId)
-          for (const chat of chats) {
-            await agent.cancel(chat.id)
-            await agent.closeChat(chat.id)
-          }
-          if (project) {
-            terminals.closeByCwd(project.localPath)
-          }
           await store.removeProject(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           resolvedAnalytics.track("project_removed")
-          for (const _chat of chats) {
-            resolvedAnalytics.track("chat_deleted")
-          }
           break
         }
         case "sidebar.reorderProjectGroups": {
@@ -995,6 +983,18 @@ export function createWsRouter({
         }
         case "chat.rename": {
           await store.renameChat(command.chatId, command.title)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "chat.archive": {
+          await store.archiveChat(command.chatId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastFilteredSnapshots({ includeSidebar: true })
+          return
+        }
+        case "chat.unarchive": {
+          await store.unarchiveChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           await broadcastChatAndSidebar(command.chatId)
           return

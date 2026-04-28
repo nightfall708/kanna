@@ -616,8 +616,6 @@ describe("ws-router", () => {
         "project_opened",
         "project_created",
         "project_removed",
-        "chat_deleted",
-        "chat_deleted",
       ])
     } finally {
       await rm(projectPath, { recursive: true, force: true })
