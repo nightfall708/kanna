@@ -25,6 +25,9 @@ interface PromptDialogOptions {
   description?: string
   placeholder?: string
   initialValue?: string
+  allowEmpty?: boolean
+  resetLabel?: string
+  resetValue?: string
   confirmLabel?: string
   cancelLabel?: string
 }
@@ -96,7 +99,8 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
     if (dialogState.kind === "confirm") {
       dialogState.resolve(true)
     } else if (dialogState.kind === "prompt") {
-      dialogState.resolve(inputValue.trim() || null)
+      const trimmed = inputValue.trim()
+      dialogState.resolve(trimmed || (dialogState.options.allowEmpty ? "" : null))
     } else {
       dialogState.resolve()
     }
@@ -165,6 +169,16 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                 ) : null}
               </DialogBody>
               <DialogFooter>
+                {dialogState.kind === "prompt" && dialogState.options.resetLabel ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setInputValue(dialogState.options.resetValue ?? "")}
+                    className="mr-auto"
+                  >
+                    {dialogState.options.resetLabel}
+                  </Button>
+                ) : null}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -177,7 +191,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                   variant={dialogState.kind === "confirm" ? (dialogState.options.confirmVariant ?? "default") : "secondary"}
                   size="sm"
                   onClick={resolveConfirm}
-                  disabled={dialogState.kind === "prompt" && !inputValue.trim()}
+                  disabled={dialogState.kind === "prompt" && !dialogState.options.allowEmpty && !inputValue.trim()}
                 >
                   {dialogState.kind === "alert"
                     ? (dialogState.options.closeLabel ?? "OK")

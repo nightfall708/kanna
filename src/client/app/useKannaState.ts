@@ -697,6 +697,7 @@ export interface KannaState {
   handleCancel: () => Promise<void>
   handleStopDraining: () => Promise<void>
   handleRenameChat: (chat: SidebarChatRow) => Promise<void>
+  handleRenameProject: (projectId: string, sidebarTitle: string | undefined, realTitle: string) => Promise<void>
   handleShareChat: (chatId?: string | null) => Promise<void>
   handleArchiveChat: (chat: SidebarChatRow) => Promise<void>
   handleOpenArchivedChat: (chatId: string) => Promise<void>
@@ -1701,6 +1702,26 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [dialog, socket])
 
+  const handleRenameProject = useCallback(async (projectId: string, sidebarTitle: string | undefined, realTitle: string) => {
+    const title = await dialog.prompt({
+      title: "Rename Project",
+      description: "This only changes the sidebar name. The folder path on disk stays the same.",
+      initialValue: sidebarTitle ?? "",
+      placeholder: realTitle,
+      allowEmpty: true,
+      resetLabel: "Reset",
+      resetValue: "",
+      confirmLabel: "Rename",
+    })
+    if (title === null || title === (sidebarTitle ?? "")) return
+    try {
+      await socket.command({ type: "project.rename", projectId, title })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [dialog, socket])
+
   const handleDeleteChat = useCallback(async (chat: SidebarChatRow) => {
     const confirmed = await dialog.confirm({
       title: "Delete Chat",
@@ -2055,6 +2076,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleCancel,
     handleStopDraining,
     handleRenameChat,
+    handleRenameProject,
     handleShareChat,
     handleArchiveChat,
     handleOpenArchivedChat,

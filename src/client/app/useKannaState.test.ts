@@ -23,6 +23,8 @@ function createSidebarData(): SidebarData {
     projectGroups: [
       {
         groupKey: "project-1",
+        title: "Project 1",
+        realTitle: "Project 1",
         localPath: "/tmp/project-1",
         chats: [
           {
@@ -68,6 +70,8 @@ function createSidebarData(): SidebarData {
       },
       {
         groupKey: "project-2",
+        title: "Project 2",
+        realTitle: "Project 2",
         localPath: "/tmp/project-2",
         chats: [
           {

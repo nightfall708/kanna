@@ -1173,6 +1173,12 @@ export function createWsRouter({
           }
           break
         }
+        case "project.rename": {
+          await store.renameProjectSidebarTitle(command.projectId, command.title)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastFilteredSnapshots({ includeSidebar: true })
+          return
+        }
         case "project.remove": {
           await store.removeProject(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })

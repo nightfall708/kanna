@@ -389,6 +389,9 @@ export interface SidebarChatRow {
 
 export interface SidebarProjectGroup {
   groupKey: string
+  title: string
+  realTitle: string
+  sidebarTitle?: string
   localPath: string
   chats: SidebarChatRow[]
   previewChats: SidebarChatRow[]

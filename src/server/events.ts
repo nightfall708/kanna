@@ -1,6 +1,7 @@
 import type { AgentProvider, ProjectSummary, QueuedChatMessage, TranscriptEntry } from "../shared/types"
 
 export interface ProjectRecord extends ProjectSummary {
+  sidebarTitle?: string
   deletedAt?: number
 }
 
@@ -46,6 +47,12 @@ export type ProjectEvent = {
   projectId: string
   localPath: string
   title: string
+} | {
+  v: 2
+  type: "project_sidebar_renamed"
+  timestamp: number
+  projectId: string
+  title: string | null
 } | {
   v: 2
   type: "project_removed"

@@ -65,6 +65,7 @@ interface KannaSidebarProps {
   onOpenAddProjectModal: () => void
   onCopyPath: (localPath: string) => void
   onOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => void
+  onRenameProject: (projectId: string, sidebarTitle: string | undefined, realTitle: string) => void
   onHideProject: (projectId: string) => void
   onReorderProjectGroups: (projectIds: string[]) => void
   editorLabel: string
@@ -96,6 +97,7 @@ function KannaSidebarImpl({
   onOpenAddProjectModal,
   onCopyPath,
   onOpenExternalPath,
+  onRenameProject,
   onHideProject,
   onReorderProjectGroups,
   editorLabel,
@@ -518,6 +520,7 @@ function KannaSidebarImpl({
               }}
               onCopyPath={onCopyPath}
               onOpenExternalPath={onOpenExternalPath}
+              onRenameProject={onRenameProject}
               onHideProject={onHideProject}
               isConnected={connectionStatus === "connected"}
             />

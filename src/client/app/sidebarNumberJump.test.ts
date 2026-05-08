@@ -28,6 +28,8 @@ const hourMs = 60 * 60 * 1_000
 const PROJECT_GROUPS: SidebarProjectGroup[] = [
   {
     groupKey: "project-a",
+    title: "Project A",
+    realTitle: "Project A",
     localPath: "/tmp/project-a",
     chats: [
       {
@@ -73,6 +75,8 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
   },
   {
     groupKey: "project-b",
+    title: "Project B",
+    realTitle: "Project B",
     localPath: "/tmp/project-b",
     chats: [
       {
@@ -140,6 +144,8 @@ describe("getVisibleSidebarChats", () => {
   test("falls back to the most recent 5 chats when no chats are within 24 hours", () => {
     const staleProject: SidebarProjectGroup[] = [{
       groupKey: "project-c",
+      title: "Project C",
+      realTitle: "Project C",
       localPath: "/tmp/project-c",
       chats: Array.from({ length: 7 }, (_, index) => ({
         _id: `c-${index + 1}`,

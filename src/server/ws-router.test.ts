@@ -17,6 +17,8 @@ import {
 
 function withSidebarGroupDefaults(group: {
   groupKey: string
+  title: string
+  realTitle?: string
   localPath: string
   chats: Array<{
     _id: string
@@ -34,6 +36,7 @@ function withSidebarGroupDefaults(group: {
 }) {
   return {
     ...group,
+    realTitle: group.realTitle ?? group.title,
     previewChats: group.chats,
     olderChats: [],
     defaultCollapsed: true,
@@ -1318,6 +1321,7 @@ describe("ws-router", () => {
         data: {
           projectGroups: [withSidebarGroupDefaults({
             groupKey: "project-1",
+            title: "Project",
             localPath: "/tmp/project",
             chats: [{
               _id: "chat-1",
@@ -1343,6 +1347,7 @@ describe("ws-router", () => {
         data: {
           projectGroups: [withSidebarGroupDefaults({
             groupKey: "project-1",
+            title: "Project",
             localPath: "/tmp/project",
             chats: [{
               _id: "chat-1",
@@ -1444,11 +1449,13 @@ describe("ws-router", () => {
           projectGroups: [
             withSidebarGroupDefaults({
               groupKey: "project-1",
+              title: "Project 1",
               localPath: "/tmp/project-1",
               chats: [],
             }),
             withSidebarGroupDefaults({
               groupKey: "project-2",
+              title: "Project 2",
               localPath: "/tmp/project-2",
               chats: [],
             }),
@@ -1557,6 +1564,7 @@ describe("ws-router", () => {
         data: {
           projectGroups: [withSidebarGroupDefaults({
             groupKey: "project-1",
+            title: "Project",
             localPath: "/tmp/project",
             chats: [{
               _id: "chat-fork-1",
@@ -1658,6 +1666,7 @@ describe("ws-router", () => {
           projectGroups: [{
             ...withSidebarGroupDefaults({
               groupKey: "project-1",
+              title: "Project",
               localPath: "/tmp/project",
               chats: [],
             }),

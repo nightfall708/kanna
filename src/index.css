@@ -283,6 +283,7 @@
   .kanna-terminal .composition-view {
     background: transparent !important;
     background-color: transparent !important;
+    max-width: 100%;
   }
 
   .kanna-terminal .xterm-screen canvas {

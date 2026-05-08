@@ -367,6 +367,33 @@ describe("EventStore", () => {
     expect(reloaded.getSidebarProjectOrder()).toEqual([second.id, first.id])
   })
 
+  test("renames a project sidebar title without changing project metadata or local path", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    await store.renameProjectSidebarTitle(project.id, "Sidebar Name")
+
+    expect(store.getProject(project.id)?.title).toBe("project")
+    expect(store.getProject(project.id)?.sidebarTitle).toBe("Sidebar Name")
+    expect(store.getProject(project.id)?.localPath).toBe("/tmp/project")
+    expect(store.state.projectIdsByPath.get("/tmp/project")).toBe(project.id)
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+
+    expect(reloaded.getProject(project.id)?.title).toBe("project")
+    expect(reloaded.getProject(project.id)?.sidebarTitle).toBe("Sidebar Name")
+    expect(reloaded.getProject(project.id)?.localPath).toBe("/tmp/project")
+    expect(reloaded.state.projectIdsByPath.get("/tmp/project")).toBe(project.id)
+
+    await reloaded.renameProjectSidebarTitle(project.id, "")
+    expect(reloaded.getProject(project.id)?.title).toBe("project")
+    expect(reloaded.getProject(project.id)?.sidebarTitle).toBeUndefined()
+    expect(reloaded.getProject(project.id)?.localPath).toBe("/tmp/project")
+  })
+
   test("migrates legacy sidebar project order from existing snapshots and project logs", async () => {
     const dataDir = await createTempDataDir()
     const snapshotPath = join(dataDir, "snapshot.json")

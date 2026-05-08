@@ -27,12 +27,30 @@ describe("read models", () => {
     })
 
     const sidebar = deriveSidebarData(state, new Map(), { nowMs: 1_000_000 })
+    expect(sidebar.projectGroups[0]?.title).toBe("Project")
+    expect(sidebar.projectGroups[0]?.localPath).toBe("/tmp/project")
     expect(sidebar.projectGroups[0]?.chats[0]?.provider).toBe("codex")
     expect(sidebar.projectGroups[0]?.chats[0]?.unread).toBe(true)
     expect(sidebar.projectGroups[0]?.chats[0]?.canFork).toBe(true)
     expect(sidebar.projectGroups[0]?.previewChats.map((chat) => chat.chatId)).toEqual(["chat-1"])
     expect(sidebar.projectGroups[0]?.olderChats).toEqual([])
     expect(sidebar.projectGroups[0]?.defaultCollapsed).toBe(false)
+  })
+
+  test("uses sidebar-only project titles without changing local project metadata", () => {
+    const state = createEmptyState()
+    state.projectsById.set("project-1", {
+      id: "project-1",
+      localPath: "/tmp/project",
+      title: "Project",
+      sidebarTitle: "Sidebar Name",
+      createdAt: 1,
+      updatedAt: 2,
+    })
+    state.projectIdsByPath.set("/tmp/project", "project-1")
+
+    expect(deriveSidebarData(state, new Map()).projectGroups[0]?.title).toBe("Sidebar Name")
+    expect(deriveLocalProjectsSnapshot(state, [], "Machine").projects[0]?.title).toBe("Project")
   })
 
   test("keeps archived chats out of the main sidebar rows", () => {

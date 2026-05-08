@@ -6,7 +6,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../ui/resi
 import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "../ui/tooltip"
 import type { ProjectTerminalLayout } from "../../stores/terminalLayoutStore"
 import { TerminalPane } from "./TerminalPane"
-import { getMinimumTerminalWidth, getMinimumTerminalWorkspaceWidth } from "./TerminalWorkspaceLayout"
+import { getMinimumTerminalWidth } from "./TerminalWorkspaceLayout"
 
 interface Props {
   projectId: string
@@ -92,12 +92,12 @@ const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
         defaultSize={`${size}%`}
         minSize={`${minTerminalWidth}px`}
         className="min-h-0 overflow-hidden"
-        style={{ minWidth: minTerminalWidth }}
+        style={{ minWidth: minTerminalWidth, maxWidth: "100%" }}
       >
         <div
           ref={handleSetPaneElement}
           className="flex h-full min-h-0 min-w-0 flex-col border-r border-border bg-transparent last:border-r-0"
-          style={{ minWidth: minTerminalWidth }}
+          style={{ minWidth: minTerminalWidth, maxWidth: "100%" }}
         >
           <div className="flex items-center gap-2 px-3 pr-2 pt-2 pb-1">
             <div className="min-w-0 flex-1 text-left">
@@ -197,7 +197,8 @@ function TerminalWorkspaceImpl({
 
   const paneCount = layout.terminals.length
   const minTerminalWidth = getMinimumTerminalWidth(minColumnWidth)
-  const requiredWidth = getMinimumTerminalWorkspaceWidth(paneCount, minColumnWidth)
+  const effectiveMinTerminalWidth = viewportWidth > 0 ? Math.min(minTerminalWidth, viewportWidth) : minTerminalWidth
+  const requiredWidth = Math.max(1, paneCount) * effectiveMinTerminalWidth
   const innerWidth = Math.max(viewportWidth, requiredWidth)
   const panelGroupKey = useMemo(
     () => layout.terminals.map((terminal) => terminal.id).join(":"),
@@ -271,7 +272,7 @@ function TerminalWorkspaceImpl({
                 terminalId={terminalPane.id}
                 size={terminalPane.size}
                 isLast={index === layout.terminals.length - 1}
-                minTerminalWidth={minTerminalWidth}
+                minTerminalWidth={effectiveMinTerminalWidth}
                 path={pathsByTerminalId[terminalPane.id] ?? null}
                 socket={socket}
                 scrollback={scrollback}

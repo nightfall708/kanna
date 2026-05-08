@@ -214,6 +214,9 @@ function KannaLayout() {
   const handleSidebarRenameChat = useCallback((chat: Parameters<typeof state.handleRenameChat>[0]) => {
     void state.handleRenameChat(chat)
   }, [state.handleRenameChat])
+  const handleSidebarRenameProject = useCallback((projectId: string, sidebarTitle: string | undefined, realTitle: string) => {
+    void state.handleRenameProject(projectId, sidebarTitle, realTitle)
+  }, [state.handleRenameProject])
   const handleSidebarShareChat = useCallback((chatId: string) => {
     void state.handleShareChat(chatId)
   }, [state.handleShareChat])
@@ -269,6 +272,7 @@ function KannaLayout() {
       onOpenAddProjectModal={handleOpenAddProjectModal}
       onCopyPath={handleSidebarCopyPath}
       onOpenExternalPath={handleSidebarOpenExternalPath}
+      onRenameProject={handleSidebarRenameProject}
       onHideProject={handleSidebarHideProject}
       onReorderProjectGroups={handleSidebarReorderProjectGroups}
       editorLabel={state.editorLabel}
@@ -285,6 +289,7 @@ function KannaLayout() {
     handleOpenArchivedChat,
     handleSidebarForkChat,
     handleSidebarOpenExternalPath,
+    handleSidebarRenameProject,
     handleSidebarRenameChat,
     handleSidebarShareChat,
     handleSidebarReorderProjectGroups,

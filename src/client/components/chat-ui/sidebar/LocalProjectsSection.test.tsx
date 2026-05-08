@@ -71,6 +71,8 @@ describe("LocalProjectsSection", () => {
   test("places show less between the collapsed slice and remaining chats", () => {
     const projectGroups: SidebarProjectGroup[] = [{
       groupKey: "project-a",
+      title: "Project A",
+      realTitle: "Project A",
       localPath: "/tmp/project-a",
       chats: [
         createChat("chat-1", nowMs - hourMs),
@@ -95,6 +97,8 @@ describe("LocalProjectsSection", () => {
   test("shows the most recent 5 chats when there are no chats in the last 24 hours", () => {
     const projectGroups: SidebarProjectGroup[] = [{
       groupKey: "project-a",
+      title: "Project A",
+      realTitle: "Project A",
       localPath: "/tmp/project-a",
       chats: Array.from({ length: 7 }, (_, index) => (
         createChat(`chat-${index + 1}`, nowMs - (25 + index) * hourMs)
@@ -120,6 +124,8 @@ describe("LocalProjectsSection", () => {
   test("shows a faux new chat row when an empty project is expanded", () => {
     const projectGroups: SidebarProjectGroup[] = [{
       groupKey: "project-a",
+      title: "Project A",
+      realTitle: "Project A",
       localPath: "/tmp/project-a",
       chats: [],
       previewChats: [],
@@ -135,9 +141,32 @@ describe("LocalProjectsSection", () => {
     expect(html).not.toContain("Show more")
   })
 
+  test("renders the sidebar project title instead of the path basename", () => {
+    const projectGroups: SidebarProjectGroup[] = [{
+      groupKey: "project-a",
+      title: "Renamed Sidebar Project",
+      realTitle: "project-a",
+      sidebarTitle: "Renamed Sidebar Project",
+      localPath: "/tmp/project-a",
+      chats: [],
+      previewChats: [],
+      olderChats: [],
+      defaultCollapsed: false,
+    }]
+
+    const html = renderSection(projectGroups, {
+      onNewLocalChat: () => undefined,
+    })
+
+    expect(html).toContain("Renamed Sidebar Project")
+    expect(html).not.toContain(">project-a<")
+  })
+
   test("hides the faux new chat row when the empty project is collapsed", () => {
     const projectGroups: SidebarProjectGroup[] = [{
       groupKey: "project-a",
+      title: "Project A",
+      realTitle: "Project A",
       localPath: "/tmp/project-a",
       chats: [],
       previewChats: [],

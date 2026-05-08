@@ -121,6 +121,9 @@ export function deriveSidebarData(
 
     return {
       groupKey: project.id,
+      title: project.sidebarTitle ?? project.title,
+      realTitle: project.title,
+      ...(project.sidebarTitle ? { sidebarTitle: project.sidebarTitle } : {}),
       localPath: project.localPath,
       chats,
       previewChats,

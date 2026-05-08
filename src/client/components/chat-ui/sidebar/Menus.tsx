@@ -9,6 +9,7 @@ import {
 
 export function ProjectSectionMenu({
   editorLabel,
+  onRename,
   onCopyPath,
   onShowArchived,
   onOpenInFinder,
@@ -17,6 +18,7 @@ export function ProjectSectionMenu({
   children,
 }: {
   editorLabel: string
+  onRename: () => void
   onCopyPath: () => void
   onShowArchived: () => void
   onOpenInFinder: () => void
@@ -30,6 +32,15 @@ export function ProjectSectionMenu({
         {children}
       </ContextMenuTrigger>
       <ContextMenuContent>
+        <ContextMenuItem
+          onSelect={(event) => {
+            event.preventDefault()
+            onRename()
+          }}
+        >
+          <Pencil className="h-3.5 w-3.5" />
+          <span className="text-xs font-medium">Rename</span>
+        </ContextMenuItem>
         <ContextMenuItem
           onSelect={(event) => {
             event.stopPropagation()

@@ -77,6 +77,7 @@ interface ParsedReplayEvent {
 function getReplayEventPriority(event: StoreEvent) {
   switch (event.type) {
     case "project_opened":
+    case "project_sidebar_renamed":
     case "project_removed":
       return 0
     case "chat_created":
@@ -443,6 +444,17 @@ export class EventStore {
         this.state.projectIdsByPath.delete(project.localPath)
         break
       }
+      case "project_sidebar_renamed": {
+        const project = this.state.projectsById.get(event.projectId)
+        if (!project) break
+        if (event.title) {
+          project.sidebarTitle = event.title
+        } else {
+          delete project.sidebarTitle
+        }
+        project.updatedAt = event.timestamp
+        break
+      }
       case "chat_created": {
       const chat = {
           id: event.chatId,
@@ -668,6 +680,25 @@ export class EventStore {
       type: "project_removed",
       timestamp: Date.now(),
       projectId,
+    }
+    await this.append(this.projectsLogPath, event)
+  }
+
+  async renameProjectSidebarTitle(projectId: string, title: string) {
+    const trimmed = title.trim()
+    const project = this.getProject(projectId)
+    if (!project) {
+      throw new Error("Project not found")
+    }
+    const nextTitle = trimmed || null
+    if ((project.sidebarTitle ?? null) === nextTitle) return
+
+    const event: ProjectEvent = {
+      v: STORE_VERSION,
+      type: "project_sidebar_renamed",
+      timestamp: Date.now(),
+      projectId,
+      title: nextTitle,
     }
     await this.append(this.projectsLogPath, event)
   }

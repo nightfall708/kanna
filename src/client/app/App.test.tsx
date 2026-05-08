@@ -8,6 +8,8 @@ import type { AppSettingsSnapshot, SidebarChatRow } from "../../shared/types"
 function createProjectGroup(chats: SidebarChatRow[]) {
   return {
     groupKey: "project-1",
+    title: "Project",
+    realTitle: "Project",
     localPath: "/tmp/project",
     chats,
     previewChats: chats,

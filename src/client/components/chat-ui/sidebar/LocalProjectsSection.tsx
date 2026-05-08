@@ -39,6 +39,7 @@ interface Props {
   onNewLocalChat?: (localPath: string) => void
   onCopyPath?: (localPath: string) => void
   onOpenExternalPath?: (action: "open_finder" | "open_editor", localPath: string) => void
+  onRenameProject?: (projectId: string, sidebarTitle: string | undefined, realTitle: string) => void
   onHideProject?: (projectId: string) => void
   onReorderGroups?: (newOrder: string[]) => void
   isConnected?: boolean
@@ -57,6 +58,7 @@ interface SortableProjectGroupProps {
   onNewLocalChat?: (localPath: string) => void
   onCopyPath?: (localPath: string) => void
   onOpenExternalPath?: (action: "open_finder" | "open_editor", localPath: string) => void
+  onRenameProject?: (projectId: string, sidebarTitle: string | undefined, realTitle: string) => void
   onHideProject?: (projectId: string) => void
   isConnected?: boolean
   startingLocalPath?: string | null
@@ -176,11 +178,12 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
   onNewLocalChat,
   onCopyPath,
   onOpenExternalPath,
+  onRenameProject,
   onHideProject,
   isConnected,
   startingLocalPath,
 }: SortableProjectGroupProps) {
-  const { groupKey, localPath } = group
+  const { groupKey, localPath, title } = group
   const isExpanded = expandedGroups.has(groupKey)
   const isEmptyProject = group.chats.length === 0
   const hasMore = group.olderChats.length > 0
@@ -228,7 +231,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="truncate max-w-[150px] whitespace-nowrap text-sm ">
-              {getPathBasename(localPath)}
+              {title || getPathBasename(localPath)}
             </span>
           </TooltipTrigger>
           <TooltipContent side="right" sideOffset={4}>
@@ -301,6 +304,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
       {hasProjectMenu ? (
         <ProjectSectionMenu
           editorLabel={editorLabel}
+          onRename={() => onRenameProject?.(groupKey, group.sidebarTitle, group.realTitle || getPathBasename(localPath))}
           onCopyPath={() => onCopyPath?.(localPath)}
           onShowArchived={() => onShowArchivedProject?.(groupKey)}
           onOpenInFinder={() => onOpenExternalPath?.("open_finder", localPath)}
@@ -360,6 +364,7 @@ const LocalProjectsSectionImpl = function LocalProjectsSection({
   onNewLocalChat,
   onCopyPath,
   onOpenExternalPath,
+  onRenameProject,
   onHideProject,
   onReorderGroups,
   isConnected,
@@ -440,6 +445,7 @@ const LocalProjectsSectionImpl = function LocalProjectsSection({
           onNewLocalChat={onNewLocalChat}
           onCopyPath={onCopyPath}
           onOpenExternalPath={onOpenExternalPath}
+          onRenameProject={onRenameProject}
           onHideProject={onHideProject}
           isConnected={isConnected}
           startingLocalPath={startingLocalPath}
