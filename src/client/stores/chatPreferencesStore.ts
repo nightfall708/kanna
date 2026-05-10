@@ -260,6 +260,23 @@ function cloneComposerState(state: ComposerState): ComposerState {
     }
 }
 
+function sameComposerState(left: ComposerState | undefined, right: ComposerState): boolean {
+  if (!left || left.provider !== right.provider) return false
+  if (left.model !== right.model || left.planMode !== right.planMode) return false
+
+  if (left.provider === "claude" && right.provider === "claude") {
+    return left.modelOptions.reasoningEffort === right.modelOptions.reasoningEffort
+      && left.modelOptions.contextWindow === right.modelOptions.contextWindow
+  }
+
+  if (left.provider === "codex" && right.provider === "codex") {
+    return left.modelOptions.reasoningEffort === right.modelOptions.reasoningEffort
+      && left.modelOptions.fastMode === right.modelOptions.fastMode
+  }
+
+  return false
+}
+
 function normalizeComposerState(
   value: PersistedComposerState | undefined,
   providerDefaults: ChatProviderPreferences,
@@ -388,6 +405,7 @@ interface ChatPreferencesState {
   chatStates: Record<string, ComposerState>
   legacyComposerState: ComposerState | null
   setDefaultProvider: (provider: DefaultProviderPreference) => void
+  syncProviderDefaults: (defaultProvider: DefaultProviderPreference, providerDefaults: ChatProviderPreferences) => void
   setProviderDefaultModel: (provider: AgentProvider, model: string) => void
   setProviderDefaultModelOptions: <TProvider extends AgentProvider>(
     provider: TProvider,
@@ -418,20 +436,23 @@ export function migrateChatPreferencesState(
     forcePersistedCodexComposerState(persistedState?.legacyComposerState ?? persistedState?.composerState),
     providerDefaults
   )
+  const legacyLiveComposerState = persistedState?.liveProvider
+    ? normalizeComposerState(
+      undefined,
+      providerDefaults,
+      persistedState.liveProvider,
+      {
+        ...persistedState?.livePreferences,
+        codex: forcePersistedCodexPreference(persistedState?.livePreferences?.codex),
+      }
+    )
+    : null
 
   return {
     defaultProvider: normalizeDefaultProvider(persistedState?.defaultProvider),
     providerDefaults,
     chatStates: normalizeChatStates(forcePersistedCodexChatStates(persistedState?.chatStates), providerDefaults),
-    legacyComposerState: legacyComposerState ?? normalizeComposerState(
-      undefined,
-      providerDefaults,
-      persistedState?.liveProvider,
-      {
-        ...persistedState?.livePreferences,
-        codex: forcePersistedCodexPreference(persistedState?.livePreferences?.codex),
-      }
-    ),
+    legacyComposerState: legacyComposerState ?? legacyLiveComposerState,
   }
 }
 
@@ -440,13 +461,33 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
     defaultProvider: "last_used",
     providerDefaults: createDefaultProviderDefaults(),
     chatStates: {},
-    legacyComposerState: {
-      provider: "claude",
-      model: "claude-opus-4-7",
-      modelOptions: { ...DEFAULT_CLAUDE_MODEL_OPTIONS },
-      planMode: false,
-    },
+    legacyComposerState: null,
     setDefaultProvider: (defaultProvider) => set({ defaultProvider }),
+    syncProviderDefaults: (defaultProvider, providerDefaults) =>
+      set((state) => {
+        const oldNewChatFallback = createComposerStateForNewChat({
+          defaultProvider: state.defaultProvider,
+          providerDefaults: state.providerDefaults,
+          legacyComposerState: state.legacyComposerState,
+        })
+        const nextNewChatFallback = createComposerStateForNewChat({
+          defaultProvider,
+          providerDefaults,
+          legacyComposerState: state.legacyComposerState,
+        })
+        const chatStates = Object.fromEntries(
+          Object.entries(state.chatStates).map(([chatId, composerState]) => [
+            chatId,
+            sameComposerState(composerState, oldNewChatFallback) ? nextNewChatFallback : composerState,
+          ])
+        )
+
+        return {
+          defaultProvider,
+          providerDefaults,
+          chatStates,
+        }
+      }),
       setProviderDefaultModel: (provider, model) =>
         set((state) => ({
           providerDefaults: {

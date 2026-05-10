@@ -301,6 +301,99 @@ describe("chat preference store", () => {
     })
   })
 
+  test("last_used falls back to provider defaults when no real last-used state exists", () => {
+    useChatPreferencesStore.setState({
+      ...INITIAL_STATE,
+      defaultProvider: "last_used",
+      providerDefaults: {
+        ...INITIAL_STATE.providerDefaults,
+        claude: {
+          model: "claude-opus-4-7",
+          modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+          planMode: true,
+        },
+      },
+      legacyComposerState: null,
+    })
+
+    useChatPreferencesStore.getState().initializeComposerForChat("chat-a")
+
+    expect(useChatPreferencesStore.getState().getComposerState("chat-a")).toEqual({
+      provider: "claude",
+      model: "claude-opus-4-7",
+      modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+      planMode: true,
+    })
+  })
+
+  test("syncProviderDefaults refreshes untouched new-chat state after settings hydration", () => {
+    const store = useChatPreferencesStore.getState()
+
+    store.initializeComposerForChat(NEW_CHAT_COMPOSER_ID)
+    store.syncProviderDefaults("last_used", {
+      ...INITIAL_STATE.providerDefaults,
+      claude: {
+        model: "claude-opus-4-7",
+        modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+        planMode: true,
+      },
+    })
+
+    expect(useChatPreferencesStore.getState().getComposerState(NEW_CHAT_COMPOSER_ID)).toEqual({
+      provider: "claude",
+      model: "claude-opus-4-7",
+      modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+      planMode: true,
+    })
+  })
+
+  test("syncProviderDefaults refreshes untouched routed chat state after settings hydration", () => {
+    const store = useChatPreferencesStore.getState()
+
+    store.initializeComposerForChat("chat-a")
+    store.syncProviderDefaults("last_used", {
+      ...INITIAL_STATE.providerDefaults,
+      claude: {
+        model: "claude-opus-4-7",
+        modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+        planMode: true,
+      },
+    })
+
+    expect(useChatPreferencesStore.getState().getComposerState("chat-a")).toEqual({
+      provider: "claude",
+      model: "claude-opus-4-7",
+      modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+      planMode: true,
+    })
+  })
+
+  test("syncProviderDefaults does not replace a changed new-chat state", () => {
+    const store = useChatPreferencesStore.getState()
+
+    store.setComposerState(NEW_CHAT_COMPOSER_ID, {
+      provider: "codex",
+      model: "gpt-5.5",
+      modelOptions: { reasoningEffort: "low", fastMode: true },
+      planMode: false,
+    })
+    store.syncProviderDefaults("last_used", {
+      ...INITIAL_STATE.providerDefaults,
+      claude: {
+        model: "claude-opus-4-7",
+        modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+        planMode: true,
+      },
+    })
+
+    expect(useChatPreferencesStore.getState().getComposerState(NEW_CHAT_COMPOSER_ID)).toEqual({
+      provider: "codex",
+      model: "gpt-5.5",
+      modelOptions: { reasoningEffort: "low", fastMode: true },
+      planMode: false,
+    })
+  })
+
   test("initializeComposerForChat with last_used copies the provided source state", () => {
     useChatPreferencesStore.setState({
       ...INITIAL_STATE,

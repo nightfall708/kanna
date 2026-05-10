@@ -1,4 +1,4 @@
-import { memo, type MouseEvent as ReactMouseEvent, type ReactNode, useMemo } from "react"
+import { memo, type MouseEvent as ReactMouseEvent, type ReactNode, useMemo, useSyncExternalStore } from "react"
 import { ChevronRight, Loader2, MoreHorizontal, SquarePen } from "lucide-react"
 import {
   DndContext,
@@ -48,6 +48,7 @@ interface Props {
 
 interface SortableProjectGroupProps {
   group: SidebarProjectGroup
+  isReorderEnabled: boolean
   editorLabel: string
   collapsedSections: Set<string>
   expandedGroups: Set<string>
@@ -65,6 +66,33 @@ interface SortableProjectGroupProps {
 }
 
 const DRAG_REORDER_TRIGGER_OFFSET_PX = 20
+const SIDEBAR_REORDER_MEDIA_QUERY = "(min-width: 768px)"
+
+function subscribeToSidebarReorderMediaQuery(onChange: () => void) {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return () => undefined
+  }
+
+  const mediaQuery = window.matchMedia(SIDEBAR_REORDER_MEDIA_QUERY)
+  mediaQuery.addEventListener("change", onChange)
+  return () => mediaQuery.removeEventListener("change", onChange)
+}
+
+function getSidebarReorderMediaQuerySnapshot() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return true
+  }
+
+  return window.matchMedia(SIDEBAR_REORDER_MEDIA_QUERY).matches
+}
+
+function useSidebarReorderEnabled() {
+  return useSyncExternalStore(
+    subscribeToSidebarReorderMediaQuery,
+    getSidebarReorderMediaQuerySnapshot,
+    () => true
+  )
+}
 
 function openContextMenuFromButton(event: ReactMouseEvent<HTMLButtonElement>) {
   event.preventDefault()
@@ -168,6 +196,7 @@ export function getProjectGroupReorderPreviewTargetId({
 
 const SortableProjectGroup = memo(function SortableProjectGroup({
   group,
+  isReorderEnabled,
   editorLabel,
   collapsedSections,
   expandedGroups,
@@ -197,7 +226,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: groupKey })
+  } = useSortable({ id: groupKey, disabled: !isReorderEnabled })
 
   const style = {
     transform: CSS.Translate.toString(transform ? { ...transform, x: 0 } : null),
@@ -209,11 +238,11 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
       ref={setActivatorNodeRef}
       className={cn(
         "sticky top-0 bg-background dark:bg-card z-10 relative p-[10px] flex items-center justify-between",
-        "cursor-grab active:cursor-grabbing select-none touch-none",
+        "md:cursor-grab md:active:cursor-grabbing md:select-none md:touch-none",
         isDragging && "cursor-grabbing"
       )}
       onClick={() => onToggleSection(groupKey)}
-      {...listeners}
+      {...(isReorderEnabled ? listeners : undefined)}
     >
       <div className="flex items-center gap-2">
         <span className="relative size-3.5 shrink-0 cursor-pointer">
@@ -299,7 +328,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
         "group/section",
         isDragging && "opacity-50 shadow-lg z-50 relative"
       )}
-      {...attributes}
+      {...(isReorderEnabled ? attributes : undefined)}
     >
       {hasProjectMenu ? (
         <ProjectSectionMenu
@@ -316,7 +345,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
       ) : header}
 
       {!collapsedSections.has(groupKey) && (isEmptyProject ? Boolean(onNewLocalChat) : group.previewChats.length > 0 || hasMore) && (
-        <div className="space-y-[2px] mb-2 ">
+        <div className="space-y-[2px] mb-3">
           {isEmptyProject && onNewLocalChat ? (
             <EmptyProjectChatButton
               localPath={localPath}
@@ -370,6 +399,7 @@ const LocalProjectsSectionImpl = function LocalProjectsSection({
   isConnected,
   startingLocalPath,
 }: Props) {
+  const isReorderEnabled = useSidebarReorderEnabled()
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 2 } }),
     useSensor(KeyboardSensor)
@@ -412,6 +442,8 @@ const LocalProjectsSectionImpl = function LocalProjectsSection({
   }, [groupIds])
 
   function handleDragEnd(event: DragEndEvent) {
+    if (!isReorderEnabled) return
+
     const { active, over } = event
 
     if (over && active.id !== over.id && onReorderGroups) {
@@ -435,6 +467,7 @@ const LocalProjectsSectionImpl = function LocalProjectsSection({
         <SortableProjectGroup
           key={group.groupKey}
           group={group}
+          isReorderEnabled={isReorderEnabled}
           editorLabel={editorLabel}
           collapsedSections={collapsedSections}
           expandedGroups={expandedGroups}

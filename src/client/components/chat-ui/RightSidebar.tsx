@@ -16,7 +16,7 @@ import type {
 } from "../../../shared/types"
 import { useStickyState } from "../../hooks/useStickyState"
 import { cn } from "../../lib/utils"
-import { useDiffCommitStore } from "../../stores/diffCommitStore"
+import { isDiffPathChecked, useDiffCommitStore } from "../../stores/diffCommitStore"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
 import { AttachmentPreviewModal } from "../messages/AttachmentPreviewModal"
@@ -1478,7 +1478,7 @@ function RightSidebarImpl({
   const setViewMode = useRightSidebarStore((store) => store.setViewMode)
   const setCommitDraft = useRightSidebarStore((store) => store.setCommitDraft)
   const clearCommitDraft = useRightSidebarStore((store) => store.clearCommitDraft)
-  const checkedPaths = useDiffCommitStore((store) => (projectId ? (store.checkedPathsByProjectId[projectId] ?? EMPTY_CHECKED_PATHS) : EMPTY_CHECKED_PATHS))
+  const diffCommitSelection = useDiffCommitStore((store) => (projectId ? store.selectionsByProjectId[projectId] : undefined))
   const reconcileCheckedPaths = useDiffCommitStore((store) => store.reconcileProject)
   const setCheckedPath = useDiffCommitStore((store) => store.setChecked)
   const setAllCheckedPaths = useDiffCommitStore((store) => store.setAllChecked)
@@ -1517,8 +1517,8 @@ function RightSidebarImpl({
   }, [hasChanges, projectId, setViewMode])
 
   const selectedPaths = useMemo(
-    () => diffs.files.filter((file) => checkedPaths[file.path] ?? true).map((file) => file.path),
-    [checkedPaths, diffs.files]
+    () => diffs.files.filter((file) => isDiffPathChecked(diffCommitSelection, file.path)).map((file) => file.path),
+    [diffCommitSelection, diffs.files]
   )
   const selectedCount = selectedPaths.length
   const allSelected = diffs.files.length > 0 && selectedCount === diffs.files.length
@@ -1852,7 +1852,7 @@ function RightSidebarImpl({
               <div className="space-y-1.5 p-1.5 pb-10">
                 {diffs.files.map((file) => {
                   const isCollapsed = collapsedPaths[file.path] ?? true
-                  const isChecked = checkedPaths[file.path] ?? true
+                  const isChecked = isDiffPathChecked(diffCommitSelection, file.path)
 
                   return (
                     <DiffFileCard

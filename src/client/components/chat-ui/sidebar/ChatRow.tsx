@@ -50,7 +50,7 @@ function ChatRowImpl({
       key={chat._id}
       data-chat-id={normalizedChatId}
       className={cn(
-        "group flex items-center gap-2 pl-2.5 pr-0.5 py-0.5 rounded-lg cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
+        "group flex items-center gap-2 pl-[9px] pr-0.5 py-0.5 rounded-lg cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
         activeChatId === normalizedChatId ? "bg-muted hover:bg-muted border-border" : "border-border/0 dark:hover:border-slate-400/10 "
       )}
       onClick={() => onSelectChat(chat.chatId)}
@@ -93,7 +93,7 @@ function ChatRowImpl({
               </Kbd>
             </span>
           ) : (
-            <span className="hidden md:flex absolute inset-0 items-center justify-end pr-1 text-[11px] text-muted-foreground opacity-60 transition-opacity group-hover:opacity-0">
+            <span className="hidden md:flex absolute inset-0 items-center justify-end pr-2 text-[11px] text-muted-foreground opacity-60 transition-opacity group-hover:opacity-0">
               {trailingLabel}
             </span>
           )

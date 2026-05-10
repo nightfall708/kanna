@@ -297,10 +297,7 @@ function syncRuntimeStoresFromAppSettings(snapshot: AppSettingsSnapshot) {
   chatSoundPreferences.setChatSoundPreference(snapshot.chatSoundPreference)
   chatSoundPreferences.setChatSoundId(snapshot.chatSoundId)
 
-  useChatPreferencesStore.setState({
-    defaultProvider: snapshot.defaultProvider,
-    providerDefaults: snapshot.providerDefaults,
-  })
+  useChatPreferencesStore.getState().syncProviderDefaults(snapshot.defaultProvider, snapshot.providerDefaults)
 }
 
 function serializeAttachmentSignature(attachment: ChatAttachment) {
