@@ -25,6 +25,22 @@ export interface EditorOpenSettings {
   commandTemplate: string
 }
 
+export interface LocalHttpServerInfo {
+  title: string
+  address: string
+  port: number
+  status: number
+  ownerPath?: string
+  processName?: string
+  sameProject?: boolean
+}
+
+export interface ProjectQuickAction {
+  id: string
+  label: string
+  command: string
+}
+
 export type SubscriptionTopic =
   | { type: "sidebar" }
   | { type: "local-projects" }
@@ -61,6 +77,10 @@ export type ClientCommand =
   | { type: "sidebar.reorderProjectGroups"; projectIds: string[] }
   | { type: "project.readDiffPatch"; projectId: string; path: string }
   | { type: "system.ping" }
+  | { type: "browser.listLocalHttpServers"; projectId?: string }
+  | { type: "browser.killLocalHttpServer"; port: number }
+  | { type: "project.readQuickActions"; projectId: string }
+  | { type: "project.writeQuickActions"; projectId: string; quickActions: ProjectQuickAction[] }
   | { type: "update.check"; force?: boolean }
   | { type: "update.install" }
   | { type: "settings.readKeybindings" }

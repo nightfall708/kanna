@@ -327,6 +327,18 @@ export class TerminalManager {
     }
   }
 
+  getRootPidsByCwd(cwd: string) {
+    const pids: number[] = []
+    for (const session of this.sessions.values()) {
+      if (session.cwd !== cwd || session.status !== "running") continue
+      const pid = session.process?.pid
+      if (typeof pid === "number") {
+        pids.push(pid)
+      }
+    }
+    return pids
+  }
+
   private snapshotOf(session: TerminalSession): TerminalSnapshot {
     return {
       terminalId: session.terminalId,
