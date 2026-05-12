@@ -9,11 +9,12 @@ describe("terminalLayoutStore", () => {
   })
 
   test("adds the first terminal and shows the workspace", () => {
-    useTerminalLayoutStore.getState().addTerminal(PROJECT_ID)
+    const terminalId = useTerminalLayoutStore.getState().addTerminal(PROJECT_ID)
 
     const layout = useTerminalLayoutStore.getState().projects[PROJECT_ID] ?? getDefaultProjectTerminalLayout()
     expect(layout.isVisible).toBe(true)
     expect(layout.terminals).toHaveLength(1)
+    expect(layout.terminals[0]?.id).toBe(terminalId)
     expect(layout.terminals[0]?.title).toBe("Terminal A")
   })
 

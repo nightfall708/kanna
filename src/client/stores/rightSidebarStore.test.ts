@@ -11,12 +11,12 @@ const PROJECT_ID = "project-1"
 
 describe("rightSidebarStore", () => {
   beforeEach(() => {
-    useRightSidebarStore.setState({ size: DEFAULT_RIGHT_SIDEBAR_SIZE, projects: {}, projectUi: {} })
+    useRightSidebarStore.setState({ size: DEFAULT_RIGHT_SIDEBAR_SIZE, projects: {}, projectUi: {}, projectBrowser: {} })
   })
 
   test("defaults to a closed drawer", () => {
     const visibility = useRightSidebarStore.getState().projects[PROJECT_ID] ?? getDefaultRightSidebarVisibilityState()
-    expect(visibility.isVisible).toBe(false)
+    expect(visibility.rightPanel).toBe("hidden")
     expect(useRightSidebarStore.getState().size).toBe(DEFAULT_RIGHT_SIDEBAR_SIZE)
   })
 
@@ -25,17 +25,28 @@ describe("rightSidebarStore", () => {
   })
 
   test("keeps visibility isolated per project while sharing width", () => {
-    useRightSidebarStore.getState().toggleVisibility(PROJECT_ID)
+    useRightSidebarStore.getState().togglePanel(PROJECT_ID, "git")
     useRightSidebarStore.getState().setSize(430)
-    useRightSidebarStore.getState().toggleVisibility("project-2")
+    useRightSidebarStore.getState().togglePanel("project-2", "browser")
 
     expect(useRightSidebarStore.getState().projects[PROJECT_ID]).toEqual({
-      isVisible: true,
+      rightPanel: "git",
     })
     expect(useRightSidebarStore.getState().projects["project-2"]).toEqual({
-      isVisible: true,
+      rightPanel: "browser",
     })
     expect(useRightSidebarStore.getState().size).toBe(430)
+  })
+
+  test("only one right panel is active per project", () => {
+    useRightSidebarStore.getState().togglePanel(PROJECT_ID, "git")
+    expect(useRightSidebarStore.getState().projects[PROJECT_ID]?.rightPanel).toBe("git")
+
+    useRightSidebarStore.getState().togglePanel(PROJECT_ID, "browser")
+    expect(useRightSidebarStore.getState().projects[PROJECT_ID]?.rightPanel).toBe("browser")
+
+    useRightSidebarStore.getState().togglePanel(PROJECT_ID, "browser")
+    expect(useRightSidebarStore.getState().projects[PROJECT_ID]?.rightPanel).toBe("hidden")
   })
 
   test("clamps resized widths", () => {
@@ -47,15 +58,17 @@ describe("rightSidebarStore", () => {
   })
 
   test("clearing a project removes its saved drawer state without resetting global width", () => {
-    useRightSidebarStore.getState().toggleVisibility(PROJECT_ID)
+    useRightSidebarStore.getState().togglePanel(PROJECT_ID, "git")
     useRightSidebarStore.getState().setSize(440)
     useRightSidebarStore.getState().setViewMode(PROJECT_ID, "changes")
+    useRightSidebarStore.getState().navigateBrowser(PROJECT_ID, "localhost:3000")
     useRightSidebarStore.getState().clearProject(PROJECT_ID)
 
     const visibility = useRightSidebarStore.getState().projects[PROJECT_ID] ?? getDefaultRightSidebarVisibilityState()
-    expect(visibility.isVisible).toBe(false)
+    expect(visibility.rightPanel).toBe("hidden")
     expect(useRightSidebarStore.getState().size).toBe(440)
     expect(useRightSidebarStore.getState().projectUi[PROJECT_ID]).toBeUndefined()
+    expect(useRightSidebarStore.getState().projectBrowser[PROJECT_ID]).toBeUndefined()
   })
 
   test("migration preserves per-project visibility and resets width to the pixel default", async () => {
@@ -76,13 +89,57 @@ describe("rightSidebarStore", () => {
       size: DEFAULT_RIGHT_SIDEBAR_SIZE,
       projects: {
         [PROJECT_ID]: {
-          isVisible: true,
+          rightPanel: "git",
         },
         "project-2": {
-          isVisible: false,
+          rightPanel: "hidden",
         },
       },
       projectUi: {},
+      projectBrowser: {},
+    })
+  })
+
+  test("migration preserves persisted right panel choices", async () => {
+    const migrated = await migrateRightSidebarStore({
+      projects: {
+        [PROJECT_ID]: {
+          rightPanel: "browser",
+        },
+      },
+    })
+
+    expect(migrated).toEqual({
+      size: DEFAULT_RIGHT_SIDEBAR_SIZE,
+      projects: {
+        [PROJECT_ID]: {
+          rightPanel: "browser",
+        },
+      },
+      projectUi: {},
+      projectBrowser: {},
+    })
+  })
+
+  test("keeps browser state isolated per project", () => {
+    useRightSidebarStore.getState().navigateBrowser(PROJECT_ID, "localhost:3000")
+    useRightSidebarStore.getState().navigateBrowser(PROJECT_ID, "http://localhost:3001")
+    useRightSidebarStore.getState().setBrowserZoom(PROJECT_ID, 1.25)
+    useRightSidebarStore.getState().goBrowserBack(PROJECT_ID)
+
+    useRightSidebarStore.getState().navigateBrowser("project-2", "localhost:4000")
+
+    expect(useRightSidebarStore.getState().projectBrowser[PROJECT_ID]).toEqual({
+      address: "http://localhost:3000",
+      history: ["http://localhost:3000", "http://localhost:3001"],
+      historyIndex: 0,
+      zoom: 1.3,
+    })
+    expect(useRightSidebarStore.getState().projectBrowser["project-2"]).toEqual({
+      address: "http://localhost:4000",
+      history: ["http://localhost:4000"],
+      historyIndex: 0,
+      zoom: 1,
     })
   })
 
@@ -132,7 +189,7 @@ describe("rightSidebarStore", () => {
       size: DEFAULT_RIGHT_SIDEBAR_SIZE,
       projects: {
         [PROJECT_ID]: {
-          isVisible: true,
+          rightPanel: "git",
         },
       },
       projectUi: {
@@ -143,6 +200,7 @@ describe("rightSidebarStore", () => {
           description: "body",
         },
       },
+      projectBrowser: {},
     })
   })
 })

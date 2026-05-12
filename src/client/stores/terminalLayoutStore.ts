@@ -16,7 +16,7 @@ export interface ProjectTerminalLayout {
 
 interface TerminalLayoutState {
   projects: Record<string, ProjectTerminalLayout>
-  addTerminal: (projectId: string, afterTerminalId?: string) => void
+  addTerminal: (projectId: string, afterTerminalId?: string) => string
   removeTerminal: (projectId: string, terminalId: string) => void
   toggleVisibility: (projectId: string) => void
   resetMainSizes: (projectId: string) => void
@@ -83,12 +83,14 @@ export const useTerminalLayoutStore = create<TerminalLayoutState>()(
   persist(
     (set) => ({
       projects: {},
-      addTerminal: (projectId, afterTerminalId) =>
+      addTerminal: (projectId, afterTerminalId) => {
+        const layout = getProjectLayout(useTerminalLayoutStore.getState().projects, projectId)
+        const terminalId = globalThis.crypto?.randomUUID?.() ?? `terminal-${Date.now()}-${layout.nextTerminalIndex}`
         set((state) => ({
           projects: withProjectLayout(state.projects, projectId, (layout) => {
             const existing = scaleForAdditionalTerminal(layout.terminals)
             const nextTerminal: TerminalPaneLayout = {
-              id: globalThis.crypto?.randomUUID?.() ?? `terminal-${Date.now()}-${layout.nextTerminalIndex}`,
+              id: terminalId,
               title: labelForTerminalIndex(layout.nextTerminalIndex),
               size: 100 / (existing.length + 1),
             }
@@ -106,7 +108,9 @@ export const useTerminalLayoutStore = create<TerminalLayoutState>()(
               ],
             }
           }),
-        })),
+        }))
+        return terminalId
+      },
       removeTerminal: (projectId, terminalId) =>
         set((state) => ({
           projects: withProjectLayout(state.projects, projectId, (layout) => {
