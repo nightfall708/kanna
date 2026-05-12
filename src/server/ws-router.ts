@@ -14,7 +14,9 @@ import { DiffStore } from "./diff-store"
 import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
+import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
 import { ensureProjectDirectory, resolveLocalPath } from "./paths"
+import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
@@ -1036,6 +1038,38 @@ export function createWsRouter({
       switch (command.type) {
         case "system.ping": {
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
+        case "browser.listLocalHttpServers": {
+          const project = command.projectId ? store.getProject(command.projectId) : null
+          const result = await listLocalHttpServers({
+            projectPath: project?.localPath,
+            projectTerminalRootPids: project ? terminals.getRootPidsByCwd(project.localPath) : [],
+          })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "browser.killLocalHttpServer": {
+          const result = await killLocalHttpServer(command.port)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "project.readQuickActions": {
+          const project = store.getProject(command.projectId)
+          if (!project) {
+            throw new Error("Project not found")
+          }
+          const result = await readProjectQuickActions(project.localPath)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "project.writeQuickActions": {
+          const project = store.getProject(command.projectId)
+          if (!project) {
+            throw new Error("Project not found")
+          }
+          const result = await writeProjectQuickActions(project.localPath, command.quickActions)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "update.check": {
