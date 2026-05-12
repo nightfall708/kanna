@@ -1,5 +1,5 @@
 import { type MouseEvent as ReactMouseEvent } from "react"
-import { Check, Flower, GitBranch, Loader2, Menu, MoreHorizontal, PanelLeft, PanelRight, SquarePen, Terminal, UserRoundPlus } from "lucide-react"
+import { Check, Flower, GitBranch, Globe, Loader2, Menu, MoreHorizontal, PanelLeft, PanelRight, SquarePen, Terminal, UserRoundPlus } from "lucide-react"
 import type { EditorOpenSettings, EditorPreset, OpenExternalAction } from "../../../shared/protocol"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
@@ -98,8 +98,9 @@ interface Props {
   localPath?: string
   embeddedTerminalVisible?: boolean
   onToggleEmbeddedTerminal?: () => void
-  rightSidebarVisible?: boolean
-  onToggleRightSidebar?: () => void
+  rightPanel?: "hidden" | "git" | "browser"
+  onToggleGitPanel?: () => void
+  onToggleBrowserPanel?: () => void
   onOpenExternal?: (action: OpenExternalAction, editor?: EditorOpenSettings) => void
   onExportTranscript?: () => void
   canExportTranscript?: boolean
@@ -125,8 +126,9 @@ export function ChatNavbar({
   localPath,
   embeddedTerminalVisible = false,
   onToggleEmbeddedTerminal,
-  rightSidebarVisible = false,
-  onToggleRightSidebar,
+  rightPanel = "hidden",
+  onToggleGitPanel,
+  onToggleBrowserPanel,
   onOpenExternal,
   onExportTranscript,
   canExportTranscript = false,
@@ -149,37 +151,41 @@ export function ChatNavbar({
       ? null
       : (branchName ?? "Detached HEAD")
   const isMac = platform === "darwin"
+  const rightPanelVisible = rightPanel !== "hidden"
+  const handleCloseRightPanel = rightPanel === "browser" ? onToggleBrowserPanel : rightPanel === "git" ? onToggleGitPanel : undefined
+  const showBrowserPanelButton = rightPanel === "hidden" || rightPanel === "git"
+  const showGitPanelButton = rightPanel === "hidden" || rightPanel === "browser"
 
   return (
     <CardHeader
       className={cn(
-        "absolute top-0 left-0 right-0 z-10 md:pt-3 px-3 border-border/0 md:pb-0 flex items-center justify-center",
+        "absolute top-0 left-0 right-0 z-10 pt-3 md:pt-[9px] pl-1 pr-2 border-border/0 md:pb-0 flex items-center justify-center",
         " bg-gradient-to-b from-background/70"
       )}
     >
       <div className="relative flex items-center gap-2 w-full">
-        <div className={`flex items-center gap-1 flex-shrink-0 border border-border/0 rounded-2xl ${sidebarCollapsed ? 'px-1.5  border-border' : ''} p-1 backdrop-blur-lg`}>
+        <div className={`h-[30px] flex items-center gap-0 flex-shrink-0 border border-border/0 rounded-[9px] ${sidebarCollapsed ? 'px-1.5  border-border' : ''} px-[2px] backdrop-blur-lg`}>
           <Button
             variant="ghost"
             size="icon"
-            className="md:hidden"
+            className="md:hidden !h-[auto] hover:!border-border/0 hover:!bg-transparent"
             onClick={onOpenSidebar}
           >
-            <Menu className="size-4.5" />
+            <Menu className="size-4" />
           </Button>
           {sidebarCollapsed && (
             <>
-              <div className="flex items-center justify-center w-[36px] h-[36px]">
+              <div className="hidden md:flex items-center justify-center w-[36px] h-[36px]">
                 <Flower className="h-4 w-4 sm:h-5 sm:w-5 text-logo ml-1 hidden md:block" />
               </div>
               <Button
                 variant="ghost"
                 size="icon"
-                className="hidden md:flex"
+                className="hidden md:flex  hover:!border-border/0 hover:!bg-transparent"
                 onClick={onExpandSidebar}
                 title="Expand sidebar"
               >
-                <PanelLeft className="size-4.5" />
+                <PanelLeft className="size-4" />
               </Button>
             </>
           )}
@@ -190,16 +196,16 @@ export function ChatNavbar({
             onClick={onNewChat}
             title="Compose"
           >
-            <SquarePen className="size-4.5" />
+            <SquarePen className="size-4" />
           </Button>
         </div>
 
         <div className="flex-1 min-w-0" />
 
-        {localPath && (onOpenExternal || onToggleEmbeddedTerminal || onToggleRightSidebar || onExportTranscript) ? (
+        {localPath && (onOpenExternal || onToggleEmbeddedTerminal || onToggleGitPanel || onToggleBrowserPanel || onExportTranscript) ? (
           <div className="flex items-center gap-2 flex-shrink-0">
             {onOpenExternal ? (
-              <div className="hidden py-0.5 md:block border border-border rounded-2xl backdrop-blur-lg">
+              <div className="hidden md:block border border-border/70 rounded-[9px] backdrop-blur-lg">
                 <OpenExternalSelect
                   isMac={isMac}
                   editorPreset={editorPreset}
@@ -210,10 +216,10 @@ export function ChatNavbar({
                 />
               </div>
             ) : null}
-            {(onToggleEmbeddedTerminal || onToggleRightSidebar || onExportTranscript) ? (
-              <div className="flex items-center border border-border rounded-2xl px-2 py-0.5 backdrop-blur-lg">
+            {(onToggleEmbeddedTerminal || onToggleGitPanel || onToggleBrowserPanel || onExportTranscript) ? (
+              <div className="flex items-center  rounded-[9px] h-[30px] backdrop-blur-lg">
                 <NavbarOverflowMenu
-                  showOnDesktop={rightSidebarVisible}
+                  showOnDesktop={rightPanelVisible}
                   onToggleEmbeddedTerminal={onToggleEmbeddedTerminal}
                   onExportTranscript={onExportTranscript}
                   canExportTranscript={canExportTranscript}
@@ -228,12 +234,12 @@ export function ChatNavbar({
                       size="none"
                       onClick={onToggleEmbeddedTerminal}
                       className={cn(
-                        rightSidebarVisible ? "hidden" : "hidden md:flex",
+                        rightPanelVisible ? "hidden" : "hidden md:flex",
                         "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent",
                         embeddedTerminalVisible && "text-foreground"
                       )}
                     >
-                      <Terminal strokeWidth={2} className="h-4.5" />
+                      <Terminal strokeWidth={2} className="h-4" />
                     </Button>
                   </HotkeyTooltipTrigger>
                   <HotkeyTooltipContent side="bottom" shortcut={terminalShortcut} />
@@ -248,36 +254,63 @@ export function ChatNavbar({
                     title="Share chat"
                     aria-label="Share chat"
                     className={cn(
-                      rightSidebarVisible ? "hidden" : "hidden md:flex",
+                      rightPanelVisible ? "hidden" : "hidden md:flex",
                       "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent disabled:opacity-50"
                     )}
                   >
                     {isExportingTranscript ? (
-                      <Loader2 className="h-4.5 animate-spin" />
+                      <Loader2 className="h-4 animate-spin" />
                     ) : exportTranscriptComplete ? (
-                      <Check className="h-4.5 text-emerald-400" />
+                      <Check className="h-4 text-emerald-400" />
                     ) : (
-                      <UserRoundPlus strokeWidth={2} className="h-4.5" />
+                      <UserRoundPlus strokeWidth={2} className="h-4" />
                     )}
                   </Button>
                 ) : null}
-                {onToggleRightSidebar ? (
+                {onToggleBrowserPanel && showBrowserPanelButton ? (
+                  <Button
+                    variant="ghost"
+                    size="none"
+                    onClick={onToggleBrowserPanel}
+                    title="Browser"
+                    aria-label="Browser"
+                    className={cn(
+                      "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent"
+                    )}
+                  >
+                    <Globe strokeWidth={2.25} className="h-4" />
+                  </Button>
+                ) : null}
+                {onToggleGitPanel && showGitPanelButton ? (
                   <HotkeyTooltip>
                     <HotkeyTooltipTrigger asChild>
                       <Button
                         variant="ghost"
-                        onClick={onToggleRightSidebar}
+                        size="none"
+                        onClick={onToggleGitPanel}
                         className={cn(
-                          "border flex flex-row items-center gap-1.5 h-9 border-border/0 pl-1.5 pr-2 hover:!border-border/0 hover:!bg-transparent",
-                          rightSidebarVisible && "text-foreground"
+                          "border flex flex-row items-center gap-1.5 h-9 border-border/0 hover:!border-border/0 hover:!bg-transparent",
+                          rightPanelVisible ? "w-[38px] justify-center px-0" : "pl-1.5 pr-2"
                         )}
                       >
-                        {rightSidebarVisible ? <PanelRight strokeWidth={2.25} className="h-4" /> : <GitBranch strokeWidth={2.25} className="h-4" />}
-                        {branchLabel && !rightSidebarVisible ? <div className="font-[13px] max-w-[140px] truncate hidden md:block">{branchLabel}</div> : null}
+                        <GitBranch strokeWidth={2.25} className="h-4" />
+                        {branchLabel && !rightPanelVisible ? <div className="font-[13px] max-w-[140px] truncate hidden md:block">{branchLabel}</div> : null}
                       </Button>
                     </HotkeyTooltipTrigger>
                     <HotkeyTooltipContent side="bottom" shortcut={rightSidebarShortcut} />
                   </HotkeyTooltip>
+                ) : null}
+                {rightPanelVisible && handleCloseRightPanel ? (
+                  <Button
+                    variant="ghost"
+                    size="none"
+                    onClick={handleCloseRightPanel}
+                    title="Collapse sidebar"
+                    aria-label="Collapse sidebar"
+                    className="border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent text-foreground"
+                  >
+                    <PanelRight strokeWidth={2.25} className="h-4" />
+                  </Button>
                 ) : null}
               </div>
             ) : null}

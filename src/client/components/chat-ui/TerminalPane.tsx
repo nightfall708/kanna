@@ -14,8 +14,10 @@ interface Props {
   connectionStatus: SocketStatus
   clearVersion?: number
   focusRequestVersion?: number
+  initialCommand?: string
   onPathChange?: (path: string | null) => void
   onCommandSent?: () => void
+  onInitialCommandSent?: (terminalId: string) => void
 }
 
 const TERMINAL_THEME_LIGHT: ITheme = {
@@ -235,8 +237,10 @@ export function TerminalPane({
   connectionStatus,
   clearVersion = 0,
   focusRequestVersion = 0,
+  initialCommand,
   onPathChange,
   onCommandSent,
+  onInitialCommandSent,
 }: Props) {
   const { resolvedTheme } = useTheme()
   const containerRef = useRef<HTMLDivElement>(null)
@@ -246,6 +250,7 @@ export function TerminalPane({
   const hasCreatedRef = useRef(false)
   const createAttemptRef = useRef(0)
   const lastAppliedSnapshotKeyRef = useRef<string | null>(null)
+  const sentInitialCommandRef = useRef<string | null>(null)
   const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
   const [metadata, setMetadata] = useState<Pick<TerminalSnapshot, "cwd" | "shell" | "status" | "exitCode"> | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -287,6 +292,10 @@ export function TerminalPane({
   useEffect(() => {
     onCommandSentRef.current = onCommandSent
   }, [onCommandSent])
+
+  useEffect(() => {
+    sentInitialCommandRef.current = null
+  }, [initialCommand])
 
   useEffect(() => {
     const terminal = new Terminal(getTerminalOptions(scrollback, terminalTheme))
@@ -467,6 +476,11 @@ export function TerminalPane({
         if (snapshot) {
           applySnapshot(snapshot as TerminalSnapshot)
         }
+        if (initialCommand && sentInitialCommandRef.current !== initialCommand) {
+          sentInitialCommandRef.current = initialCommand
+          sendInput(`${initialCommand}\r`)
+          onInitialCommandSent?.(terminalId)
+        }
         scheduleResizeSync()
       }).catch((commandError) => {
         setError(commandError instanceof Error ? commandError.message : String(commandError))
@@ -531,7 +545,7 @@ export function TerminalPane({
         }
       },
     })
-  }, [connectionStatus, projectId, scrollback, socket, terminalId])
+  }, [connectionStatus, initialCommand, onInitialCommandSent, projectId, scrollback, socket, terminalId])
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pb-4">

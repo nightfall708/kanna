@@ -16,11 +16,13 @@ interface Props {
   scrollback: number
   minColumnWidth: number
   focusRequestVersion?: number
+  pendingCommandsByTerminalId?: Record<string, string>
   splitTerminalShortcut?: string[]
   onAddTerminal: (projectId: string, afterTerminalId?: string) => void
   onRemoveTerminal: (projectId: string, terminalId: string) => void
   onTerminalLayout: (projectId: string, sizes: number[]) => void
   onTerminalCommandSent?: () => void
+  onInitialTerminalCommandSent?: (terminalId: string) => void
 }
 
 interface TerminalWorkspacePaneProps {
@@ -35,12 +37,14 @@ interface TerminalWorkspacePaneProps {
   connectionStatus: SocketStatus
   clearVersion: number
   focusRequestVersion: number
+  initialCommand?: string
   splitTerminalShortcut?: string[]
   onAddTerminal: (projectId: string, afterTerminalId?: string) => void
   onRemoveTerminal: (projectId: string, terminalId: string) => void
   onClearTerminal: (terminalId: string) => void
   onPathChange: (terminalId: string, path: string | null) => void
   onCommandSent?: () => void
+  onInitialCommandSent?: (terminalId: string) => void
   setPaneElement: (terminalId: string, element: HTMLDivElement | null) => void
 }
 
@@ -56,12 +60,14 @@ const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
   connectionStatus,
   clearVersion,
   focusRequestVersion,
+  initialCommand,
   splitTerminalShortcut,
   onAddTerminal,
   onRemoveTerminal,
   onClearTerminal,
   onPathChange,
   onCommandSent,
+  onInitialCommandSent,
   setPaneElement,
 }: TerminalWorkspacePaneProps) {
   const handleSetPaneElement = useCallback((element: HTMLDivElement | null) => {
@@ -149,7 +155,9 @@ const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
             connectionStatus={connectionStatus}
             clearVersion={clearVersion}
             focusRequestVersion={focusRequestVersion}
+            initialCommand={initialCommand}
             onCommandSent={onCommandSent}
+            onInitialCommandSent={onInitialCommandSent}
             onPathChange={handlePathChange}
           />
         </div>
@@ -167,11 +175,13 @@ function TerminalWorkspaceImpl({
   scrollback,
   minColumnWidth,
   focusRequestVersion = 0,
+  pendingCommandsByTerminalId,
   splitTerminalShortcut,
   onAddTerminal,
   onRemoveTerminal,
   onTerminalLayout,
   onTerminalCommandSent,
+  onInitialTerminalCommandSent,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const paneRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -279,12 +289,14 @@ function TerminalWorkspaceImpl({
                 connectionStatus={connectionStatus}
                 clearVersion={clearVersionsByTerminalId[terminalPane.id] ?? 0}
                 focusRequestVersion={index === 0 ? focusRequestVersion : 0}
+                initialCommand={pendingCommandsByTerminalId?.[terminalPane.id]}
                 splitTerminalShortcut={splitTerminalShortcut}
                 onAddTerminal={onAddTerminal}
                 onRemoveTerminal={onRemoveTerminal}
                 onClearTerminal={handleClearTerminal}
                 onPathChange={handlePathChange}
                 onCommandSent={onTerminalCommandSent}
+                onInitialCommandSent={onInitialTerminalCommandSent}
                 setPaneElement={handleSetPaneElement}
               />
             ))}
