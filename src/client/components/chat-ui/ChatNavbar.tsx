@@ -116,6 +116,7 @@ interface Props {
   branchName?: string
   hasGitRepo?: boolean
   gitStatus?: "unknown" | "ready" | "no_repo"
+  isTranscriptViewportNarrow?: boolean
 }
 
 export function ChatNavbar({
@@ -144,6 +145,7 @@ export function ChatNavbar({
   branchName,
   hasGitRepo = true,
   gitStatus = "unknown",
+  isTranscriptViewportNarrow = true,
 }: Props) {
   const branchLabel = !hasGitRepo
     ? "Setup Git"
@@ -159,8 +161,8 @@ export function ChatNavbar({
   return (
     <CardHeader
       className={cn(
-        "absolute top-0 left-0 right-0 z-10 pt-3 md:pt-[9px] pl-1 pr-2 border-border/0 md:pb-0 flex items-center justify-center",
-        " bg-gradient-to-b from-background/70"
+        "absolute top-0 left-0 right-0 z-10 md:pt-[9px] lg:pb-[9px] pl-1 pr-2 border-border/0 flex items-center justify-center",
+        isTranscriptViewportNarrow ? "bg-background border-b border-border" : "bg-transparent"
       )}
     >
       <div className="relative flex items-center gap-2 w-full">

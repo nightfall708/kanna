@@ -23,6 +23,10 @@ import {
 } from "./utils"
 import type { EditorPreset } from "../../../shared/protocol"
 
+type ScrollViewRef = HTMLElement | {
+  getScrollableNode?: () => HTMLElement | null
+} | null
+
 interface ChatTranscriptViewportProps {
   activeChatId: string | null
   listRef: React.RefObject<LegendListRef | null>
@@ -55,6 +59,7 @@ interface ChatTranscriptViewportProps {
   editorCommandTemplate?: string
   platform?: NodeJS.Platform
   headerOffsetPx?: number
+  onViewportWidthChange?: (width: number) => void
 }
 
 export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
@@ -89,12 +94,33 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   editorCommandTemplate,
   platform = "darwin",
   headerOffsetPx = CHAT_NAVBAR_OFFSET_PX,
+  onViewportWidthChange,
 }: ChatTranscriptViewportProps) {
   const previousRowCountRef = useRef(0)
   const localLinkMenuTriggerRef = useRef<HTMLSpanElement | null>(null)
+  const [viewportElement, setViewportElement] = useState<HTMLElement | null>(null)
   const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
   const [localLinkMenuTarget, setLocalLinkMenuTarget] = useState<OpenLocalLinkTarget | null>(null)
   const isMac = platform === "darwin"
+
+  const handleViewportRef = useCallback((ref: ScrollViewRef) => {
+    const element = ref instanceof Element ? ref : ref?.getScrollableNode?.() ?? null
+    setViewportElement((current) => (current === element ? current : element))
+  }, [])
+
+  useEffect(() => {
+    if (!onViewportWidthChange || !viewportElement) return
+
+    const updateWidth = () => {
+      onViewportWidthChange(viewportElement.clientWidth)
+    }
+
+    const observer = new ResizeObserver(updateWidth)
+    observer.observe(viewportElement)
+    updateWidth()
+
+    return () => observer.disconnect()
+  }, [onViewportWidthChange, viewportElement])
 
   const rawRows = useMemo(() => buildResolvedTranscriptRows(messages, {
     isLoading: isProcessing,
@@ -266,6 +292,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
       <OpenLocalLinkProvider onOpenLocalLink={handleOpenLocalLinkClick}>
         <LegendList<ResolvedTranscriptRow>
           ref={listRef}
+          refScrollView={handleViewportRef}
           data={resolvedRows}
           extraData={toolGroupExpanded}
           keyExtractor={keyExtractor}
