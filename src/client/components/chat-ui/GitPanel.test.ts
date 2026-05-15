@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { GitPanel, canIgnoreDiffFile, canIgnoreDiffFolder, shouldLoadDiffPatchNow } from "./GitPanel"
+import { GitPanel, canIgnoreDiffFile, canIgnoreDiffFolder, getPrimaryCommitActionPrefix, shouldLoadDiffPatchNow } from "./GitPanel"
 import { TooltipProvider } from "../ui/tooltip"
 
 describe("GitPanel", () => {
@@ -165,7 +165,38 @@ describe("GitPanel", () => {
     expect(markup).toContain("Open branch switcher")
     expect(markup).toContain("Pull")
     expect(markup).toContain("3")
+    expect(markup).toContain("Generate &amp; push to")
+    expect(markup).toContain("Generate commit message")
     expect(markup).not.toContain("Publish Branch")
+  })
+
+  test("labels the primary commit action for empty and filled messages", () => {
+    expect(getPrimaryCommitActionPrefix({
+      hasSummary: false,
+      isGenerating: false,
+      isCommitting: false,
+      isGeneratedCommitInFlight: false,
+      commitModeInFlight: null,
+      primaryCommitMode: "commit_and_push",
+    })).toBe("Generate & push to")
+
+    expect(getPrimaryCommitActionPrefix({
+      hasSummary: true,
+      isGenerating: false,
+      isCommitting: false,
+      isGeneratedCommitInFlight: false,
+      commitModeInFlight: null,
+      primaryCommitMode: "commit_and_push",
+    })).toBe("Commit & push to")
+
+    expect(getPrimaryCommitActionPrefix({
+      hasSummary: true,
+      isGenerating: false,
+      isCommitting: true,
+      isGeneratedCommitInFlight: true,
+      commitModeInFlight: "commit_and_push",
+      primaryCommitMode: "commit_and_push",
+    })).toBe("Pushing...")
   })
 
   test("renders the branch switcher affordance", () => {
