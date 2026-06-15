@@ -3,8 +3,10 @@ import {
   SERVER_PROVIDERS,
   applyClaudeSdkModels,
   codexServiceTierFromModelOptions,
+  cursorModelIdForOptions,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
+  normalizeCursorModelOptions,
   normalizeServerModel,
   resetServerProvidersForTests,
 } from "./provider-catalog"
@@ -61,6 +63,21 @@ describe("provider catalog normalization", () => {
       fastMode: true,
     })
     expect(codexServiceTierFromModelOptions(normalized)).toBe("fast")
+  })
+
+  test("normalizes Cursor model options and applies the fast model suffix", () => {
+    expect(normalizeCursorModelOptions(undefined)).toEqual({ fastMode: false })
+    expect(normalizeCursorModelOptions({ cursor: { fastMode: true } })).toEqual({ fastMode: true })
+
+    expect(cursorModelIdForOptions("composer-2.5", { fastMode: false })).toBe("composer-2.5")
+    expect(cursorModelIdForOptions("composer-2.5", { fastMode: true })).toBe("composer-2.5-fast")
+    // Idempotent if the base id already carries the suffix.
+    expect(cursorModelIdForOptions("composer-2.5-fast", { fastMode: true })).toBe("composer-2.5-fast")
+  })
+
+  test("exposes Cursor in the server provider catalog", () => {
+    expect(normalizeServerModel("cursor")).toBe("composer-2.5")
+    expect(SERVER_PROVIDERS.find((provider) => provider.id === "cursor")?.label).toBe("Cursor")
   })
 
   test("normalizes server model ids through the shared alias catalog", () => {

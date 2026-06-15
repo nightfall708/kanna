@@ -155,19 +155,30 @@ function getEffectiveComposerState(
     return composerState
   }
 
-  return activeProvider === "claude"
-    ? {
+  if (activeProvider === "claude") {
+    return {
       provider: "claude",
       model: providerDefaults.claude.model,
       modelOptions: { ...providerDefaults.claude.modelOptions },
       planMode: composerState.planMode,
     }
-    : {
-      provider: "codex",
-      model: providerDefaults.codex.model,
-      modelOptions: { ...providerDefaults.codex.modelOptions },
+  }
+
+  if (activeProvider === "cursor") {
+    return {
+      provider: "cursor",
+      model: providerDefaults.cursor.model,
+      modelOptions: { ...providerDefaults.cursor.modelOptions },
       planMode: composerState.planMode,
     }
+  }
+
+  return {
+    provider: "codex",
+    model: providerDefaults.codex.model,
+    modelOptions: { ...providerDefaults.codex.modelOptions },
+    planMode: composerState.planMode,
+  }
 }
 
 const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
@@ -521,6 +532,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     let modelOptions: ModelOptions
     if (providerPrefs.provider === "claude") {
       modelOptions = { claude: { ...providerPrefs.modelOptions } }
+    } else if (providerPrefs.provider === "cursor") {
+      modelOptions = { cursor: { ...providerPrefs.modelOptions } }
     } else {
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }
@@ -796,7 +809,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   updateComposerState(
                     (state) => state.provider === "claude"
                       ? state
-                      : { ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } }
+                      : ({ ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } } as ComposerState)
                   )
                   break
               }

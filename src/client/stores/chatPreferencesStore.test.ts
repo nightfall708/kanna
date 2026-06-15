@@ -67,6 +67,11 @@ describe("migrateChatPreferencesState", () => {
           modelOptions: { reasoningEffort: "minimal", fastMode: true },
           planMode: false,
         },
+        cursor: {
+          model: "composer-2.5",
+          modelOptions: { fastMode: false },
+          planMode: false,
+        },
       },
       chatStates: {},
       legacyComposerState: {

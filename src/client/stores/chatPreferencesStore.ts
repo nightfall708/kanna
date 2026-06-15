@@ -2,6 +2,7 @@ import { create } from "zustand"
 import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
+  DEFAULT_CURSOR_MODEL_OPTIONS,
   normalizeClaudeContextWindow,
   normalizeClaudeModelId,
   normalizeCodexModelId,
@@ -12,6 +13,7 @@ import {
   type ChatProviderPreferences,
   type ClaudeModelOptions,
   type CodexModelOptions,
+  type CursorModelOptions,
   type DefaultProviderPreference,
   type ProviderPreference,
   type ProviderModelOptionsByProvider,
@@ -30,6 +32,12 @@ export type ComposerState =
     provider: "codex"
     model: string
     modelOptions: CodexModelOptions
+    planMode: boolean
+  }
+  | {
+    provider: "cursor"
+    model: string
+    modelOptions: CursorModelOptions
     planMode: boolean
   }
 
@@ -84,6 +92,12 @@ type PersistedComposerState =
     modelOptions?: Partial<CodexModelOptions>
     planMode?: boolean
   }
+  | {
+    provider: "cursor"
+    model?: string
+    modelOptions?: Partial<CursorModelOptions>
+    planMode?: boolean
+  }
 
 type PersistedChatPreferencesState = Pick<
   ChatPreferencesState,
@@ -91,7 +105,7 @@ type PersistedChatPreferencesState = Pick<
 > & LegacyPersistedChatPreferencesState
 
 export function normalizeDefaultProvider(value?: string): DefaultProviderPreference {
-  if (value === "claude" || value === "codex") return value
+  if (value === "claude" || value === "codex" || value === "cursor") return value
   return "last_used"
 }
 
@@ -143,6 +157,22 @@ export function normalizeCodexPreference(value?: {
   }
 }
 
+export function normalizeCursorPreference(value?: {
+  model?: string
+  modelOptions?: Partial<CursorModelOptions>
+  planMode?: boolean
+}): ProviderPreference<CursorModelOptions> {
+  return {
+    model: "composer-2.5",
+    modelOptions: {
+      fastMode: typeof value?.modelOptions?.fastMode === "boolean"
+        ? value.modelOptions.fastMode
+        : DEFAULT_CURSOR_MODEL_OPTIONS.fastMode,
+    },
+    planMode: false,
+  }
+}
+
 function forcePersistedCodexPreference<T extends {
   model?: string
   effort?: string
@@ -189,6 +219,11 @@ export function createDefaultProviderDefaults(): ChatProviderPreferences {
       modelOptions: { ...DEFAULT_CODEX_MODEL_OPTIONS },
       planMode: false,
     },
+    cursor: {
+      model: "composer-2.5",
+      modelOptions: { ...DEFAULT_CURSOR_MODEL_OPTIONS },
+      planMode: false,
+    },
   }
 }
 
@@ -205,10 +240,16 @@ export function normalizeProviderDefaults(value?: {
     modelOptions?: Partial<CodexModelOptions>
     planMode?: boolean
   }
+  cursor?: {
+    model?: string
+    modelOptions?: Partial<CursorModelOptions>
+    planMode?: boolean
+  }
 }): ChatProviderPreferences {
   return {
     claude: normalizeClaudePreference(value?.claude),
     codex: normalizeCodexPreference(value?.codex),
+    cursor: normalizeCursorPreference(value?.cursor),
   }
 }
 
@@ -235,6 +276,16 @@ function composerFromProviderDefaults(
     }
   }
 
+  if (provider === "cursor") {
+    const preference = providerDefaults.cursor
+    return {
+      provider: "cursor",
+      model: preference.model,
+      modelOptions: { ...preference.modelOptions },
+      planMode: preference.planMode,
+    }
+  }
+
   const preference = providerDefaults.codex
   return {
     provider: "codex",
@@ -245,19 +296,28 @@ function composerFromProviderDefaults(
 }
 
 function cloneComposerState(state: ComposerState): ComposerState {
-  return state.provider === "claude"
-    ? {
+  if (state.provider === "claude") {
+    return {
       provider: "claude",
       model: state.model,
       modelOptions: { ...state.modelOptions },
       planMode: state.planMode,
     }
-    : {
-      provider: "codex",
+  }
+  if (state.provider === "cursor") {
+    return {
+      provider: "cursor",
       model: state.model,
       modelOptions: { ...state.modelOptions },
       planMode: state.planMode,
     }
+  }
+  return {
+    provider: "codex",
+    model: state.model,
+    modelOptions: { ...state.modelOptions },
+    planMode: state.planMode,
+  }
 }
 
 function sameComposerState(left: ComposerState | undefined, right: ComposerState): boolean {
@@ -272,6 +332,10 @@ function sameComposerState(left: ComposerState | undefined, right: ComposerState
   if (left.provider === "codex" && right.provider === "codex") {
     return left.modelOptions.reasoningEffort === right.modelOptions.reasoningEffort
       && left.modelOptions.fastMode === right.modelOptions.fastMode
+  }
+
+  if (left.provider === "cursor" && right.provider === "cursor") {
+    return left.modelOptions.fastMode === right.modelOptions.fastMode
   }
 
   return false
@@ -297,6 +361,16 @@ function normalizeComposerState(
     const preference = normalizeCodexPreference(value)
     return {
       provider: "codex",
+      model: preference.model,
+      modelOptions: preference.modelOptions,
+      planMode: preference.planMode,
+    }
+  }
+
+  if (value?.provider === "cursor") {
+    const preference = normalizeCursorPreference(value)
+    return {
+      provider: "cursor",
       model: preference.model,
       modelOptions: preference.modelOptions,
       planMode: preference.planMode,
