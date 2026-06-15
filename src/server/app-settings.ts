@@ -13,6 +13,7 @@ import {
   normalizeClaudeContextWindow,
   normalizeClaudeModelId,
   normalizeCodexModelId,
+  normalizeCursorModelId,
   supportsClaudeMaxReasoningEffort,
   type AppSettingsPatch,
   type AppSettingsSnapshot,
@@ -218,7 +219,7 @@ function normalizeCursorPreference(value?: {
   planMode?: unknown
 }): ProviderPreference<CursorModelOptions> {
   return {
-    model: "composer-2.5",
+    model: normalizeCursorModelId(typeof value?.model === "string" ? value.model : undefined),
     modelOptions: {
       fastMode: typeof value?.modelOptions?.fastMode === "boolean"
         ? value.modelOptions.fastMode

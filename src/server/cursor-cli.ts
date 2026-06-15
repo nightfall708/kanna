@@ -5,6 +5,7 @@ import type { Readable, Writable } from "node:stream"
 import type { ContextWindowUsageSnapshot, TranscriptEntry } from "../shared/types"
 import { normalizeToolCall } from "../shared/tools"
 import type { HarnessEvent, HarnessTurn } from "./harness-types"
+import { AsyncQueue } from "./async-queue"
 
 /**
  * Adapter for the Cursor CLI (`cursor-agent` binary).
@@ -341,47 +342,6 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
     // Kanna already records the user prompt and has no reasoning transcript kind.
     default:
       return []
-  }
-}
-
-class AsyncQueue<T> implements AsyncIterable<T> {
-  private values: T[] = []
-  private resolvers: Array<(value: IteratorResult<T>) => void> = []
-  private done = false
-
-  push(value: T) {
-    if (this.done) return
-    const resolver = this.resolvers.shift()
-    if (resolver) {
-      resolver({ value, done: false })
-      return
-    }
-    this.values.push(value)
-  }
-
-  finish() {
-    if (this.done) return
-    this.done = true
-    while (this.resolvers.length > 0) {
-      const resolver = this.resolvers.shift()
-      resolver?.({ value: undefined as T, done: true })
-    }
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<T> {
-    return {
-      next: () => {
-        if (this.values.length > 0) {
-          return Promise.resolve({ value: this.values.shift() as T, done: false })
-        }
-        if (this.done) {
-          return Promise.resolve({ value: undefined as T, done: true })
-        }
-        return new Promise<IteratorResult<T>>((resolve) => {
-          this.resolvers.push(resolve)
-        })
-      },
-    }
   }
 }
 

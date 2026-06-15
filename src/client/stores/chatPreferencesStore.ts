@@ -6,6 +6,7 @@ import {
   normalizeClaudeContextWindow,
   normalizeClaudeModelId,
   normalizeCodexModelId,
+  normalizeCursorModelId,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
   supportsClaudeMaxReasoningEffort,
@@ -163,7 +164,7 @@ export function normalizeCursorPreference(value?: {
   planMode?: boolean
 }): ProviderPreference<CursorModelOptions> {
   return {
-    model: "composer-2.5",
+    model: normalizeCursorModelId(value?.model),
     modelOptions: {
       fastMode: typeof value?.modelOptions?.fastMode === "boolean"
         ? value.modelOptions.fastMode

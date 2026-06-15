@@ -354,6 +354,10 @@ export function normalizeCodexModelId(modelId?: string, fallbackModelId = "gpt-5
   return normalizeProviderModelId("codex", modelId, fallbackModelId)
 }
 
+export function normalizeCursorModelId(modelId?: string, fallbackModelId = "composer-2.5"): string {
+  return normalizeProviderModelId("cursor", modelId, fallbackModelId)
+}
+
 export function getProviderModelOption(provider: AgentProvider, modelId: string): ProviderModelOption | undefined {
   const normalizedModelId = normalizeProviderModelId(provider, modelId)
   return getProviderCatalog(provider).models.find((candidate) => candidate.id === normalizedModelId)
