@@ -1200,7 +1200,7 @@ function DiffFileCard({
       return
     }
 
-    const autoLoadKey = `${file.path} ${file.patchDigest}`
+    const autoLoadKey = `${file.path}\u0000${file.patchDigest}`
     if (autoLoadPatchKeyRef.current === autoLoadKey) {
       return
     }
@@ -1493,7 +1493,7 @@ function GitPanelImpl({
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const patchDigestsByPathRef = useRef<Record<string, string>>({})
   const filePaths = useMemo(() => diffs.files.map((file) => file.path), [diffs.files])
-  const filePathsKey = useMemo(() => filePaths.join(" "), [filePaths])
+  const filePathsKey = useMemo(() => filePaths.join("\u0000"), [filePaths])
   const viewMode = useRightSidebarStore((store) => (projectId ? (store.projectUi[projectId]?.viewMode ?? (hasChanges ? "changes" : "history")) : (hasChanges ? "changes" : "history")))
   const collapsedPaths = useRightSidebarStore((store) => (projectId ? (store.projectUi[projectId]?.collapsedPaths ?? EMPTY_CHECKED_PATHS) : EMPTY_CHECKED_PATHS))
   const summary = useRightSidebarStore((store) => (projectId ? (store.projectUi[projectId]?.summary ?? "") : ""))
