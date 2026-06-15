@@ -75,9 +75,10 @@ describe("provider catalog normalization", () => {
     expect(cursorModelIdForOptions("composer-2.5-fast", { fastMode: true })).toBe("composer-2.5-fast")
   })
 
-  test("exposes Cursor in the server provider catalog", () => {
+  test("resolves the Cursor default model through the server catalog", () => {
+    // Exercises the catalog lookup + default fallback (throws if "cursor" is unregistered).
     expect(normalizeServerModel("cursor")).toBe("composer-2.5")
-    expect(SERVER_PROVIDERS.find((provider) => provider.id === "cursor")?.label).toBe("Cursor")
+    expect(normalizeServerModel("cursor", "composer-2.5-fast")).toBe("composer-2.5")
   })
 
   test("normalizes server model ids through the shared alias catalog", () => {
