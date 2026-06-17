@@ -46,7 +46,6 @@ interface AppSettingsFile {
     claude?: Partial<ProviderPreference<Partial<ClaudeModelOptions>>> & { effort?: unknown }
     codex?: Partial<ProviderPreference<Partial<CodexModelOptions>>> & { effort?: unknown }
   }
-  transcriptAutoScroll?: unknown
 }
 
 interface AppSettingsState extends AppSettingsSnapshot {
@@ -100,7 +99,7 @@ function getDefaultEditorCommandTemplate(preset: EditorPreset) {
 function createDefaultProviderDefaults(): ChatProviderPreferences {
   return {
     claude: {
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
       modelOptions: { ...DEFAULT_CLAUDE_MODEL_OPTIONS },
       planMode: false,
     },
@@ -225,7 +224,6 @@ function toFilePayload(state: AppSettingsState) {
     editor: state.editor,
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
-    transcriptAutoScroll: state.transcriptAutoScroll,
   }
 }
 
@@ -240,7 +238,6 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     editor: state.editor,
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
-    transcriptAutoScroll: state.transcriptAutoScroll,
     warning: state.warning,
     filePathDisplay: state.filePathDisplay,
   }
@@ -291,7 +288,6 @@ function normalizeAppSettings(
     },
     defaultProvider: normalizeDefaultProvider(source?.defaultProvider),
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
-    transcriptAutoScroll: typeof source?.transcriptAutoScroll === "boolean" ? source.transcriptAutoScroll : true,
     warning: null,
     filePathDisplay: formatDisplayPath(filePath),
   }
@@ -320,7 +316,6 @@ function toComparablePayload(source: AppSettingsFile) {
     editor: source.editor,
     defaultProvider: source.defaultProvider,
     providerDefaults: source.providerDefaults,
-    transcriptAutoScroll: source.transcriptAutoScroll,
   }
 }
 

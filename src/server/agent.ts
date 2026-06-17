@@ -20,6 +20,8 @@ import { CodexAppServerManager } from "./codex-app-server"
 import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
+  applyClaudeSdkModels,
+  type ClaudeSdkModelInfo,
   codexServiceTierFromModelOptions,
   getServerProviderCatalog,
   normalizeClaudeModelOptions,
@@ -82,6 +84,7 @@ interface ClaudeSessionHandle {
   sendPrompt: (content: string) => Promise<void>
   setModel: (model: string) => Promise<void>
   setPermissionMode: (planMode: boolean) => Promise<void>
+  supportedModels?: () => Promise<ClaudeSdkModelInfo[]>
 }
 
 interface ClaudeSessionState {
@@ -664,6 +667,7 @@ async function startClaudeSession(args: {
     setPermissionMode: async (planMode: boolean) => {
       await q.setPermissionMode(planMode ? "plan" : "acceptEdits")
     },
+    supportedModels: async () => await q.supportedModels(),
     close: () => {
       promptQueue.close()
       q.close()
@@ -716,6 +720,20 @@ export class AgentCoordinator {
 
   private emitStateChange(chatId?: string, options?: { immediate?: boolean }) {
     this.onStateChange(chatId, options)
+  }
+
+  private refreshClaudeModelCatalog(session: ClaudeSessionHandle) {
+    if (!session.supportedModels) return
+    void session.supportedModels()
+      .then((models) => {
+        if (applyClaudeSdkModels(models)) {
+          this.emitStateChange(undefined, { immediate: true })
+        }
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error)
+        this.reportBackgroundError?.(`[claude-models] failed to refresh Claude model catalog: ${message}`)
+      })
   }
 
   getActiveTurnProfile(chatId: string): SendToStartingProfile | null {
@@ -1078,6 +1096,7 @@ export class AgentCoordinator {
         forkSession: args.forkSession,
         onToolRequest: args.onToolRequest,
       })
+      this.refreshClaudeModelCatalog(started)
 
       session = {
         id: crypto.randomUUID(),

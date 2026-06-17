@@ -87,7 +87,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
   defaultProvider: "last_used",
   providerDefaults: {
     claude: {
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
       modelOptions: {
         reasoningEffort: "high",
         contextWindow: "200k",
@@ -103,7 +103,6 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       planMode: false,
     },
   },
-  transcriptAutoScroll: true,
   warning: null,
   filePathDisplay: "~/.kanna/data/settings.json",
 }

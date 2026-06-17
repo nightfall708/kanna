@@ -465,7 +465,7 @@ export function createWsRouter({
     defaultProvider: "last_used",
     providerDefaults: {
       claude: {
-        model: "claude-opus-4-7",
+        model: "claude-opus-4-8",
         modelOptions: {
           reasoningEffort: "high",
           contextWindow: "200k",
@@ -481,7 +481,6 @@ export function createWsRouter({
         planMode: false,
       },
     },
-    transcriptAutoScroll: true,
     warning: null,
     filePathDisplay: "~/.kanna/data/settings.json",
   }

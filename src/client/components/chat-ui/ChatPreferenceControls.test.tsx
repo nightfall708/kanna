@@ -30,7 +30,7 @@ describe("ChatPreferenceControls", () => {
       <ChatPreferenceControls
         availableProviders={PROVIDERS}
         selectedProvider="claude"
-        model="claude-opus-4-7"
+        model="claude-opus-4-8"
         modelOptions={{ reasoningEffort: "max", contextWindow: "1m" }}
         onProviderChange={() => {}}
         onModelChange={() => {}}
@@ -42,9 +42,27 @@ describe("ChatPreferenceControls", () => {
     )
 
     expect(html).toContain("Claude")
-    expect(html).toContain("Opus 4.7")
+    expect(html).toContain("Opus")
     expect(html).toContain("Max")
     expect(html).toContain("1M")
     expect(html).toContain("Plan Mode")
+  })
+
+  test("renders Fable as a Claude model option", () => {
+    const html = renderToStaticMarkup(
+      <ChatPreferenceControls
+        availableProviders={PROVIDERS}
+        selectedProvider="claude"
+        model="fable"
+        modelOptions={{ reasoningEffort: "high", contextWindow: "1m" }}
+        onProviderChange={() => {}}
+        onModelChange={() => {}}
+        onModelOptionChange={() => {}}
+        includePlanMode={false}
+      />
+    )
+
+    expect(html).toContain("Fable")
+    expect(html).toContain("High")
   })
 })
