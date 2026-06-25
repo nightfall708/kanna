@@ -206,7 +206,7 @@ export function ChatNavbar({
         {localPath && (onOpenExternal || onToggleEmbeddedTerminal || onToggleGitPanel || onToggleBrowserPanel || onExportTranscript) ? (
           <div className="flex items-center gap-2 flex-shrink-0">
             {onOpenExternal ? (
-              <div className="hidden md:block border border-border/70 rounded-[9px]">
+              <div className="hidden md:block border border-border/70 rounded-[9px] backdrop-blur-lg">
                 <OpenExternalSelect
                   isMac={isMac}
                   editorPreset={editorPreset}

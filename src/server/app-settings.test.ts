@@ -52,6 +52,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
         planMode: false,
       },
     },
+    transcriptAutoScroll: true,
     warning: null,
     filePathDisplay: filePath,
     ...overrides,

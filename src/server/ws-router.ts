@@ -481,6 +481,7 @@ export function createWsRouter({
         planMode: false,
       },
     },
+    transcriptAutoScroll: true,
     warning: null,
     filePathDisplay: "~/.kanna/data/settings.json",
   }
