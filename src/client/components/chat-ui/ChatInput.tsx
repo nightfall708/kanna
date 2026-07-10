@@ -9,6 +9,8 @@ import {
   type ModelOptions,
   type ProviderCatalogEntry,
   normalizeClaudeContextWindow,
+  normalizeCodexModelId,
+  normalizeCodexReasoningEffort,
   resolveClaudeContextWindowTokens,
 } from "../../../shared/types"
 import { Button, buttonVariants } from "../ui/button"
@@ -135,7 +137,17 @@ function withNormalizedContextWindow(
   state: ComposerState,
   model: string
 ): ComposerState {
-  if (state.provider !== "claude") return { ...state, model }
+  if (state.provider !== "claude") {
+    const normalizedModel = normalizeCodexModelId(model)
+    return {
+      ...state,
+      model: normalizedModel,
+      modelOptions: {
+        ...state.modelOptions,
+        reasoningEffort: normalizeCodexReasoningEffort(normalizedModel, state.modelOptions.reasoningEffort),
+      },
+    }
+  }
   return {
     ...state,
     model,
