@@ -540,33 +540,30 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       setChatComposerProvider: (chatId, provider) =>
         set((state) => withChatComposerState(state, chatId, () => composerFromProviderDefaults(provider, state.providerDefaults))),
       setChatComposerModel: (chatId, model) =>
-        set((state) => withChatComposerState(state, chatId, (composerState) => (
-          composerState.provider === "claude"
-            ? {
+        set((state) => withChatComposerState(state, chatId, (composerState) => {
+          if (composerState.provider === "claude") {
+            const normalized = normalizeClaudePreference({
+              ...composerState,
+              model,
+            })
+            return {
               provider: "claude",
-              model: normalizeClaudePreference({
-                ...composerState,
-                model,
-              }).model,
-              modelOptions: normalizeClaudePreference({
-                ...composerState,
-                model,
-              }).modelOptions,
+              model: normalized.model,
+              modelOptions: normalized.modelOptions,
               planMode: composerState.planMode,
             }
-            : {
-              provider: "codex",
-              model: normalizeCodexPreference({
-                ...composerState,
-                model,
-              }).model,
-              modelOptions: normalizeCodexPreference({
-                ...composerState,
-                model,
-              }).modelOptions,
-              planMode: composerState.planMode,
-            }
-        ))),
+          }
+          const normalized = normalizeCodexPreference({
+            ...composerState,
+            model,
+          })
+          return {
+            provider: "codex",
+            model: normalized.model,
+            modelOptions: normalized.modelOptions,
+            planMode: composerState.planMode,
+          }
+        })),
       setChatComposerModelOptions: (chatId, modelOptions) =>
         set((state) => withChatComposerState(state, chatId, (composerState) => (
           composerState.provider === "claude"

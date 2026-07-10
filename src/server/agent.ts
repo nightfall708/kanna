@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import type {
   AgentProvider,
   ChatAttachment,
+  CodexReasoningEffort,
   ContextWindowUsageSnapshot,
   ModelOptions,
   NormalizedToolCall,
@@ -984,7 +985,7 @@ export class AgentCoordinator {
         chatId: args.chatId,
         content: buildPromptText(args.content, args.attachments),
         model: args.model,
-        effort: args.effort as any,
+        effort: args.effort as CodexReasoningEffort | undefined,
         serviceTier: args.serviceTier,
         planMode: args.planMode,
         onToolRequest,
