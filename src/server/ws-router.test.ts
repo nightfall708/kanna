@@ -102,6 +102,13 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       },
       planMode: false,
     },
+    cursor: {
+      model: "composer-2.5",
+      modelOptions: {
+        fastMode: false,
+      },
+      planMode: false,
+    },
   },
   transcriptAutoScroll: true,
   warning: null,

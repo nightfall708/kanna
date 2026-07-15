@@ -146,6 +146,9 @@ describe("read models", () => {
     expect(chat?.history.recentLimit).toBe(200)
     expect(chat?.availableProviders.length).toBeGreaterThan(1)
     expect(chat?.availableProviders.find((provider) => provider.id === "codex")?.models.map((model) => model.id)).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
       "gpt-5.5",
       "gpt-5.4",
       "gpt-5.3-codex",
@@ -397,6 +400,18 @@ describe("read models", () => {
       sessionToken: "thread-1",
       lastTurnOutcome: null,
     })
+    state.chatsById.set("chat-cursor", {
+      id: "chat-cursor",
+      projectId: "project-1",
+      title: "Cursor",
+      createdAt: 4,
+      updatedAt: 4,
+      unread: false,
+      provider: "cursor",
+      planMode: false,
+      sessionToken: "cursor-session",
+      lastTurnOutcome: null,
+    })
 
     const sidebar = deriveSidebarData(
       state,
@@ -407,5 +422,7 @@ describe("read models", () => {
     expect(sidebar.projectGroups[0]?.chats.find((chat) => chat.chatId === "chat-active")?.canFork).toBeUndefined()
     expect(sidebar.projectGroups[0]?.chats.find((chat) => chat.chatId === "chat-pending")?.canFork).toBe(true)
     expect(sidebar.projectGroups[0]?.chats.find((chat) => chat.chatId === "chat-draining")?.canFork).toBeUndefined()
+    // Cursor has no fork primitive, so forking is disabled even with a live session.
+    expect(sidebar.projectGroups[0]?.chats.find((chat) => chat.chatId === "chat-cursor")?.canFork).toBeUndefined()
   })
 })

@@ -2,6 +2,7 @@ import type {
   AgentProvider,
   ClaudeModelOptions,
   CodexModelOptions,
+  CursorModelOptions,
   ClaudeContextWindow,
   ModelOptions,
   ProviderCatalogEntry,
@@ -11,19 +12,14 @@ import type {
 import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
+  DEFAULT_CURSOR_MODEL_OPTIONS,
   PROVIDERS,
   normalizeClaudeContextWindow,
+  normalizeCodexReasoningEffort,
   normalizeProviderModelId,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
 } from "../shared/types"
-
-const HARD_CODED_CODEX_MODELS: ProviderModelOption[] = [
-  { id: "gpt-5.5", label: "GPT-5.5", supportsEffort: false },
-  { id: "gpt-5.4", label: "GPT-5.4", supportsEffort: false },
-  { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", supportsEffort: false },
-  { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", supportsEffort: false },
-]
 
 export interface ClaudeSdkModelInfo {
   value: string
@@ -35,15 +31,7 @@ export interface ClaudeSdkModelInfo {
 }
 
 function createServerProviders(): ProviderCatalogEntry[] {
-  return PROVIDERS.map((provider) =>
-    provider.id === "codex"
-      ? {
-          ...provider,
-          defaultModel: "gpt-5.5",
-          models: HARD_CODED_CODEX_MODELS,
-        }
-      : provider
-  )
+  return structuredClone(PROVIDERS)
 }
 
 export const SERVER_PROVIDERS: ProviderCatalogEntry[] = createServerProviders()
@@ -137,14 +125,17 @@ export function normalizeClaudeModelOptions(
   }
 }
 
-export function normalizeCodexModelOptions(modelOptions?: ModelOptions, legacyEffort?: string): CodexModelOptions {
+export function normalizeCodexModelOptions(
+  model: string,
+  modelOptions?: ModelOptions,
+  legacyEffort?: string,
+): CodexModelOptions {
   const reasoningEffort = modelOptions?.codex?.reasoningEffort
   return {
-    reasoningEffort: isCodexReasoningEffort(reasoningEffort)
-      ? reasoningEffort
-      : isCodexReasoningEffort(legacyEffort)
-        ? legacyEffort
-        : DEFAULT_CODEX_MODEL_OPTIONS.reasoningEffort,
+    reasoningEffort: normalizeCodexReasoningEffort(
+      model,
+      isCodexReasoningEffort(reasoningEffort) ? reasoningEffort : legacyEffort,
+    ),
     fastMode: typeof modelOptions?.codex?.fastMode === "boolean"
       ? modelOptions.codex.fastMode
       : DEFAULT_CODEX_MODEL_OPTIONS.fastMode,
@@ -153,4 +144,19 @@ export function normalizeCodexModelOptions(modelOptions?: ModelOptions, legacyEf
 
 export function codexServiceTierFromModelOptions(modelOptions: CodexModelOptions): ServiceTier | undefined {
   return modelOptions.fastMode ? "fast" : undefined
+}
+
+export function normalizeCursorModelOptions(modelOptions?: ModelOptions): CursorModelOptions {
+  return {
+    fastMode: typeof modelOptions?.cursor?.fastMode === "boolean"
+      ? modelOptions.cursor.fastMode
+      : DEFAULT_CURSOR_MODEL_OPTIONS.fastMode,
+  }
+}
+
+// Cursor encodes "fast" in the model id itself (composer-2.5 vs composer-2.5-fast),
+// so we apply the suffix at spawn time rather than tracking a separate service tier.
+export function cursorModelIdForOptions(baseModel: string, modelOptions: CursorModelOptions): string {
+  if (!modelOptions.fastMode) return baseModel
+  return baseModel.endsWith("-fast") ? baseModel : `${baseModel}-fast`
 }

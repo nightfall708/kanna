@@ -9,8 +9,11 @@ import {
   type ModelOptions,
   type ProviderCatalogEntry,
   normalizeClaudeContextWindow,
+  normalizeCodexModelId,
+  normalizeCodexReasoningEffort,
   resolveClaudeContextWindowTokens,
 } from "../../../shared/types"
+import { assertNever } from "../../../shared/assert"
 import { Button, buttonVariants } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
@@ -135,6 +138,17 @@ function withNormalizedContextWindow(
   state: ComposerState,
   model: string
 ): ComposerState {
+  if (state.provider === "codex") {
+    const normalizedModel = normalizeCodexModelId(model)
+    return {
+      ...state,
+      model: normalizedModel,
+      modelOptions: {
+        ...state.modelOptions,
+        reasoningEffort: normalizeCodexReasoningEffort(normalizedModel, state.modelOptions.reasoningEffort),
+      },
+    }
+  }
   if (state.provider !== "claude") return { ...state, model }
   return {
     ...state,
@@ -155,19 +169,31 @@ function getEffectiveComposerState(
     return composerState
   }
 
-  return activeProvider === "claude"
-    ? {
-      provider: "claude",
-      model: providerDefaults.claude.model,
-      modelOptions: { ...providerDefaults.claude.modelOptions },
-      planMode: composerState.planMode,
-    }
-    : {
-      provider: "codex",
-      model: providerDefaults.codex.model,
-      modelOptions: { ...providerDefaults.codex.modelOptions },
-      planMode: composerState.planMode,
-    }
+  switch (activeProvider) {
+    case "claude":
+      return {
+        provider: "claude",
+        model: providerDefaults.claude.model,
+        modelOptions: { ...providerDefaults.claude.modelOptions },
+        planMode: composerState.planMode,
+      }
+    case "codex":
+      return {
+        provider: "codex",
+        model: providerDefaults.codex.model,
+        modelOptions: { ...providerDefaults.codex.modelOptions },
+        planMode: composerState.planMode,
+      }
+    case "cursor":
+      return {
+        provider: "cursor",
+        model: providerDefaults.cursor.model,
+        modelOptions: { ...providerDefaults.cursor.modelOptions },
+        planMode: composerState.planMode,
+      }
+    default:
+      return assertNever(activeProvider)
+  }
 }
 
 const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
@@ -521,6 +547,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     let modelOptions: ModelOptions
     if (providerPrefs.provider === "claude") {
       modelOptions = { claude: { ...providerPrefs.modelOptions } }
+    } else if (providerPrefs.provider === "cursor") {
+      modelOptions = { cursor: { ...providerPrefs.modelOptions } }
     } else {
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }
@@ -685,11 +713,28 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           ) : null}
 
           <div className="flex items-end max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] pr-1.5">
+            <Textarea
+              ref={setTextareaRefs}
+              placeholder="Build something..."
+              value={value}
+              autoFocus
+              {...{ [CHAT_INPUT_ATTRIBUTE]: "" }}
+              rows={1}
+              onChange={(event) => {
+                setValue(event.target.value)
+                if (chatId) setDraft(chatId, event.target.value)
+                autoResize()
+              }}
+              onPaste={handlePaste}
+              onKeyDown={handleKeyDown}
+              disabled={disabled}
+              className="min-w-0 flex-1 text-base p-3 md:p-4 !pr-2 md:pl-6 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
+            />
             <label
               aria-label="Add attachment"
               className={cn(
                 buttonVariants({ variant: "ghost", size: "icon" }),
-                "relative md:hidden flex-shrink-0 ml-1 mb-1 h-10 w-10 rounded-full text-muted-foreground hover:text-foreground",
+                "relative md:hidden flex-shrink-0 mb-1 h-10 w-10 rounded-full text-muted-foreground hover:text-foreground",
                 disabled && "pointer-events-none opacity-50",
               )}
             >
@@ -709,23 +754,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 }}
               />
             </label>
-            <Textarea
-              ref={setTextareaRefs}
-              placeholder="Build something..."
-              value={value}
-              autoFocus
-              {...{ [CHAT_INPUT_ATTRIBUTE]: "" }}
-              rows={1}
-              onChange={(event) => {
-                setValue(event.target.value)
-                if (chatId) setDraft(chatId, event.target.value)
-                autoResize()
-              }}
-              onPaste={handlePaste}
-              onKeyDown={handleKeyDown}
-              disabled={disabled}
-              className="flex-1 text-base p-3 md:p-4 !pr-2 pl-0 md:pl-6 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
-            />
             <Button
               type="button"
               onPointerDown={(event) => {
@@ -767,7 +795,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             availableProviders={availableProviders}
             selectedProvider={selectedProvider}
             providerLocked={providerLocked}
-            showCodexCliRequirementHints
             model={providerPrefs.model}
             modelOptions={providerPrefs.modelOptions}
             onProviderChange={(provider) => {
@@ -796,7 +823,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   updateComposerState(
                     (state) => state.provider === "claude"
                       ? state
-                      : { ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } }
+                      : ({ ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } } as ComposerState)
                   )
                   break
               }

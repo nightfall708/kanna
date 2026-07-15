@@ -3,8 +3,10 @@ import {
   SERVER_PROVIDERS,
   applyClaudeSdkModels,
   codexServiceTierFromModelOptions,
+  cursorModelIdForOptions,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
+  normalizeCursorModelOptions,
   normalizeServerModel,
   resetServerProvidersForTests,
 } from "./provider-catalog"
@@ -44,12 +46,12 @@ describe("provider catalog normalization", () => {
   })
 
   test("normalizes Codex model options and fast mode defaults", () => {
-    expect(normalizeCodexModelOptions(undefined)).toEqual({
-      reasoningEffort: "high",
+    expect(normalizeCodexModelOptions("gpt-5.6-sol", undefined)).toEqual({
+      reasoningEffort: "medium",
       fastMode: false,
     })
 
-    const normalized = normalizeCodexModelOptions({
+    const normalized = normalizeCodexModelOptions("gpt-5.6-terra", {
       codex: {
         reasoningEffort: "xhigh",
         fastMode: true,
@@ -61,13 +63,38 @@ describe("provider catalog normalization", () => {
       fastMode: true,
     })
     expect(codexServiceTierFromModelOptions(normalized)).toBe("fast")
+
+    expect(normalizeCodexModelOptions("gpt-5.6-sol", {
+      codex: { reasoningEffort: "ultra" },
+    }).reasoningEffort).toBe("ultra")
+    expect(normalizeCodexModelOptions("gpt-5.6-luna", {
+      codex: { reasoningEffort: "ultra" },
+    }).reasoningEffort).toBe("max")
+    expect(normalizeCodexModelOptions("gpt-5.6-luna", undefined, "minimal").reasoningEffort).toBe("low")
+  })
+
+  test("normalizes Cursor model options and applies the fast model suffix", () => {
+    expect(normalizeCursorModelOptions(undefined)).toEqual({ fastMode: false })
+    expect(normalizeCursorModelOptions({ cursor: { fastMode: true } })).toEqual({ fastMode: true })
+
+    expect(cursorModelIdForOptions("composer-2.5", { fastMode: false })).toBe("composer-2.5")
+    expect(cursorModelIdForOptions("composer-2.5", { fastMode: true })).toBe("composer-2.5-fast")
+    // Idempotent if the base id already carries the suffix.
+    expect(cursorModelIdForOptions("composer-2.5-fast", { fastMode: true })).toBe("composer-2.5-fast")
+  })
+
+  test("resolves the Cursor default model through the server catalog", () => {
+    // Exercises the catalog lookup + default fallback (throws if "cursor" is unregistered).
+    expect(normalizeServerModel("cursor")).toBe("composer-2.5")
+    expect(normalizeServerModel("cursor", "composer-2.5-fast")).toBe("composer-2.5")
   })
 
   test("normalizes server model ids through the shared alias catalog", () => {
-    expect(normalizeServerModel("codex")).toBe("gpt-5.5")
+    expect(normalizeServerModel("codex")).toBe("gpt-5.6-sol")
     expect(normalizeServerModel("claude", "fable")).toBe("fable")
     expect(normalizeServerModel("claude", "opus")).toBe("claude-opus-4-8")
     expect(normalizeServerModel("codex", "gpt-5-codex")).toBe("gpt-5.3-codex")
+    expect(normalizeServerModel("codex", "gpt-5.6")).toBe("gpt-5.6-sol")
   })
 
   test("resolves Claude API model ids for 1m context window", () => {

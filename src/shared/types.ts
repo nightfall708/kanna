@@ -1,7 +1,7 @@
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
-export type AgentProvider = "claude" | "codex"
+export type AgentProvider = "claude" | "codex" | "cursor"
 export type LlmProviderKind = "openai" | "openrouter" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
@@ -137,6 +137,9 @@ export interface ProviderModelOption {
   label: string
   supportsEffort: boolean
   aliases?: readonly string[]
+  supportedReasoningEfforts?: readonly CodexReasoningEffortOption[]
+  defaultReasoningEffort?: CodexReasoningEffort
+  supportsFastMode?: boolean
   contextWindowOptions?: readonly ProviderContextWindowOption[]
   supportsMaxReasoningEffort?: boolean
 }
@@ -144,6 +147,13 @@ export interface ProviderModelOption {
 export interface ProviderEffortOption {
   id: string
   label: string
+  description?: string
+}
+
+export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra"
+
+export interface CodexReasoningEffortOption extends ProviderEffortOption {
+  id: CodexReasoningEffort
 }
 
 export interface ProviderContextWindowOption {
@@ -159,15 +169,19 @@ export const CLAUDE_REASONING_OPTIONS = [
 ] as const satisfies readonly ProviderEffortOption[]
 
 export const CODEX_REASONING_OPTIONS = [
-  { id: "minimal", label: "Minimal" },
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
-  { id: "xhigh", label: "XHigh" },
-] as const satisfies readonly ProviderEffortOption[]
+  { id: "xhigh", label: "Extra High" },
+  { id: "max", label: "Max" },
+  {
+    id: "ultra",
+    label: "Ultra",
+    description: "Uses subagents to delegate parts of complex tasks",
+  },
+] as const satisfies readonly CodexReasoningEffortOption[]
 
 export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_OPTIONS)[number]["id"]
-export type CodexReasoningEffort = (typeof CODEX_REASONING_OPTIONS)[number]["id"]
 export type ClaudeContextWindow = "200k" | "1m"
 export type ServiceTier = "fast"
 
@@ -181,9 +195,14 @@ export interface CodexModelOptions {
   fastMode: boolean
 }
 
+export interface CursorModelOptions {
+  fastMode: boolean
+}
+
 export interface ProviderModelOptionsByProvider {
   claude: ClaudeModelOptions
   codex: CodexModelOptions
+  cursor: CursorModelOptions
 }
 
 export interface ProviderPreference<TModelOptions> {
@@ -195,6 +214,7 @@ export interface ProviderPreference<TModelOptions> {
 export type ChatProviderPreferences = {
   claude: ProviderPreference<ClaudeModelOptions>
   codex: ProviderPreference<CodexModelOptions>
+  cursor: ProviderPreference<CursorModelOptions>
 }
 
 export type ModelOptions = Partial<{
@@ -207,17 +227,29 @@ export const DEFAULT_CLAUDE_MODEL_OPTIONS = {
 } as const satisfies ClaudeModelOptions
 
 export const DEFAULT_CODEX_MODEL_OPTIONS = {
-  reasoningEffort: "high",
+  reasoningEffort: "medium",
   fastMode: false,
 } as const satisfies CodexModelOptions
+
+export const DEFAULT_CURSOR_MODEL_OPTIONS = {
+  fastMode: false,
+} as const satisfies CursorModelOptions
 
 export function isClaudeReasoningEffort(value: unknown): value is ClaudeReasoningEffort {
   return CLAUDE_REASONING_OPTIONS.some((option) => option.id === value)
 }
 
 export function isCodexReasoningEffort(value: unknown): value is CodexReasoningEffort {
-  return CODEX_REASONING_OPTIONS.some((option) => option.id === value)
+  return value === "minimal" || CODEX_REASONING_OPTIONS.some((option) => option.id === value)
 }
+
+const LEGACY_CODEX_REASONING_OPTIONS = [
+  { id: "minimal", label: "Minimal" },
+  ...CODEX_REASONING_OPTIONS.filter((option) => option.id !== "max" && option.id !== "ultra"),
+] as const satisfies readonly ProviderEffortOption[]
+
+const GPT_5_6_REASONING_OPTIONS = [...CODEX_REASONING_OPTIONS]
+const GPT_5_6_LUNA_REASONING_OPTIONS = CODEX_REASONING_OPTIONS.filter((option) => option.id !== "ultra")
 
 export const CLAUDE_CONTEXT_WINDOW_OPTIONS = [
   { id: "200k", label: "200k" },
@@ -288,13 +320,78 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
   {
     id: "codex",
     label: "Codex",
-    defaultModel: "gpt-5.5",
+    defaultModel: "gpt-5.6-sol",
+    defaultEffort: "medium",
     supportsPlanMode: true,
     models: [
-      { id: "gpt-5.5", label: "GPT-5.5", supportsEffort: false },
-      { id: "gpt-5.4", label: "GPT-5.4", supportsEffort: false },
-      { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", supportsEffort: false, aliases: ["gpt-5-codex"] },
-      { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", supportsEffort: false },
+      {
+        id: "gpt-5.6-sol",
+        label: "GPT-5.6 Sol",
+        supportsEffort: true,
+        aliases: ["gpt-5.6"],
+        supportedReasoningEfforts: GPT_5_6_REASONING_OPTIONS,
+        defaultReasoningEffort: "medium",
+        supportsFastMode: true,
+      },
+      {
+        id: "gpt-5.6-terra",
+        label: "GPT-5.6 Terra",
+        supportsEffort: true,
+        supportedReasoningEfforts: GPT_5_6_REASONING_OPTIONS,
+        defaultReasoningEffort: "medium",
+        supportsFastMode: true,
+      },
+      {
+        id: "gpt-5.6-luna",
+        label: "GPT-5.6 Luna",
+        supportsEffort: true,
+        supportedReasoningEfforts: GPT_5_6_LUNA_REASONING_OPTIONS,
+        defaultReasoningEffort: "medium",
+        supportsFastMode: true,
+      },
+      {
+        id: "gpt-5.5",
+        label: "GPT-5.5",
+        supportsEffort: true,
+        supportedReasoningEfforts: LEGACY_CODEX_REASONING_OPTIONS,
+        defaultReasoningEffort: "medium",
+        supportsFastMode: true,
+      },
+      {
+        id: "gpt-5.4",
+        label: "GPT-5.4",
+        supportsEffort: true,
+        supportedReasoningEfforts: LEGACY_CODEX_REASONING_OPTIONS,
+        defaultReasoningEffort: "medium",
+        supportsFastMode: true,
+      },
+      {
+        id: "gpt-5.3-codex",
+        label: "GPT-5.3 Codex",
+        supportsEffort: true,
+        aliases: ["gpt-5-codex"],
+        supportedReasoningEfforts: LEGACY_CODEX_REASONING_OPTIONS,
+        defaultReasoningEffort: "high",
+        supportsFastMode: true,
+      },
+      {
+        id: "gpt-5.3-codex-spark",
+        label: "GPT-5.3 Codex Spark",
+        supportsEffort: true,
+        supportedReasoningEfforts: LEGACY_CODEX_REASONING_OPTIONS,
+        defaultReasoningEffort: "high",
+        supportsFastMode: false,
+      },
+    ],
+    efforts: [...CODEX_REASONING_OPTIONS],
+  },
+  {
+    id: "cursor",
+    label: "Cursor",
+    defaultModel: "composer-2.5",
+    supportsPlanMode: false,
+    models: [
+      { id: "composer-2.5", label: "Composer 2.5", supportsEffort: false },
     ],
     efforts: [],
   },
@@ -330,8 +427,12 @@ export function normalizeClaudeModelId(modelId?: string, fallbackModelId = "clau
   return normalizeProviderModelId("claude", modelId, fallbackModelId)
 }
 
-export function normalizeCodexModelId(modelId?: string, fallbackModelId = "gpt-5.5"): string {
+export function normalizeCodexModelId(modelId?: string, fallbackModelId = "gpt-5.6-sol"): string {
   return normalizeProviderModelId("codex", modelId, fallbackModelId)
+}
+
+export function normalizeCursorModelId(modelId?: string, fallbackModelId = "composer-2.5"): string {
+  return normalizeProviderModelId("cursor", modelId, fallbackModelId)
 }
 
 export function getProviderModelOption(provider: AgentProvider, modelId: string): ProviderModelOption | undefined {
@@ -341,6 +442,35 @@ export function getProviderModelOption(provider: AgentProvider, modelId: string)
 
 export function getClaudeModelOption(modelId: string): ProviderModelOption | undefined {
   return getProviderModelOption("claude", modelId)
+}
+
+export function getCodexModelOption(modelId: string): ProviderModelOption | undefined {
+  return getProviderModelOption("codex", modelId)
+}
+
+export function getCodexReasoningOptions(modelId: string): readonly CodexReasoningEffortOption[] {
+  return getCodexModelOption(modelId)?.supportedReasoningEfforts ?? CODEX_REASONING_OPTIONS
+}
+
+export function normalizeCodexReasoningEffort(
+  modelId: string,
+  effort?: unknown,
+): CodexReasoningEffort {
+  const normalizedModel = normalizeCodexModelId(modelId)
+  const model = getCodexModelOption(normalizedModel)
+  const supported = model?.supportedReasoningEfforts ?? CODEX_REASONING_OPTIONS
+
+  if (effort === "minimal" && normalizedModel.startsWith("gpt-5.6-")) {
+    return "low"
+  }
+  if (effort === "ultra" && normalizedModel === "gpt-5.6-luna") {
+    return "max"
+  }
+  if (isCodexReasoningEffort(effort) && supported.some((option) => option.id === effort)) {
+    return effort
+  }
+
+  return model?.defaultReasoningEffort ?? DEFAULT_CODEX_MODEL_OPTIONS.reasoningEffort
 }
 
 export function supportsClaudeMaxReasoningEffort(modelId: string): boolean {
@@ -467,8 +597,13 @@ export interface AppSettingsPatch {
   editor?: Partial<AppSettingsSnapshot["editor"]>
   defaultProvider?: DefaultProviderPreference
   providerDefaults?: {
-    claude?: Partial<ProviderPreference<ClaudeModelOptions>>
-    codex?: Partial<ProviderPreference<CodexModelOptions>>
+    claude?: Partial<Omit<ProviderPreference<ClaudeModelOptions>, "modelOptions">> & {
+      modelOptions?: Partial<ClaudeModelOptions>
+    }
+    codex?: Partial<Omit<ProviderPreference<CodexModelOptions>, "modelOptions">> & {
+      modelOptions?: Partial<CodexModelOptions>
+    }
+    cursor?: Partial<ProviderPreference<CursorModelOptions>>
   }
   transcriptAutoScroll?: boolean
 }
