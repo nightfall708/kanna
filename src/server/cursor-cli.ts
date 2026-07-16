@@ -272,6 +272,16 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
   }
 }
 
+/**
+ * The Cursor CLI's auth error says to run 'agent login', but the binary may be
+ * installed as either `cursor-agent` or `agent` depending on version/setup
+ * (and `agent` can even resolve to an unrelated CLI). Mention both spellings
+ * so the instruction works regardless of how the user installed it.
+ */
+export function clarifyCursorAuthError(detail: string): string {
+  return detail.replace(/'(?:cursor-)?agent login'/, "'cursor-agent login' (or 'agent login')")
+}
+
 export class CursorCliManager {
   private readonly spawnProcess: SpawnCursorAgent
 
@@ -310,7 +320,7 @@ export class CursorCliManager {
       if (finished) return
       finished = true
       if (!sawResult) {
-        const detail = stderr.trim() || `cursor-agent exited with code ${code ?? "unknown"}`
+        const detail = clarifyCursorAuthError(stderr.trim()) || `cursor-agent exited with code ${code ?? "unknown"}`
         queue.push({
           type: "transcript",
           entry: timestamped({

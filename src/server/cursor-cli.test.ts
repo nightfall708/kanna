@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { PassThrough } from "node:stream"
-import { CursorCliManager, normalizeCursorUsage, parseCursorLine, type CursorChildProcess } from "./cursor-cli"
+import { clarifyCursorAuthError, CursorCliManager, normalizeCursorUsage, parseCursorLine, type CursorChildProcess } from "./cursor-cli"
 import type { HarnessEvent } from "./harness-types"
 
 function transcriptEntries(events: HarnessEvent[]) {
@@ -215,5 +215,27 @@ describe("CursorCliManager.startTurn", () => {
       entry: { kind: "result", isError: true, subtype: "error", result: expect.stringContaining("Cannot use this model") },
     })
     expect((await iter.next()).done).toBe(true)
+  })
+})
+
+describe("clarifyCursorAuthError", () => {
+  test("mentions both binary names for the CLI's 'agent login' auth error", () => {
+    expect(
+      clarifyCursorAuthError(
+        "Error: Authentication required. Please run 'agent login' first, or set CURSOR_API_KEY environment variable.",
+      ),
+    ).toBe(
+      "Error: Authentication required. Please run 'cursor-agent login' (or 'agent login') first, or set CURSOR_API_KEY environment variable.",
+    )
+  })
+
+  test("handles older CLIs that already say 'cursor-agent login'", () => {
+    expect(clarifyCursorAuthError("Please run 'cursor-agent login' first")).toBe(
+      "Please run 'cursor-agent login' (or 'agent login') first",
+    )
+  })
+
+  test("leaves unrelated stderr untouched", () => {
+    expect(clarifyCursorAuthError("Cannot use this model: bad-model")).toBe("Cannot use this model: bad-model")
   })
 })
