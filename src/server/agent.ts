@@ -51,6 +51,14 @@ const CLAUDE_TOOLSET = [
   "Write",
   "TodoWrite",
   "KillShell",
+  "Workflow",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "ScheduleWakeup",
+  "RemoteTrigger",
+  "Monitor",
+  "PushNotification",
   "AskUserQuestion",
   "EnterPlanMode",
   "ExitPlanMode",
@@ -105,6 +113,13 @@ interface ClaudeSessionState {
   accountInfoLoaded: boolean
   nextPromptSeq: number
   pendingPromptSeqs: number[]
+  /**
+   * Set while a cancel is settling so in-flight stream entries (emitted
+   * between cancel() and the interrupt landing) don't re-register an
+   * active turn via resumeBackgroundTurn. Cleared on the next result or
+   * interrupted entry, and whenever a new prompt is sent.
+   */
+  suppressResume: boolean
 }
 
 interface AgentCoordinatorArgs {
@@ -620,6 +635,7 @@ async function startClaudeSession(args: {
       canUseTool,
       tools: [...CLAUDE_TOOLSET],
       settingSources: ["user", "project", "local"],
+      settings: { enableWorkflows: true },
       pathToClaudeCodeExecutable: process.env.CLAUDE_EXECUTABLE?.replace(/^~(?=\/|$)/, homedir()) || undefined,
       env: (() => { const { CLAUDECODE: _, ...env } = process.env; return env })(),
     },
@@ -1066,6 +1082,7 @@ export class AgentCoordinator {
       if (!session) {
         throw new Error("Claude session was not initialized")
       }
+      session.suppressResume = false
       const promptSeq = session.nextPromptSeq + 1
       session.nextPromptSeq = promptSeq
       session.pendingPromptSeqs.push(promptSeq)
@@ -1129,6 +1146,7 @@ export class AgentCoordinator {
         accountInfoLoaded: false,
         nextPromptSeq: 0,
         pendingPromptSeqs: [],
+        suppressResume: false,
       }
       this.claudeSessions.set(args.chatId, session)
       void this.runClaudeSession(session)
@@ -1282,6 +1300,41 @@ export class AgentCoordinator {
     return { chatId: forked.id }
   }
 
+  /**
+   * Re-registers an active turn for a Claude session that produced new
+   * activity after its previous turn finished (e.g. a Monitor or Cron
+   * wakeup continued the session). The resumed turn has no prompt seq, so
+   * the next result entry (pendingPromptSeqs empty → null === null) closes
+   * it through the normal completion path in runClaudeSession.
+   */
+  private async resumeBackgroundTurn(session: ClaudeSessionState) {
+    const active: ActiveTurn = {
+      chatId: session.chatId,
+      provider: "claude",
+      turn: {
+        provider: "claude",
+        stream: {
+          async *[Symbol.asyncIterator]() {},
+        },
+        getAccountInfo: session.session.getAccountInfo,
+        interrupt: session.session.interrupt,
+        close: () => {},
+      },
+      model: session.model,
+      effort: session.effort,
+      planMode: session.planMode,
+      status: "running",
+      pendingTool: null,
+      postToolFollowUp: null,
+      hasFinalResult: false,
+      cancelRequested: false,
+      cancelRecorded: false,
+    }
+    this.activeTurns.set(session.chatId, active)
+    await this.store.recordTurnStarted(session.chatId)
+    this.emitStateChange(session.chatId)
+  }
+
   private async runClaudeSession(session: ClaudeSessionState) {
     try {
       for await (const event of session.session.stream) {
@@ -1294,6 +1347,26 @@ export class AgentCoordinator {
 
         if (!event.entry) continue
         await this.store.appendMessage(session.chatId, event.entry)
+
+        // Background wakeups (Monitor, Cron*, ScheduleWakeup, RemoteTrigger)
+        // emit new activity after the previous turn completed. Re-register an
+        // active turn so the chat reads as in-progress instead of idle.
+        if (
+          !this.activeTurns.has(session.chatId)
+          && !session.suppressResume
+          && (
+            event.entry.kind === "assistant_text"
+            || event.entry.kind === "tool_call"
+            || event.entry.kind === "tool_result"
+          )
+        ) {
+          await this.resumeBackgroundTurn(session)
+        }
+
+        if (event.entry.kind === "result" || event.entry.kind === "interrupted") {
+          session.suppressResume = false
+        }
+
         const active = this.activeTurns.get(session.chatId)
         if (event.entry.kind === "system_init" && active) {
           active.status = "running"
@@ -1541,6 +1614,13 @@ export class AgentCoordinator {
     // Guard against concurrent cancel() calls — only the first one does work.
     if (active.cancelRequested) return
     active.cancelRequested = true
+
+    // Keep in-flight stream entries (emitted before the interrupt lands)
+    // from re-registering an active turn via resumeBackgroundTurn.
+    if (active.provider === "claude") {
+      const session = this.claudeSessions.get(chatId)
+      if (session) session.suppressResume = true
+    }
 
     const pendingTool = active.pendingTool
     active.pendingTool = null
