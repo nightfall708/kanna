@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
-import { ArrowUp, Check, File, Folder, GitBranch, Home, Loader2 } from "lucide-react"
+import { ArrowLeft, Check, File, Folder, GitBranch, Loader2 } from "lucide-react"
 import { DEFAULT_NEW_PROJECT_ROOT } from "../../shared/branding"
 import { parseGitRepoUrl, toCloneUrl } from "../../shared/git-url"
 import type { FsDirEntry, FsListResult } from "../../shared/types"
@@ -98,24 +98,36 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
   const [dirError, setDirError] = useState<string | null>(null)
   const [filter, setFilter] = useState("")
   const [highlight, setHighlight] = useState(0)
+  const [history, setHistory] = useState<string[]>([])
   const filterInputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const dirCacheRef = useRef(new Map<string, FsListResult>())
   const requestSeqRef = useRef(0)
+  const currentPathRef = useRef<string | null>(null)
 
   const isBusy = cloneStatus === "cloning" || cloneStatus === "success"
 
-  const navigate = useCallback(async (target?: string) => {
+  const navigate = useCallback(async (target?: string, fromBack = false) => {
     const seq = ++requestSeqRef.current
     setDirError(null)
     setFilter("")
     setHighlight(0)
     // Keep the finder keyboard-driven even after mouse navigation
     filterInputRef.current?.focus()
+
+    const arriveAt = (result: FsListResult) => {
+      const previous = currentPathRef.current
+      if (!fromBack && previous && previous !== result.path) {
+        setHistory((stack) => [...stack, previous])
+      }
+      currentPathRef.current = result.path
+      lastBrowsedPath = result.path
+      setDir(result)
+    }
+
     const cached = target !== undefined ? dirCacheRef.current.get(target) : undefined
     if (cached) {
-      lastBrowsedPath = cached.path
-      setDir(cached)
+      arriveAt(cached)
       return
     }
     setDirLoading(true)
@@ -123,8 +135,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
       const result = await listDirectory(target)
       dirCacheRef.current.set(result.path, result)
       if (seq !== requestSeqRef.current) return
-      lastBrowsedPath = result.path
-      setDir(result)
+      arriveAt(result)
     } catch (error) {
       if (seq !== requestSeqRef.current) return
       setDirError(error instanceof Error ? error.message : String(error))
@@ -132,6 +143,13 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
       if (seq === requestSeqRef.current) setDirLoading(false)
     }
   }, [listDirectory])
+
+  const goBack = useCallback(() => {
+    const previous = history[history.length - 1]
+    if (previous === undefined) return
+    setHistory(history.slice(0, -1))
+    void navigate(previous, true)
+  }, [history, navigate])
 
   useEffect(() => {
     if (open) {
@@ -143,7 +161,9 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
       setDirError(null)
       setFilter("")
       setHighlight(0)
+      setHistory([])
       dirCacheRef.current.clear()
+      currentPathRef.current = null
       setTimeout(() => inputRef.current?.focus(), 0)
     }
   }, [open])
@@ -254,9 +274,9 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
       }
       return
     }
-    if (e.key === "Backspace" && filter === "" && dir?.parentPath) {
+    if (e.key === "Backspace" && filter === "" && history.length > 0) {
       e.preventDefault()
-      void navigate(dir.parentPath)
+      goBack()
       return
     }
     if (e.key === "ArrowDown") {
@@ -268,7 +288,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
       e.preventDefault()
       setHighlight(Math.max(0, clampedHighlight - 1))
     }
-  }, [onOpenChange, isCloneMode, inputMode, filter, dir, visibleDirCount, visibleEntries, clampedHighlight, handleSubmit, navigate])
+  }, [onOpenChange, isCloneMode, inputMode, filter, dir, visibleDirCount, visibleEntries, clampedHighlight, history.length, goBack, handleSubmit, navigate])
 
   const cloneIndicator = parsedGitUrl && (
     <div className="flex items-center gap-1.5 text-xs text-primary">
@@ -365,21 +385,11 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
                     variant="ghost"
                     size="icon"
                     className="h-6 w-6 text-muted-foreground hover:text-foreground"
-                    disabled={!dir?.parentPath || dirLoading}
-                    onClick={() => { if (dir?.parentPath) void navigate(dir.parentPath) }}
-                    aria-label="Parent folder"
+                    disabled={history.length === 0 || dirLoading}
+                    onClick={goBack}
+                    aria-label="Back"
                   >
-                    <ArrowUp className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 text-muted-foreground hover:text-foreground"
-                    disabled={dirLoading || !dir || dir.path === dir.homePath}
-                    onClick={() => { if (dir) void navigate(dir.homePath) }}
-                    aria-label="Home folder"
-                  >
-                    <Home className="h-3.5 w-3.5" />
+                    <ArrowLeft className="h-3.5 w-3.5" />
                   </Button>
                   <span className="flex-1 min-w-0 truncate px-1 font-mono text-xs text-muted-foreground" title={dir?.path}>
                     {dir ? abbreviateHomePath(dir.path, dir.homePath) : " "}
