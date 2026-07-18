@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises"
-import os from "node:os"
-import path from "node:path"
 import type { ServerWebSocket } from "bun"
 import { PROTOCOL_VERSION } from "../shared/types"
 import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
@@ -18,25 +15,17 @@ import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
 import { cloneRepository, createDirectory, ensureProjectDirectory, listDirectory, resolveClonePath, resolveLocalPath } from "./paths"
 import { applyPiFaveModels } from "./provider-catalog"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
+import { installSkill, listInstalledSkills, searchSkills, uninstallSkill } from "./skills"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 import type {
-  AppSettingsPatch,
-  AppSettingsSnapshot,
-  InstalledSkillsSnapshot,
   LlmProviderSnapshot,
   LlmProviderValidationResult,
-  SkillInstallResult,
-  SkillSearchSnapshot,
-  SkillUninstallResult,
 } from "../shared/types"
 
 const DEFAULT_CHAT_RECENT_LIMIT = 200
-const SKILL_AGENT_ALIASES = ["universal", "claude-code"] as const
-
-
 
 
 export interface ClientState {
@@ -47,13 +36,13 @@ export interface ClientState {
 
 interface CreateWsRouterArgs {
   store: EventStore
-  diffStore?: Pick<DiffStore, "getProjectSnapshot" | "getSnapshotVersion" | "refreshSnapshot" | "initializeGit" | "getGitHubPublishInfo" | "checkGitHubRepoAvailability" | "publishToGitHub" | "listBranches" | "previewMergeBranch" | "mergeBranch" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile" | "readPatch">
+  diffStore: Pick<DiffStore, "getProjectSnapshot" | "getSnapshotVersion" | "refreshSnapshot" | "initializeGit" | "getGitHubPublishInfo" | "checkGitHubRepoAvailability" | "publishToGitHub" | "listBranches" | "previewMergeBranch" | "mergeBranch" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile" | "readPatch">
   agent: AgentCoordinator
   terminals: TerminalManager
   keybindings: KeybindingsManager
-  appSettings?: Pick<AppSettingsManager, "getSnapshot" | "write"> & Partial<Pick<AppSettingsManager, "writePatch" | "onChange">>
+  appSettings: Pick<AppSettingsManager, "getSnapshot" | "write" | "writePatch" | "onChange">
   analytics?: AnalyticsReporter
-  llmProvider?: {
+  llmProvider: {
     read: () => Promise<LlmProviderSnapshot>
     write: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl"> & Partial<Pick<LlmProviderSnapshot, "faveModels">>) => Promise<LlmProviderSnapshot>
     validate: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
@@ -84,12 +73,6 @@ interface SnapshotComputationCache {
   chat?: Map<string, string>
 }
 
-function getSidebarProjectOrder(store: EventStore) {
-  return typeof store.getSidebarProjectOrder === "function"
-    ? store.getSidebarProjectOrder()
-    : []
-}
-
 function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
   const payload = JSON.stringify(message)
   ws.send(payload)
@@ -102,207 +85,6 @@ function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
  */
 function sendSerializedSnapshot(ws: ServerWebSocket<ClientState>, id: string, snapshotJson: string) {
   ws.send(`{"v":${PROTOCOL_VERSION},"type":"snapshot","id":${JSON.stringify(id)},"snapshot":${snapshotJson}}`)
-}
-
-export function assertSafeSkillSource(source: string) {
-  const normalized = source.trim()
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalized)) {
-    throw new Error("Skill source must be an owner/repo pair.")
-  }
-  return normalized
-}
-
-export function assertSafeSkillId(skillId: string) {
-  const normalized = skillId.trim()
-  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(normalized)) {
-    throw new Error("Skill id is invalid.")
-  }
-  return normalized
-}
-
-export function getGlobalSkillLockPath() {
-  const xdgStateHome = process.env.XDG_STATE_HOME?.trim()
-  if (xdgStateHome) {
-    return path.join(xdgStateHome, "skills", ".skill-lock.json")
-  }
-  return path.join(os.homedir(), ".agents", ".skill-lock.json")
-}
-
-function asString(value: unknown) {
-  return typeof value === "string" ? value : ""
-}
-
-export function parseInstalledSkillsLock(parsed: unknown, lockFilePath: string): InstalledSkillsSnapshot {
-  const skillsRecord = parsed
-    && typeof parsed === "object"
-    && "skills" in parsed
-    && parsed.skills
-    && typeof parsed.skills === "object"
-    && !Array.isArray(parsed.skills)
-      ? parsed.skills as Record<string, unknown>
-      : {}
-
-  const skills = Object.entries(skillsRecord)
-    .filter(([, entry]) => entry && typeof entry === "object" && !Array.isArray(entry))
-    .map(([name, entry]) => {
-      const record = entry as Record<string, unknown>
-      return {
-        name,
-        source: asString(record.source),
-        sourceType: asString(record.sourceType),
-        sourceUrl: asString(record.sourceUrl),
-        skillPath: asString(record.skillPath) || undefined,
-        installedAt: asString(record.installedAt),
-        updatedAt: asString(record.updatedAt),
-        pluginName: asString(record.pluginName) || undefined,
-      }
-    })
-    .sort((a, b) => a.name.localeCompare(b.name))
-
-  return {
-    lockFilePath,
-    skills,
-  }
-}
-
-export async function listInstalledSkills(lockFilePath = getGlobalSkillLockPath()): Promise<InstalledSkillsSnapshot> {
-  try {
-    return parseInstalledSkillsLock(JSON.parse(await readFile(lockFilePath, "utf8")), lockFilePath)
-  } catch {
-    return {
-      lockFilePath,
-      skills: [],
-    }
-  }
-}
-
-export async function searchSkills(query: string, limit = 100): Promise<SkillSearchSnapshot> {
-  const normalizedQuery = query.trim()
-  if (normalizedQuery.length < 2) {
-    return {
-      query: normalizedQuery,
-      searchType: "fuzzy",
-      skills: [],
-      count: 0,
-      duration_ms: 0,
-    }
-  }
-
-  const normalizedLimit = Math.max(1, Math.min(100, Math.trunc(limit)))
-  const url = new URL("https://skills.sh/api/search")
-  url.searchParams.set("q", normalizedQuery)
-  url.searchParams.set("limit", String(normalizedLimit))
-
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(10_000),
-  })
-  if (!response.ok) {
-    throw new Error(`Skills search failed with status ${response.status}.`)
-  }
-
-  const payload = await response.json() as Partial<SkillSearchSnapshot>
-  return {
-    query: typeof payload.query === "string" ? payload.query : normalizedQuery,
-    searchType: typeof payload.searchType === "string" ? payload.searchType : "fuzzy",
-    skills: Array.isArray(payload.skills)
-      ? payload.skills
-        .filter((skill) => (
-          skill
-          && typeof skill === "object"
-          && typeof skill.id === "string"
-          && typeof skill.skillId === "string"
-          && typeof skill.name === "string"
-          && typeof skill.source === "string"
-        ))
-        .map((skill) => ({
-          id: skill.id,
-          skillId: skill.skillId,
-          name: skill.name,
-          installs: typeof skill.installs === "number" ? skill.installs : 0,
-          source: skill.source,
-        }))
-      : [],
-    count: typeof payload.count === "number" ? payload.count : 0,
-    duration_ms: typeof payload.duration_ms === "number" ? payload.duration_ms : 0,
-  }
-}
-
-export function buildInstallSkillCommand(source: string, skillId: string) {
-  return [
-    process.platform === "win32" ? "npx.cmd" : "npx",
-    "skills",
-    "add",
-    assertSafeSkillSource(source),
-    "--skill",
-    assertSafeSkillId(skillId),
-    "--global",
-    "--agent",
-    ...SKILL_AGENT_ALIASES,
-    "--yes",
-  ]
-}
-
-export function buildUninstallSkillCommand(skillId: string) {
-  return [
-    process.platform === "win32" ? "npx.cmd" : "npx",
-    "skills",
-    "remove",
-    assertSafeSkillId(skillId),
-    "--global",
-    "--agent",
-    ...SKILL_AGENT_ALIASES,
-    "--yes",
-  ]
-}
-
-async function runSkillCommand(command: string[]) {
-  const cwd = os.homedir()
-  const subprocess = Bun.spawn(command, {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: {
-      ...process.env,
-      DISABLE_TELEMETRY: process.env.DISABLE_TELEMETRY ?? "1",
-    },
-  })
-
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(subprocess.stdout).text(),
-    new Response(subprocess.stderr).text(),
-    subprocess.exited,
-  ])
-
-  if (exitCode !== 0) {
-    throw new Error(stderr.trim() || stdout.trim() || `skills CLI exited with code ${exitCode}.`)
-  }
-
-  return { cwd, stdout, stderr }
-}
-
-export async function installSkill(source: string, skillId: string): Promise<SkillInstallResult> {
-  const command = buildInstallSkillCommand(source, skillId)
-  const { cwd, stdout, stderr } = await runSkillCommand(command)
-  return {
-    source: command[3],
-    skillId: command[5],
-    command,
-    cwd,
-    stdout,
-    stderr,
-  }
-}
-
-export async function uninstallSkill(skillId: string): Promise<SkillUninstallResult> {
-  const command = buildUninstallSkillCommand(skillId)
-  const { cwd, stdout, stderr } = await runSkillCommand(command)
-  return {
-    skillId: command[3],
-    command,
-    cwd,
-    stdout,
-    stderr,
-  }
 }
 
 function ensureSnapshotSignatures(ws: ServerWebSocket<ClientState>) {
@@ -331,182 +113,6 @@ export function createWsRouter({
   let pendingBroadcastTimer: ReturnType<typeof setTimeout> | null = null
   let pendingBroadcastAll = false
   const pendingBroadcastChatIds = new Set<string>()
-  const resolvedDiffStore = diffStore ?? {
-    getProjectSnapshot: () => ({ status: "unknown", branchName: undefined, defaultBranchName: undefined, hasOriginRemote: undefined, originRepoSlug: undefined, hasUpstream: undefined, aheadCount: undefined, behindCount: undefined, lastFetchedAt: undefined, files: [] as const, branchHistory: { entries: [] as const } }),
-    getSnapshotVersion: () => 0,
-    refreshSnapshot: async () => false,
-    initializeGit: async () => ({ ok: true, branchName: undefined, snapshotChanged: false }),
-    getGitHubPublishInfo: async () => ({ ghInstalled: false, authenticated: false, activeAccountLogin: undefined, owners: [], suggestedRepoName: "my-repo" }),
-    checkGitHubRepoAvailability: async () => ({ available: false, message: "Unavailable" }),
-    publishToGitHub: async () => ({ ok: false, title: "Publish failed", message: "Unavailable", snapshotChanged: false }),
-    listBranches: async () => ({ recent: [], local: [], remote: [], pullRequests: [], pullRequestsStatus: "unavailable" as const }),
-    previewMergeBranch: async () => ({ currentBranchName: undefined, targetBranchName: "", targetDisplayName: "", status: "error" as const, commitCount: 0, hasConflicts: false, message: "Merge preview unavailable." }),
-    mergeBranch: async () => ({ ok: false as const, title: "Merge failed", message: "Merge unavailable.", snapshotChanged: false }),
-    syncBranch: async () => ({ ok: true, action: "fetch" as const, branchName: undefined, snapshotChanged: false }),
-    checkoutBranch: async () => ({ ok: true, branchName: undefined, snapshotChanged: false }),
-    createBranch: async () => ({ ok: true, branchName: "main", snapshotChanged: false }),
-    generateCommitMessage: async () => ({ subject: "Update selected files", body: "", usedFallback: true, failureMessage: null }),
-    commitFiles: async () => ({ ok: true, mode: "commit_only" as const, branchName: undefined, pushed: false, snapshotChanged: false }),
-    discardFile: async () => ({ snapshotChanged: false }),
-    ignoreFile: async () => ({ snapshotChanged: false }),
-    readPatch: async () => ({ patch: "" }),
-  }
-  const resolvedLlmProvider = llmProvider ?? {
-    read: async () => ({
-      provider: "openai" as const,
-      apiKey: "",
-      model: "gpt-5.4-mini",
-      baseUrl: "",
-      resolvedBaseUrl: "https://api.openai.com/v1",
-      faveModels: [],
-      enabled: false,
-      warning: null,
-      filePathDisplay: "~/.kanna/llm-provider.json",
-    }),
-    write: async ({ provider, apiKey, model, baseUrl, faveModels }: {
-      provider: "openai" | "openrouter" | "custom"
-      apiKey: string
-      model: string
-      baseUrl: string
-      faveModels?: LlmProviderSnapshot["faveModels"]
-    }) => ({
-      provider,
-      apiKey,
-      model,
-      baseUrl,
-      resolvedBaseUrl: provider === "openrouter"
-        ? "https://openrouter.ai/api/v1"
-        : provider === "custom"
-          ? baseUrl
-          : "https://api.openai.com/v1",
-      faveModels: faveModels ?? [],
-      enabled: false,
-      warning: null,
-      filePathDisplay: "~/.kanna/llm-provider.json",
-    }),
-    validate: async () => ({
-      ok: false,
-      error: {
-        type: "config_error",
-        message: "Model Registry validation unavailable.",
-      },
-    }),
-  }
-  let fallbackAppSettingsSnapshot: AppSettingsSnapshot = {
-    analyticsEnabled: true,
-    browserSettingsMigrated: false,
-    theme: "system",
-    chatSoundPreference: "always",
-    chatSoundId: "funk",
-    terminal: {
-      scrollbackLines: 1_000,
-      minColumnWidth: 450,
-    },
-    editor: {
-      preset: "cursor",
-      commandTemplate: "cursor {path}",
-    },
-    defaultProvider: "last_used",
-    providerDefaults: {
-      claude: {
-        model: "claude-opus-4-8",
-        modelOptions: {
-          reasoningEffort: "high",
-          contextWindow: "1m",
-          fastMode: false,
-        },
-        planMode: false,
-      },
-      codex: {
-        model: "gpt-5.6-sol",
-        modelOptions: {
-          reasoningEffort: "medium",
-          fastMode: false,
-        },
-        planMode: false,
-      },
-      cursor: {
-        model: "composer-2.5",
-        modelOptions: {
-          fastMode: false,
-        },
-        planMode: false,
-      },
-      pi: {
-        model: "moonshotai/kimi-k2.6",
-        modelOptions: {
-          reasoningEffort: "medium",
-        },
-        planMode: false,
-      },
-    },
-    boardAutoReturn: false,
-    warning: null,
-    filePathDisplay: "~/.kanna/data/settings.json",
-  }
-  const mergeAppSettingsPatch = (snapshot: AppSettingsSnapshot, patch: AppSettingsPatch): AppSettingsSnapshot => ({
-    ...snapshot,
-    ...patch,
-    terminal: {
-      ...snapshot.terminal,
-      ...patch.terminal,
-    },
-    editor: {
-      ...snapshot.editor,
-      ...patch.editor,
-    },
-    providerDefaults: {
-      claude: {
-        ...snapshot.providerDefaults.claude,
-        ...patch.providerDefaults?.claude,
-        modelOptions: {
-          ...snapshot.providerDefaults.claude.modelOptions,
-          ...patch.providerDefaults?.claude?.modelOptions,
-        },
-      },
-      codex: {
-        ...snapshot.providerDefaults.codex,
-        ...patch.providerDefaults?.codex,
-        modelOptions: {
-          ...snapshot.providerDefaults.codex.modelOptions,
-          ...patch.providerDefaults?.codex?.modelOptions,
-        },
-      },
-      cursor: {
-        ...snapshot.providerDefaults.cursor,
-        ...patch.providerDefaults?.cursor,
-        modelOptions: {
-          ...snapshot.providerDefaults.cursor.modelOptions,
-          ...patch.providerDefaults?.cursor?.modelOptions,
-        },
-      },
-      pi: {
-        ...snapshot.providerDefaults.pi,
-        ...patch.providerDefaults?.pi,
-        modelOptions: {
-          ...snapshot.providerDefaults.pi.modelOptions,
-          ...patch.providerDefaults?.pi?.modelOptions,
-        },
-      },
-    },
-  })
-  const resolvedAppSettings = {
-    getSnapshot: () => appSettings?.getSnapshot() ?? fallbackAppSettingsSnapshot,
-    write: async (value: { analyticsEnabled: boolean }) => {
-      if (appSettings) return await appSettings.write(value)
-      fallbackAppSettingsSnapshot = { ...fallbackAppSettingsSnapshot, analyticsEnabled: value.analyticsEnabled }
-      return fallbackAppSettingsSnapshot
-    },
-    writePatch: async (patch: AppSettingsPatch) => {
-      if (appSettings?.writePatch) return await appSettings.writePatch(patch)
-      if (appSettings && patch.analyticsEnabled !== undefined && Object.keys(patch).length === 1) {
-        return await appSettings.write({ analyticsEnabled: patch.analyticsEnabled })
-      }
-      fallbackAppSettingsSnapshot = mergeAppSettingsPatch(appSettings?.getSnapshot() ?? fallbackAppSettingsSnapshot, patch)
-      return fallbackAppSettingsSnapshot
-    },
-    onChange: (listener: (snapshot: AppSettingsSnapshot) => void) => appSettings?.onChange?.(listener) ?? (() => {}),
-  }
   const resolvedAnalytics = analytics ?? NoopAnalyticsReporter
 
   function getProtectedChatIds() {
@@ -541,11 +147,10 @@ export function createWsRouter({
   async function maybePruneStaleEmptyChats(extraSockets?: Iterable<ServerWebSocket<ClientState>>) {
     const activeChatIds = getProtectedChatIds()
     const protectedDraftChatIds = getProtectedDraftChatIds(extraSockets)
-    const prunedChatIds = await store.pruneStaleEmptyChats?.({
+    return await store.pruneStaleEmptyChats({
       activeChatIds,
       protectedChatIds: protectedDraftChatIds,
     })
-    return prunedChatIds ?? []
   }
 
   function shouldIncludeTopic(topic: SubscriptionTopic, filter?: SnapshotBroadcastFilter) {
@@ -594,7 +199,7 @@ export function createWsRouter({
       if (pendingTool) pendingToolKinds.set(chatId, pendingTool.toolKind)
     }
     const data = deriveSidebarData(store.state, activeStatuses, {
-      sidebarProjectOrder: getSidebarProjectOrder(store),
+      sidebarProjectOrder: store.getSidebarProjectOrder(),
       drainingChatIds: agent.getDrainingChatIds(),
       pendingToolKinds,
     })
@@ -614,14 +219,9 @@ export function createWsRouter({
     return sidebar
   }
 
-  function getProjectGitSignature(projectId: string): string | null {
-    const getSnapshotVersion = (resolvedDiffStore as Partial<Pick<DiffStore, "getSnapshotVersion">>).getSnapshotVersion
-    if (typeof getSnapshotVersion !== "function") {
-      // Test doubles may omit getSnapshotVersion; fall back to the payload signature.
-      return null
-    }
+  function getProjectGitSignature(projectId: string): string {
     return store.getProject(projectId)
-      ? `project-git:${projectId}:v${getSnapshotVersion.call(resolvedDiffStore, projectId)}`
+      ? `project-git:${projectId}:v${diffStore.getSnapshotVersion(projectId)}`
       : `project-git:${projectId}:none`
   }
 
@@ -673,7 +273,7 @@ export function createWsRouter({
         id,
         snapshot: {
           type: "app-settings",
-          data: resolvedAppSettings.getSnapshot(),
+          data: appSettings.getSnapshot(),
         },
       }
     }
@@ -719,7 +319,7 @@ export function createWsRouter({
         snapshot: {
           type: "project-git",
           data: store.getProject(topic.projectId)
-            ? resolvedDiffStore.getProjectSnapshot(topic.projectId)
+            ? diffStore.getProjectSnapshot(topic.projectId)
             : null,
         },
       }
@@ -937,7 +537,7 @@ export function createWsRouter({
     }
   })
 
-  const disposeAppSettingsEvents = resolvedAppSettings.onChange(() => {
+  const disposeAppSettingsEvents = appSettings.onChange(() => {
     for (const ws of sockets) {
       const snapshotSignatures = ensureSnapshotSignatures(ws)
       for (const [id, topic] of ws.data.subscriptions.entries()) {
@@ -975,6 +575,30 @@ export function createWsRouter({
     const project = store.getProject(chat.projectId)
     if (!project) throw new Error("Project not found")
     return { chat, project }
+  }
+
+  /**
+   * Shared shape for the chat-scoped git commands: resolve the chat's project,
+   * run the diff-store operation, ack (with the result when one is produced),
+   * and fire-and-forget a full snapshot broadcast when the operation reports
+   * the git snapshot changed.
+   */
+  async function handleChatGitCommand(
+    ws: ServerWebSocket<ClientState>,
+    id: string,
+    chatId: string,
+    run: (project: ReturnType<typeof resolveChatProject>["project"]) => Promise<{ result?: unknown; changed?: boolean }>,
+  ) {
+    const { project } = resolveChatProject(chatId)
+    const { result, changed } = await run(project)
+    if (result === undefined) {
+      send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+    } else {
+      send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+    }
+    if (changed) {
+      void broadcastSnapshots()
+    }
   }
 
   async function handleCommand(ws: ServerWebSocket<ClientState>, message: Extract<ClientEnvelope, { type: "command" }>) {
@@ -1066,15 +690,15 @@ export function createWsRouter({
           return
         }
         case "settings.readAppSettings": {
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: resolvedAppSettings.getSnapshot() })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: appSettings.getSnapshot() })
           return
         }
         case "settings.writeAppSettings": {
-          const previousAnalyticsEnabled = resolvedAppSettings.getSnapshot().analyticsEnabled
+          const previousAnalyticsEnabled = appSettings.getSnapshot().analyticsEnabled
           if (previousAnalyticsEnabled && !command.analyticsEnabled) {
             resolvedAnalytics.track("analytics_disabled")
           }
-          const snapshot = await resolvedAppSettings.write({ analyticsEnabled: command.analyticsEnabled })
+          const snapshot = await appSettings.write({ analyticsEnabled: command.analyticsEnabled })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           if (!previousAnalyticsEnabled && command.analyticsEnabled) {
             resolvedAnalytics.track("analytics_enabled")
@@ -1082,8 +706,8 @@ export function createWsRouter({
           return
         }
         case "settings.writeAppSettingsPatch": {
-          const previousAnalyticsEnabled = resolvedAppSettings.getSnapshot().analyticsEnabled
-          const snapshot = await resolvedAppSettings.writePatch(command.patch)
+          const previousAnalyticsEnabled = appSettings.getSnapshot().analyticsEnabled
+          const snapshot = await appSettings.writePatch(command.patch)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           if (command.patch.analyticsEnabled !== undefined && previousAnalyticsEnabled && !snapshot.analyticsEnabled) {
             resolvedAnalytics.track("analytics_disabled")
@@ -1094,17 +718,17 @@ export function createWsRouter({
           return
         }
         case "settings.readLlmProvider": {
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: await resolvedLlmProvider.read() })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: await llmProvider.read() })
           return
         }
         case "settings.writeLlmProvider": {
-          const snapshot = await resolvedLlmProvider.write({
+          const snapshot = await llmProvider.write({
             provider: command.provider,
             apiKey: command.apiKey,
             model: command.model,
             baseUrl: command.baseUrl,
             // Writers that don't manage faves must not wipe the saved list.
-            faveModels: command.faveModels ?? (await resolvedLlmProvider.read()).faveModels,
+            faveModels: command.faveModels ?? (await llmProvider.read()).faveModels,
           })
           // Fave models feed the pi provider's model picker, which clients read
           // from chat snapshots — refresh them when the catalog changes.
@@ -1115,7 +739,7 @@ export function createWsRouter({
           return
         }
         case "settings.validateLlmProvider": {
-          const result = await resolvedLlmProvider.validate({
+          const result = await llmProvider.validate({
             provider: command.provider,
             apiKey: command.apiKey,
             model: command.model,
@@ -1192,7 +816,7 @@ export function createWsRouter({
           if (!project) {
             throw new Error("Project not found")
           }
-          const result = await resolvedDiffStore.readPatch({
+          const result = await diffStore.readPatch({
             projectPath: project.localPath,
             path: command.path,
           })
@@ -1272,36 +896,32 @@ export function createWsRouter({
           return
         }
         case "chat.refreshDiffs": {
-          const { project } = resolveChatProject(command.chatId)
-          const changed = await resolvedDiffStore.refreshSnapshot(project.id, project.localPath)
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          if (changed) {
-            void broadcastSnapshots()
-          }
+          // Acks without a result; broadcasts when the refresh reported a change.
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => ({
+            changed: await diffStore.refreshSnapshot(project.id, project.localPath),
+          }))
           return
         }
         case "chat.initGit": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.initializeGit({
-            projectId: project.id,
-            projectPath: project.localPath,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.initializeGit({
+              projectId: project.id,
+              projectPath: project.localPath,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.getGitHubPublishInfo": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.getGitHubPublishInfo({
-            projectPath: project.localPath,
-          })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => ({
+            result: await diffStore.getGitHubPublishInfo({
+              projectPath: project.localPath,
+            }),
+          }))
           return
         }
         case "chat.checkGitHubRepoAvailability": {
-          const result = await resolvedDiffStore.checkGitHubRepoAvailability({
+          const result = await diffStore.checkGitHubRepoAvailability({
             owner: command.owner,
             name: command.name,
           })
@@ -1309,141 +929,125 @@ export function createWsRouter({
           return
         }
         case "chat.publishToGitHub": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.publishToGitHub({
-            projectId: project.id,
-            projectPath: project.localPath,
-            owner: command.owner,
-            name: command.name,
-            visibility: command.visibility,
-            description: command.description,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.publishToGitHub({
+              projectId: project.id,
+              projectPath: project.localPath,
+              owner: command.owner,
+              name: command.name,
+              visibility: command.visibility,
+              description: command.description,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.listBranches": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.listBranches({
-            projectPath: project.localPath,
-          })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => ({
+            result: await diffStore.listBranches({
+              projectPath: project.localPath,
+            }),
+          }))
           return
         }
         case "chat.previewMergeBranch": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.previewMergeBranch({
-            projectPath: project.localPath,
-            branch: command.branch,
-          })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => ({
+            result: await diffStore.previewMergeBranch({
+              projectPath: project.localPath,
+              branch: command.branch,
+            }),
+          }))
           return
         }
         case "chat.mergeBranch": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.mergeBranch({
-            projectId: project.id,
-            projectPath: project.localPath,
-            branch: command.branch,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.mergeBranch({
+              projectId: project.id,
+              projectPath: project.localPath,
+              branch: command.branch,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.checkoutBranch": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.checkoutBranch({
-            projectId: project.id,
-            projectPath: project.localPath,
-            branch: command.branch,
-            bringChanges: command.bringChanges,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.checkoutBranch({
+              projectId: project.id,
+              projectPath: project.localPath,
+              branch: command.branch,
+              bringChanges: command.bringChanges,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.syncBranch": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.syncBranch({
-            projectId: project.id,
-            projectPath: project.localPath,
-            action: command.action,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.syncBranch({
+              projectId: project.id,
+              projectPath: project.localPath,
+              action: command.action,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.createBranch": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.createBranch({
-            projectId: project.id,
-            projectPath: project.localPath,
-            name: command.name,
-            baseBranchName: command.baseBranchName,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.createBranch({
+              projectId: project.id,
+              projectPath: project.localPath,
+              name: command.name,
+              baseBranchName: command.baseBranchName,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.generateCommitMessage": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.generateCommitMessage({
-            projectPath: project.localPath,
-            paths: command.paths,
-          })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => ({
+            result: await diffStore.generateCommitMessage({
+              projectPath: project.localPath,
+              paths: command.paths,
+            }),
+          }))
           return
         }
         case "chat.commitDiffs": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.commitFiles({
-            projectId: project.id,
-            projectPath: project.localPath,
-            paths: command.paths,
-            summary: command.summary,
-            description: command.description,
-            mode: command.mode,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.commitFiles({
+              projectId: project.id,
+              projectPath: project.localPath,
+              paths: command.paths,
+              summary: command.summary,
+              description: command.description,
+              mode: command.mode,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.discardDiffFile": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.discardFile({
-            projectId: project.id,
-            projectPath: project.localPath,
-            path: command.path,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.discardFile({
+              projectId: project.id,
+              projectPath: project.localPath,
+              path: command.path,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.ignoreDiffFile": {
-          const { project } = resolveChatProject(command.chatId)
-          const result = await resolvedDiffStore.ignoreFile({
-            projectId: project.id,
-            projectPath: project.localPath,
-            path: command.path,
+          await handleChatGitCommand(ws, id, command.chatId, async (project) => {
+            const result = await diffStore.ignoreFile({
+              projectId: project.id,
+              projectPath: project.localPath,
+              path: command.path,
+            })
+            return { result, changed: result.snapshotChanged }
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          if (result.snapshotChanged) {
-            void broadcastSnapshots()
-          }
           return
         }
         case "chat.cancel": {
