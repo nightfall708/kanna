@@ -718,11 +718,22 @@ export interface AppSettingsPatch {
   }
 }
 
+/** A user-curated model shortcut shown in Pi's model picker. */
+export interface FaveModel {
+  label: string
+  id: string
+}
+
+// The Model Registry: one OpenAI-compatible connection (OpenRouter, OpenAI, or
+// a custom base URL) used by Pi and for background quick responses (chat
+// naming, commit messages). Kept as "LlmProvider" internally / on disk for
+// backwards compatibility with existing ~/.kanna/llm-provider.json files.
 export interface LlmProviderFile {
   provider?: LlmProviderKind
   apiKey?: string
   model?: string
   baseUrl?: string | null
+  faveModels?: FaveModel[]
 }
 
 export interface LlmProviderSnapshot {
@@ -731,6 +742,7 @@ export interface LlmProviderSnapshot {
   model: string
   baseUrl: string
   resolvedBaseUrl: string
+  faveModels: FaveModel[]
   enabled: boolean
   warning: string | null
   filePathDisplay: string

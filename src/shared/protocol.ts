@@ -100,6 +100,7 @@ export type ClientCommand =
       apiKey: string
       model: string
       baseUrl: string
+      faveModels?: LlmProviderSnapshot["faveModels"]
     }
   | {
       type: "settings.validateLlmProvider"

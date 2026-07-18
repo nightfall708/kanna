@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import { normalizeToolCall } from "../shared/tools"
 import {
-  buildOpenRouterModel,
+  buildRegistryModel,
   extractPiToolResultContent,
   normalizePiUsage,
   translatePiTool,
   PI_TOOL_NAMES,
+  type PiConnection,
 } from "./pi-agent"
 
 describe("translatePiTool", () => {
@@ -138,9 +139,15 @@ describe("normalizePiUsage", () => {
   })
 })
 
-describe("buildOpenRouterModel", () => {
-  test("synthesizes an OpenRouter model for arbitrary ids", () => {
-    const model = buildOpenRouterModel("someone/some-new-model")
+describe("buildRegistryModel", () => {
+  const openrouter: PiConnection = {
+    provider: "openrouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    apiKey: "k",
+  }
+
+  test("synthesizes an OpenRouter model with the openrouter thinking format", () => {
+    const model = buildRegistryModel(openrouter, "someone/some-new-model")
     expect(model).toMatchObject({
       id: "someone/some-new-model",
       provider: "openrouter",
@@ -148,5 +155,31 @@ describe("buildOpenRouterModel", () => {
       baseUrl: "https://openrouter.ai/api/v1",
       reasoning: true,
     })
+    expect(model.compat?.thinkingFormat).toBe("openrouter")
+  })
+
+  test("synthesizes an OpenAI model with the openai thinking format", () => {
+    const model = buildRegistryModel(
+      { provider: "openai", baseUrl: "https://api.openai.com/v1", apiKey: "k" },
+      "gpt-5.4-mini",
+    )
+    expect(model).toMatchObject({
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+    })
+    expect(model.compat?.thinkingFormat).toBe("openai")
+  })
+
+  test("targets custom endpoints verbatim", () => {
+    const model = buildRegistryModel(
+      { provider: "custom", baseUrl: "https://llm.internal.example/v1", apiKey: "k" },
+      "local-coder",
+    )
+    expect(model).toMatchObject({
+      provider: "custom",
+      baseUrl: "https://llm.internal.example/v1",
+      id: "local-coder",
+    })
+    expect(model.compat?.thinkingFormat).toBe("openai")
   })
 })

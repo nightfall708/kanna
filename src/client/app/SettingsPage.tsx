@@ -31,6 +31,7 @@ import {
   type AgentProvider,
   type InstalledSkillSummary,
   type KeybindingAction,
+  type FaveModel,
   type LlmProviderKind,
   type InstalledSkillsSnapshot,
   type SkillInstallResult,
@@ -852,6 +853,7 @@ export function SettingsPage() {
     apiKey: "",
     model: "",
     baseUrl: "",
+    faveModels: [] as FaveModel[],
   })
   const [llmProviderError, setLlmProviderError] = useState<string | null>(null)
   const [llmValidationStatus, setLlmValidationStatus] = useState<"idle" | "valid" | "invalid">("idle")
@@ -904,6 +906,7 @@ export function SettingsPage() {
       apiKey: llmProvider.apiKey,
       model: llmProvider.model,
       baseUrl: llmProvider.baseUrl,
+      faveModels: llmProvider.faveModels.map((fave) => ({ ...fave })),
     })
   }, [llmProvider])
 
@@ -1154,7 +1157,15 @@ export function SettingsPage() {
         : error
       setLlmValidationStatus("invalid")
       setLlmValidationError(fallbackError)
-      setLlmProviderError(error instanceof Error ? error.message : "Unable to save quick response provider settings.")
+      setLlmProviderError(error instanceof Error ? error.message : "Unable to save Model Registry settings.")
+    }
+  }
+
+  function updateFaveModels(nextFaves: FaveModel[], options?: { commit?: boolean }) {
+    const nextDraft = { ...llmProviderDraft, faveModels: nextFaves }
+    setLlmProviderDraft(nextDraft)
+    if (options?.commit) {
+      void commitLlmProvider(nextDraft)
     }
   }
 
@@ -1206,7 +1217,7 @@ export function SettingsPage() {
   const llmValidationDescription = (
     <>
       <span>
-        Use an OpenAI-compatible API for title and commit message generation before Claude and Codex. Stored in {llmProvider?.filePathDisplay ?? "the active llm-provider.json file"}.
+        OpenAI-compatible API for Pi, naming chats & more. Works with OpenRouter, OpenAI, or any custom endpoint. Stored in {llmProvider?.filePathDisplay ?? "the active llm-provider.json file"}.
       </span>
       <span
         className={cn(
@@ -1749,7 +1760,7 @@ export function SettingsPage() {
 
                     <SettingsRow
                       title="Pi Defaults"
-                      description="Saved defaults when using Pi (via OpenRouter). Any OpenRouter model id can be entered in the model picker."
+                      description="Saved defaults when using Pi (connects through the Model Registry). Any model id can be entered in the model picker."
                       alignStart
                     >
                       <div className="max-w-[420px]">
@@ -1775,7 +1786,7 @@ export function SettingsPage() {
                     </SettingsRow>
 
                     <SettingsRow
-                      title="Quick Response SDK"
+                      title="Model Registry"
                       description={llmValidationDescription}
                       alignStart
                     >
@@ -1826,8 +1837,75 @@ export function SettingsPage() {
                           onChange={(event) => setLlmProviderDraft((current) => ({ ...current, model: event.target.value }))}
                           onBlur={() => void commitLlmProvider()}
                           onKeyDown={(event) => handleTextInputKeyDown(event, () => void commitLlmProvider())}
-                          placeholder="Model id"
+                          placeholder="Quick response model id (naming chats, commits)"
                         />
+                      </div>
+                    </SettingsRow>
+
+                    <SettingsRow
+                      title="Fave Models"
+                      description="Shortcuts shown in Pi's model picker. Each fave has a display label and the model id sent to the Model Registry endpoint."
+                      alignStart
+                    >
+                      <div className="flex w-full max-w-[420px] flex-col gap-2">
+                        {llmProviderDraft.faveModels.map((fave, index) => {
+                          // Saving normalizes away rows without an id, and the
+                          // snapshot echo resets the draft — so only commit once
+                          // the row is complete, otherwise a blur while filling
+                          // in a new fave would wipe it.
+                          const commitIfComplete = () => {
+                            if (fave.id.trim()) void commitLlmProvider()
+                          }
+                          return (
+                            <div key={index} className="flex items-center gap-2">
+                              <Input
+                                value={fave.label}
+                                onChange={(event) => {
+                                  const nextFaves = llmProviderDraft.faveModels.map((entry, entryIndex) =>
+                                    entryIndex === index ? { ...entry, label: event.target.value } : entry)
+                                  updateFaveModels(nextFaves)
+                                }}
+                                onBlur={commitIfComplete}
+                                onKeyDown={(event) => handleTextInputKeyDown(event, commitIfComplete)}
+                                placeholder="Label"
+                                className="w-[140px] shrink-0"
+                              />
+                              <Input
+                                value={fave.id}
+                                onChange={(event) => {
+                                  const nextFaves = llmProviderDraft.faveModels.map((entry, entryIndex) =>
+                                    entryIndex === index ? { ...entry, id: event.target.value } : entry)
+                                  updateFaveModels(nextFaves)
+                                }}
+                                onBlur={commitIfComplete}
+                                onKeyDown={(event) => handleTextInputKeyDown(event, commitIfComplete)}
+                                placeholder="Model id"
+                                className="font-mono"
+                              />
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                aria-label="Remove fave model"
+                                onClick={() => {
+                                  updateFaveModels(
+                                    llmProviderDraft.faveModels.filter((_, entryIndex) => entryIndex !== index),
+                                    { commit: true },
+                                  )
+                                }}
+                              >
+                                ✕
+                              </Button>
+                            </div>
+                          )
+                        })}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="self-start"
+                          onClick={() => updateFaveModels([...llmProviderDraft.faveModels, { label: "", id: "" }])}
+                        >
+                          Add fave model
+                        </Button>
                       </div>
                     </SettingsRow>
                   </div>

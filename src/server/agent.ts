@@ -19,7 +19,7 @@ import type { AnalyticsReporter } from "./analytics"
 import { NoopAnalyticsReporter } from "./analytics"
 import { CodexAppServerManager } from "./codex-app-server"
 import { CursorCliManager } from "./cursor-cli"
-import { PiAgentManager, resolveOpenRouterApiKey } from "./pi-agent"
+import { PiAgentManager, resolvePiConnection } from "./pi-agent"
 import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
@@ -142,7 +142,7 @@ interface AgentCoordinatorArgs {
   codexManager?: CodexAppServerManager
   cursorManager?: CursorCliManager
   piManager?: PiAgentManager
-  resolvePiApiKey?: () => Promise<string | null>
+  resolvePiConnection?: () => Promise<import("./pi-agent").PiConnection | null>
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   startClaudeSession?: (args: {
     localPath: string
@@ -756,7 +756,7 @@ export class AgentCoordinator {
   private readonly codexManager: CodexAppServerManager
   private readonly cursorManager: CursorCliManager
   private readonly piManager: PiAgentManager
-  private readonly resolvePiApiKey: () => Promise<string | null>
+  private readonly resolvePiConnection: () => Promise<import("./pi-agent").PiConnection | null>
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private reportBackgroundError: ((message: string) => void) | null = null
@@ -771,7 +771,7 @@ export class AgentCoordinator {
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
     this.cursorManager = args.cursorManager ?? new CursorCliManager()
     this.piManager = args.piManager ?? new PiAgentManager()
-    this.resolvePiApiKey = args.resolvePiApiKey ?? resolveOpenRouterApiKey
+    this.resolvePiConnection = args.resolvePiConnection ?? resolvePiConnection
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
   }
@@ -1084,9 +1084,9 @@ export class AgentCoordinator {
         provider: args.provider,
         model: args.model,
       })
-      // A missing key or session boot failure surfaces as an error result in
-      // the turn stream (like Cursor spawn failures) rather than throwing.
-      const apiKey = await this.resolvePiApiKey()
+      // A missing connection or session boot failure surfaces as an error
+      // result in the turn stream (like Cursor spawn failures) rather than throwing.
+      const connection = await this.resolvePiConnection()
       turn = await this.piManager.startTurn({
         chatId: args.chatId,
         cwd: project.localPath,
@@ -1095,7 +1095,7 @@ export class AgentCoordinator {
         effort: normalizePiModelOptions(undefined, args.effort).reasoningEffort,
         sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken),
-        apiKey,
+        connection,
       })
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
         chatId: args.chatId,

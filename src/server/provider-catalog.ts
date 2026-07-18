@@ -98,6 +98,44 @@ export function applyClaudeSdkModels(models: readonly ClaudeSdkModelInfo[]) {
   return true
 }
 
+/**
+ * Replace the pi provider's model list with the user's fave models from the
+ * Model Registry settings (label + id). An empty list restores the built-in
+ * suggestions. The catalog is only a picker — any model id remains valid.
+ * Returns true when the catalog changed (callers should broadcast).
+ */
+export function applyPiFaveModels(faveModels: ReadonlyArray<{ label: string; id: string }>): boolean {
+  const piIndex = SERVER_PROVIDERS.findIndex((provider) => provider.id === "pi")
+  const piProvider = SERVER_PROVIDERS[piIndex]
+  if (!piProvider) return false
+
+  const staticEntry = PROVIDERS.find((provider) => provider.id === "pi")
+  const nextModels: ProviderModelOption[] = faveModels.length > 0
+    ? faveModels.map((fave) => ({
+      id: fave.id,
+      label: fave.label || fave.id,
+      supportsEffort: true,
+    }))
+    : structuredClone(staticEntry?.models ?? [])
+  const nextDefaultModel = faveModels.length > 0
+    ? faveModels[0]!.id
+    : staticEntry?.defaultModel ?? piProvider.defaultModel
+
+  if (
+    nextDefaultModel === piProvider.defaultModel
+    && JSON.stringify(nextModels) === JSON.stringify(piProvider.models)
+  ) {
+    return false
+  }
+
+  SERVER_PROVIDERS.splice(piIndex, 1, {
+    ...piProvider,
+    defaultModel: nextDefaultModel,
+    models: nextModels,
+  })
+  return true
+}
+
 export function getServerProviderCatalog(provider: AgentProvider): ProviderCatalogEntry {
   const entry = SERVER_PROVIDERS.find((candidate) => candidate.id === provider)
   if (!entry) {

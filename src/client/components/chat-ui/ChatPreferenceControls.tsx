@@ -338,7 +338,7 @@ export function ChatPreferenceControls({
             })}
             {selectedProvider === "pi" ? (
               <CustomModelInput
-                placeholder="Any OpenRouter model id…"
+                placeholder="Any model id…"
                 onSubmit={(customModel) => {
                   onModelChange(selectedProvider, customModel)
                   close()

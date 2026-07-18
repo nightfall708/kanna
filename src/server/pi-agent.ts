@@ -12,7 +12,7 @@ import {
   type AgentSessionEvent,
 } from "@mariozechner/pi-coding-agent"
 import type { Model } from "@mariozechner/pi-ai"
-import type { ContextWindowUsageSnapshot, PiReasoningEffort } from "../shared/types"
+import type { ContextWindowUsageSnapshot, LlmProviderKind, PiReasoningEffort } from "../shared/types"
 import { getDataRootDir } from "../shared/branding"
 import { normalizeToolCall } from "../shared/tools"
 import type { HarnessEvent, HarnessTurn } from "./harness-types"
@@ -26,13 +26,16 @@ import { timestamped } from "./transcript"
  * rather than shelling out to a user-installed CLI.
  *
  * This is deliberately an opinionated, bundled setup:
- *   - Only OpenRouter is supported. The API key comes from Kanna's settings
- *     (the LLM provider config) with the OPENROUTER_API_KEY env var as fallback.
- *   - Any OpenRouter model id works: known models resolve from pi's catalog,
- *     unknown ids get a synthesized OpenRouter model definition.
+ *   - Pi connects through Kanna's Model Registry (the OpenAI-compatible
+ *     connection in Settings): OpenRouter, OpenAI, or any custom base URL.
+ *     OPENROUTER_API_KEY is the env fallback when no registry is configured.
+ *   - Any model id works: ids known to pi's catalog (for OpenRouter/OpenAI
+ *     connections) resolve with full metadata, unknown ids get a synthesized
+ *     OpenAI-completions model definition against the registry base URL.
  *   - Reasoning uses pi's standardized thinking levels
- *     (off/minimal/low/medium/high/xhigh), mapped by pi-ai to OpenRouter's
- *     `reasoning: { effort }` parameter.
+ *     (off/minimal/low/medium/high/xhigh), mapped by pi-ai to the endpoint's
+ *     native reasoning parameter (`reasoning: { effort }` on OpenRouter,
+ *     `reasoning_effort` on OpenAI-style APIs).
  *   - The user's local pi installation (~/.pi) is never read: state lives under
  *     Kanna's data root, credentials stay in memory, and extension/skill/theme
  *     discovery is disabled. Project AGENTS.md context files still apply.
@@ -182,60 +185,74 @@ export function normalizePiUsage(usage: unknown, contextWindow?: number): Contex
   }
 }
 
+/** The Model Registry connection pi runs against. */
+export interface PiConnection {
+  provider: LlmProviderKind
+  baseUrl: string
+  apiKey: string
+}
+
 /**
- * Build a Model definition for an arbitrary OpenRouter model id that isn't in
- * pi's bundled catalog. Reasoning is enabled — OpenRouter ignores the reasoning
- * parameter for models that don't support it, and pi clamps levels per model.
+ * Build a Model definition for an arbitrary model id against the registry's
+ * base URL. Reasoning is enabled — endpoints ignore the reasoning parameter
+ * for models that don't support it, and pi clamps levels per model.
  */
-export function buildOpenRouterModel(modelId: string): Model<"openai-completions"> {
+export function buildRegistryModel(connection: PiConnection, modelId: string): Model<"openai-completions"> {
+  const isOpenRouter = connection.baseUrl.includes("openrouter.ai")
   return {
     id: modelId,
     name: modelId,
     api: "openai-completions",
-    provider: "openrouter",
-    baseUrl: OPENROUTER_BASE_URL,
+    provider: connection.provider,
+    baseUrl: connection.baseUrl,
     reasoning: true,
     input: ["text", "image"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 200_000,
     maxTokens: 32_000,
-    compat: { thinkingFormat: "openrouter" },
+    compat: { thinkingFormat: isOpenRouter ? "openrouter" : "openai" },
   }
 }
 
 /**
- * Resolve the OpenRouter API key for pi turns: the key from Kanna's LLM
- * provider settings (when set to OpenRouter) wins, then the OPENROUTER_API_KEY
- * environment variable.
+ * Resolve pi's connection from the Model Registry settings; falls back to an
+ * OpenRouter connection built from the OPENROUTER_API_KEY environment variable.
  */
-export async function resolveOpenRouterApiKey(): Promise<string | null> {
+export async function resolvePiConnection(): Promise<PiConnection | null> {
   try {
     const snapshot = await readLlmProviderSnapshot()
-    if (snapshot.provider === "openrouter" && snapshot.apiKey) {
-      return snapshot.apiKey
+    if (snapshot.apiKey && snapshot.resolvedBaseUrl) {
+      return {
+        provider: snapshot.provider,
+        baseUrl: snapshot.resolvedBaseUrl,
+        apiKey: snapshot.apiKey,
+      }
     }
   } catch {
     // fall through to the environment variable
   }
   const envKey = process.env.OPENROUTER_API_KEY?.trim()
-  return envKey || null
+  if (envKey) {
+    return { provider: "openrouter", baseUrl: OPENROUTER_BASE_URL, apiKey: envKey }
+  }
+  return null
 }
 
-export const MISSING_OPENROUTER_KEY_MESSAGE =
-  "Pi needs an OpenRouter API key. Set the LLM provider to OpenRouter in Settings and add your key, or export OPENROUTER_API_KEY."
+export const MISSING_PI_CONNECTION_MESSAGE =
+  "Pi needs a Model Registry connection. Add an API key under Settings → Providers → Model Registry (OpenRouter, OpenAI, or a custom OpenAI-compatible URL), or export OPENROUTER_API_KEY."
 
 export interface StartPiTurnArgs {
   chatId: string
   cwd: string
   content: string
-  /** OpenRouter model id, e.g. "moonshotai/kimi-k2.6" or any arbitrary id. */
+  /** Model id on the registry endpoint, e.g. "moonshotai/kimi-k2.6" or any arbitrary id. */
   model: string
   effort: PiReasoningEffort
   /** Previous pi session file path to resume, if any. */
   sessionToken: string | null
   forkSession: boolean
-  /** OpenRouter API key from Kanna settings (or env fallback). Null surfaces an error turn. */
-  apiKey: string | null
+  /** Model Registry connection (or env fallback). Null surfaces an error turn. */
+  connection: PiConnection | null
 }
 
 interface PiChatSession {
@@ -245,6 +262,8 @@ interface PiChatSession {
   cwd: string
   model: string
   effort: PiReasoningEffort
+  connectionProvider: LlmProviderKind
+  connectionBaseUrl: string
 }
 
 /** A turn that failed before the agent could start (missing key, bad session file). */
@@ -293,16 +312,26 @@ export class PiAgentManager {
     }
   }
 
-  private resolveModel(registry: ModelRegistry, modelId: string): Model<any> {
-    return registry.find("openrouter", modelId) ?? buildOpenRouterModel(modelId)
+  private resolveModel(registry: ModelRegistry, connection: PiConnection, modelId: string): Model<any> {
+    // Only OpenRouter/OpenAI connections at their default base URL can borrow
+    // pi's bundled model metadata; custom endpoints always get a synthesized
+    // definition so requests target the configured base URL.
+    if (connection.provider === "openrouter" || connection.provider === "openai") {
+      const known = registry.find(connection.provider, modelId)
+      if (known) return known
+    }
+    return buildRegistryModel(connection, modelId)
   }
 
-  private async openSession(args: StartPiTurnArgs & { apiKey: string }): Promise<PiChatSession> {
+  private async openSession(args: StartPiTurnArgs & { connection: PiConnection }): Promise<PiChatSession> {
     const existing = this.sessions.get(args.chatId)
-    if (existing && existing.cwd === args.cwd && !args.forkSession) {
-      existing.authStorage.setRuntimeApiKey("openrouter", args.apiKey)
+    const connectionUnchanged = existing
+      && existing.connectionProvider === args.connection.provider
+      && existing.connectionBaseUrl === args.connection.baseUrl
+    if (existing && connectionUnchanged && existing.cwd === args.cwd && !args.forkSession) {
+      existing.authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
       if (existing.model !== args.model) {
-        await existing.session.setModel(this.resolveModel(existing.modelRegistry, args.model))
+        await existing.session.setModel(this.resolveModel(existing.modelRegistry, args.connection, args.model))
         existing.model = args.model
       }
       if (existing.effort !== args.effort) {
@@ -320,7 +349,7 @@ export class PiAgentManager {
     // All state is Kanna-owned: in-memory credentials/settings, sessions under
     // Kanna's data root, and no discovery of the user's ~/.pi setup.
     const authStorage = AuthStorage.inMemory()
-    authStorage.setRuntimeApiKey("openrouter", args.apiKey)
+    authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
     const modelRegistry = ModelRegistry.inMemory(authStorage)
     const settingsManager = SettingsManager.inMemory()
 
@@ -349,7 +378,7 @@ export class PiAgentManager {
       settingsManager,
       sessionManager,
       resourceLoader,
-      model: this.resolveModel(modelRegistry, args.model),
+      model: this.resolveModel(modelRegistry, args.connection, args.model),
       thinkingLevel: args.effort,
       tools: [...PI_TOOL_NAMES],
     })
@@ -361,19 +390,21 @@ export class PiAgentManager {
       cwd: args.cwd,
       model: args.model,
       effort: args.effort,
+      connectionProvider: args.connection.provider,
+      connectionBaseUrl: args.connection.baseUrl,
     }
     this.sessions.set(args.chatId, chatSession)
     return chatSession
   }
 
   async startTurn(args: StartPiTurnArgs): Promise<HarnessTurn> {
-    if (!args.apiKey) {
-      return failedPiTurn(MISSING_OPENROUTER_KEY_MESSAGE)
+    if (!args.connection) {
+      return failedPiTurn(MISSING_PI_CONNECTION_MESSAGE)
     }
 
     let chatSession: PiChatSession
     try {
-      chatSession = await this.openSession({ ...args, apiKey: args.apiKey })
+      chatSession = await this.openSession({ ...args, connection: args.connection })
     } catch (error) {
       return failedPiTurn(error instanceof Error ? error.message : String(error))
     }
