@@ -407,8 +407,6 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
         void handleSubmit()
       } else if (inputMode === "path") {
         void navigate(input.trim(), { nearest: true })
-      } else if (e.metaKey || e.ctrlKey) {
-        void handleSubmit()
       } else if (visibleDirCount > 0 && dir) {
         const target = visibleEntries[clampedHighlight]
         if (target) void navigate(joinDirPath(dir.path, target.name))
@@ -644,7 +642,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
               </div>
 
               <p className="text-xs text-muted-foreground">
-                Open a folder and add it as a project, or paste a git repo to clone it there. <kbd className="px-1 py-0.5 rounded border border-border bg-muted font-mono text-[10px]">&#8984;&#9166;</kbd> adds the current folder.
+                Open a folder and add it as a project, or paste a git repo to clone it there.
               </p>
             </div>
           )}
