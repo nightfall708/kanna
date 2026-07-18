@@ -547,7 +547,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
                     )}
                     title={dirError ?? dir?.path}
                   >
-                    {dirError ?? (dir ? abbreviateHomePath(dir.path, dir.homePath) : " ")}
+                    {dirError ? (missingPath ? "Not Found" : dirError) : dir ? abbreviateHomePath(dir.path, dir.homePath) : " "}
                   </span>
                   {!dirError && dir?.isGitRepo ? (
                     <span className="flex items-center gap-1 flex-shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
