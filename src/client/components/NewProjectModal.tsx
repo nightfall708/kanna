@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
-import { ArrowLeft, Check, Circle, File, Folder, FolderPlus, GitBranch, Loader2, Plus, Star } from "lucide-react"
+import { ArrowLeft, Check, Circle, File, Folder, GitBranch, Loader2, Plus, Star } from "lucide-react"
 import { parseGitRepoUrl } from "../../shared/git-url"
 import type { FsDirEntry, FsListResult } from "../../shared/types"
 import { cn } from "../lib/utils"
@@ -540,10 +540,16 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
                     <ArrowLeft className="h-4 w-4" />
                   </Button>
                   {/* The mono font renders its glyphs ~1px above the geometric center; nudge to optically align with the back arrow */}
-                  <span className="flex-1 min-w-0 truncate px-1 font-mono text-xs text-muted-foreground translate-y-[0.5px]" title={dir?.path}>
-                    {dir ? abbreviateHomePath(dir.path, dir.homePath) : " "}
+                  <span
+                    className={cn(
+                      "flex-1 min-w-0 truncate px-1 font-mono text-xs translate-y-[0.5px]",
+                      dirError ? "text-destructive" : "text-muted-foreground"
+                    )}
+                    title={dirError ?? dir?.path}
+                  >
+                    {dirError ?? (dir ? abbreviateHomePath(dir.path, dir.homePath) : " ")}
                   </span>
-                  {dir?.isGitRepo ? (
+                  {!dirError && dir?.isGitRepo ? (
                     <span className="flex items-center gap-1 flex-shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                       <GitBranch className="h-3 w-3" />
                       git
@@ -581,19 +587,16 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
                     </div>
                   ) : null}
                   {dirError ? (
-                    <div className="px-2 py-3 space-y-2">
-                      <p className="text-sm text-destructive">{dirError}</p>
-                      {missingPath ? (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => void createFolder(missingPath)}
-                        >
-                          <FolderPlus className="size-3.5" data-icon="inline-start" />
-                          Create this folder
-                        </Button>
-                      ) : null}
-                    </div>
+                    missingPath ? (
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-foreground hover:bg-muted/60"
+                        onClick={() => void createFolder(missingPath)}
+                      >
+                        <Plus className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                        <span className="truncate">Create "{missingPath}"</span>
+                      </button>
+                    ) : null
                   ) : !dir && dirLoading ? (
                     <div className="flex items-center gap-2 px-2 py-3 text-sm text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" /> Loading&hellip;
