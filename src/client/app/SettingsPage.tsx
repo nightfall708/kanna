@@ -859,6 +859,7 @@ export function SettingsPage() {
   const [llmValidationStatus, setLlmValidationStatus] = useState<"idle" | "valid" | "invalid">("idle")
   const [llmValidationError, setLlmValidationError] = useState<unknown | null>(null)
   const [llmValidationDialogOpen, setLlmValidationDialogOpen] = useState(false)
+  const [defaultModelsDialogOpen, setDefaultModelsDialogOpen] = useState(false)
   const updateSnapshot = state.updateSnapshot
   const handleWriteAppSettings = state.handleWriteAppSettings
   const handleReadLlmProvider = state.handleReadLlmProvider
@@ -1168,6 +1169,8 @@ export function SettingsPage() {
       void commitLlmProvider(nextDraft)
     }
   }
+
+  const selectedDefaultModelCount = llmProviderDraft.faveModels.filter((fave) => fave.id.trim().length > 0).length
 
   function handleLlmProviderSelection(nextProvider: LlmProviderKind) {
     const nextDraft = {
@@ -1843,70 +1846,16 @@ export function SettingsPage() {
                     </SettingsRow>
 
                     <SettingsRow
-                      title="Fave Models"
-                      description="Shortcuts shown in Pi's model picker. Each fave has a display label and the model id sent to the Model Registry endpoint."
-                      alignStart
+                      title="Default Models"
+                      description="Models shown in Pi's model picker, with a display label and the model id sent to the Model Registry endpoint."
                     >
-                      <div className="flex w-full max-w-[420px] flex-col gap-2">
-                        {llmProviderDraft.faveModels.map((fave, index) => {
-                          // Saving normalizes away rows without an id, and the
-                          // snapshot echo resets the draft — so only commit once
-                          // the row is complete, otherwise a blur while filling
-                          // in a new fave would wipe it.
-                          const commitIfComplete = () => {
-                            if (fave.id.trim()) void commitLlmProvider()
-                          }
-                          return (
-                            <div key={index} className="flex items-center gap-2">
-                              <Input
-                                value={fave.label}
-                                onChange={(event) => {
-                                  const nextFaves = llmProviderDraft.faveModels.map((entry, entryIndex) =>
-                                    entryIndex === index ? { ...entry, label: event.target.value } : entry)
-                                  updateFaveModels(nextFaves)
-                                }}
-                                onBlur={commitIfComplete}
-                                onKeyDown={(event) => handleTextInputKeyDown(event, commitIfComplete)}
-                                placeholder="Label"
-                                className="w-[140px] shrink-0"
-                              />
-                              <Input
-                                value={fave.id}
-                                onChange={(event) => {
-                                  const nextFaves = llmProviderDraft.faveModels.map((entry, entryIndex) =>
-                                    entryIndex === index ? { ...entry, id: event.target.value } : entry)
-                                  updateFaveModels(nextFaves)
-                                }}
-                                onBlur={commitIfComplete}
-                                onKeyDown={(event) => handleTextInputKeyDown(event, commitIfComplete)}
-                                placeholder="Model id"
-                                className="font-mono"
-                              />
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                aria-label="Remove fave model"
-                                onClick={() => {
-                                  updateFaveModels(
-                                    llmProviderDraft.faveModels.filter((_, entryIndex) => entryIndex !== index),
-                                    { commit: true },
-                                  )
-                                }}
-                              >
-                                ✕
-                              </Button>
-                            </div>
-                          )
-                        })}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="self-start"
-                          onClick={() => updateFaveModels([...llmProviderDraft.faveModels, { label: "", id: "" }])}
-                        >
-                          Add fave model
-                        </Button>
-                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setDefaultModelsDialogOpen(true)}
+                      >
+                        {selectedDefaultModelCount} selected
+                      </Button>
                     </SettingsRow>
                   </div>
                 ) : selectedPage === "keybindings" ? (
@@ -2078,6 +2027,98 @@ export function SettingsPage() {
           <DialogFooter>
             <Button variant="secondary" size="sm" onClick={() => setLlmValidationDialogOpen(false)}>
               Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={defaultModelsDialogOpen}
+        onOpenChange={(open) => {
+          setDefaultModelsDialogOpen(open)
+          // Closing drops any rows that never got a model id and saves the rest.
+          if (!open) {
+            updateFaveModels(
+              llmProviderDraft.faveModels.filter((fave) => fave.id.trim().length > 0),
+              { commit: true },
+            )
+          }
+        }}
+      >
+        <DialogContent size="lg">
+          <DialogBody className="space-y-4">
+            <DialogTitle>Default Models</DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              Shown in Pi's model picker. Each entry has a display label and the model id sent to the Model Registry endpoint.
+            </p>
+            <div className="flex max-h-[55vh] flex-col gap-2 overflow-y-auto pr-1">
+              {llmProviderDraft.faveModels.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No default models yet — Pi's picker falls back to built-in suggestions.
+                </p>
+              ) : null}
+              {/*
+                The modal edits a local draft only — nothing commits until Done
+                or dismissal. Mid-edit commits would echo a snapshot back that
+                resets the draft (normalization drops id-less rows), wiping a
+                row while it's being filled in.
+              */}
+              {llmProviderDraft.faveModels.map((fave, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <Input
+                    value={fave.label}
+                    onChange={(event) => {
+                      const nextFaves = llmProviderDraft.faveModels.map((entry, entryIndex) =>
+                        entryIndex === index ? { ...entry, label: event.target.value } : entry)
+                      updateFaveModels(nextFaves)
+                    }}
+                    placeholder="Label"
+                    className="w-[160px] shrink-0"
+                  />
+                  <Input
+                    value={fave.id}
+                    onChange={(event) => {
+                      const nextFaves = llmProviderDraft.faveModels.map((entry, entryIndex) =>
+                        entryIndex === index ? { ...entry, id: event.target.value } : entry)
+                      updateFaveModels(nextFaves)
+                    }}
+                    placeholder="Model id"
+                    className="font-mono"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label="Remove default model"
+                    onClick={() => {
+                      updateFaveModels(llmProviderDraft.faveModels.filter((_, entryIndex) => entryIndex !== index))
+                    }}
+                  >
+                    ✕
+                  </Button>
+                </div>
+              ))}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="self-start"
+              onClick={() => updateFaveModels([...llmProviderDraft.faveModels, { label: "", id: "" }])}
+            >
+              Add model
+            </Button>
+          </DialogBody>
+          <DialogFooter>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setDefaultModelsDialogOpen(false)
+                updateFaveModels(
+                  llmProviderDraft.faveModels.filter((fave) => fave.id.trim().length > 0),
+                  { commit: true },
+                )
+              }}
+            >
+              Done
             </Button>
           </DialogFooter>
         </DialogContent>
