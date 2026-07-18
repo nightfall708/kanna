@@ -624,6 +624,11 @@ export interface FsListResult {
   entries: FsDirEntry[]
   /** True when entries were capped at the server-side limit. */
   truncated: boolean
+  /**
+   * Set when a nearest-existing lookup fell back to an ancestor: the
+   * relative remainder from `path` to the directory that was requested.
+   */
+  missingSuffix?: string
 }
 
 export interface AppSettingsSnapshot {

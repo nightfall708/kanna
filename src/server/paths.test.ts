@@ -70,6 +70,22 @@ describe("listDirectory", () => {
   test("throws a friendly error when the path is a file", async () => {
     expect(listDirectory(path.join(root, "zeta.txt"))).rejects.toThrow(/Not a folder/)
   })
+
+  test("nearest falls back to the closest existing ancestor with the missing remainder", async () => {
+    const result = await listDirectory(path.join(root, "beta", "new-project"), { nearest: true })
+    expect(result.path).toBe(path.join(root, "beta"))
+    expect(result.missingSuffix).toBe("new-project")
+
+    const deep = await listDirectory(path.join(root, "beta", "a", "b"), { nearest: true })
+    expect(deep.path).toBe(path.join(root, "beta"))
+    expect(deep.missingSuffix).toBe("a/b")
+  })
+
+  test("nearest leaves existing paths untouched", async () => {
+    const result = await listDirectory(path.join(root, "beta"), { nearest: true })
+    expect(result.path).toBe(path.join(root, "beta"))
+    expect(result.missingSuffix).toBeUndefined()
+  })
 })
 
 describe("createDirectory", () => {

@@ -27,7 +27,7 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   onConfirm: (project: NewProjectResult) => Promise<void>
-  listDirectory: (path?: string) => Promise<FsListResult>
+  listDirectory: (path?: string, nearest?: boolean) => Promise<FsListResult>
   makeDirectory: (path: string) => Promise<FsListResult>
 }
 
@@ -160,7 +160,6 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
   const [dir, setDir] = useState<FsListResult | null>(null)
   const [dirLoading, setDirLoading] = useState(false)
   const [dirError, setDirError] = useState<string | null>(null)
-  const [missingPath, setMissingPath] = useState<string | null>(null)
   const [input, setInput] = useState("")
   const [highlight, setHighlight] = useState(0)
   const [history, setHistory] = useState<string[]>([])
@@ -199,36 +198,31 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
     lastBrowsedPath = result.path
     setDir(result)
     setDirError(null)
-    setMissingPath(null)
     setInput("")
     setHighlight(0)
   }, [])
 
-  const navigate = useCallback(async (target?: string, fromBack = false) => {
+  const navigate = useCallback(async (target?: string, opts?: { fromBack?: boolean; nearest?: boolean }) => {
     const seq = ++requestSeqRef.current
     setDirError(null)
-    setMissingPath(null)
     // Keep the finder keyboard-driven even after mouse navigation
     inputRef.current?.focus()
 
     const cached = target !== undefined ? dirCacheRef.current.get(target) : undefined
     if (cached) {
-      arriveAt(cached, fromBack)
+      arriveAt(cached, opts?.fromBack)
       return
     }
     setDirLoading(true)
     try {
-      const result = await listDirectory(target)
-      dirCacheRef.current.set(result.path, result)
+      const result = await listDirectory(target, opts?.nearest)
+      // A nearest fallback is view state, not a fact about the ancestor — cache it clean
+      dirCacheRef.current.set(result.path, { ...result, missingSuffix: undefined })
       if (seq !== requestSeqRef.current) return
-      arriveAt(result, fromBack)
+      arriveAt(result, opts?.fromBack)
     } catch (error) {
       if (seq !== requestSeqRef.current) return
-      const message = error instanceof Error ? error.message : String(error)
-      setDirError(message)
-      if (target && message.startsWith("Folder not found")) {
-        setMissingPath(target)
-      }
+      setDirError(error instanceof Error ? error.message : String(error))
     } finally {
       if (seq === requestSeqRef.current) setDirLoading(false)
     }
@@ -238,7 +232,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
     const previous = history[history.length - 1]
     if (previous === undefined) return
     setHistory(history.slice(0, -1))
-    void navigate(previous, true)
+    void navigate(previous, { fromBack: true })
   }, [history, navigate])
 
   /** Create a folder (inline row or a missing typed path) and step into it. */
@@ -269,7 +263,6 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
       setCloneError(null)
       setDir(null)
       setDirError(null)
-      setMissingPath(null)
       setInput("")
       setHighlight(0)
       setHistory([])
@@ -413,7 +406,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
       if (inputMode === "repo") {
         void handleSubmit()
       } else if (inputMode === "path") {
-        void navigate(input.trim())
+        void navigate(input.trim(), { nearest: true })
       } else if (e.metaKey || e.ctrlKey) {
         void handleSubmit()
       } else if (visibleDirCount > 0 && dir) {
@@ -547,7 +540,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
                     )}
                     title={dirError ?? dir?.path}
                   >
-                    {dirError ? (missingPath ? "Not Found" : dirError) : dir ? abbreviateHomePath(dir.path, dir.homePath) : " "}
+                    {dirError ?? (dir ? abbreviateHomePath(dir.path, dir.homePath) : " ")}
                   </span>
                   {!dirError && dir?.isGitRepo ? (
                     <span className="flex items-center gap-1 flex-shrink-0 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
@@ -586,22 +579,11 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
                       />
                     </div>
                   ) : null}
-                  {dirError ? (
-                    missingPath ? (
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-foreground hover:bg-muted/60"
-                        onClick={() => void createFolder(missingPath)}
-                      >
-                        <Plus className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-                        <span className="truncate">Create "{missingPath}"</span>
-                      </button>
-                    ) : null
-                  ) : !dir && dirLoading ? (
+                  {dirError ? null : !dir && dirLoading ? (
                     <div className="flex items-center gap-2 px-2 py-3 text-sm text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" /> Loading&hellip;
                     </div>
-                  ) : visibleEntries.length === 0 ? (
+                  ) : visibleEntries.length === 0 && !dir?.missingSuffix ? (
                     !creatingFolder ? (
                       <div className="px-2 py-3 text-sm text-muted-foreground">
                         {input && inputMode === "filter" ? "No matches" : "Empty folder"}
@@ -637,6 +619,16 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, 
                         <div className="px-2 py-1.5 text-xs text-muted-foreground">
                           Showing the first {dir.entries.length.toLocaleString()} entries
                         </div>
+                      ) : null}
+                      {dir?.missingSuffix ? (
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-foreground hover:bg-muted/60"
+                          onClick={() => void createFolder(joinDirPath(dir.path, dir.missingSuffix!))}
+                        >
+                          <Plus className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                          <span className="truncate">Create "{dir.missingSuffix}"</span>
+                        </button>
                       ) : null}
                     </>
                   )}

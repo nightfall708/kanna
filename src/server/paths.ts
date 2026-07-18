@@ -98,13 +98,43 @@ function compareEntryNames(a: FsDirEntry, b: FsDirEntry) {
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
 }
 
+/** Walk up from `resolved` to the closest existing directory, collecting the missing segments. */
+async function findNearestDirectory(resolved: string): Promise<{ path: string; missing: string[] }> {
+  let current = resolved
+  const missing: string[] = []
+  while (true) {
+    try {
+      const info = await stat(current)
+      if (info.isDirectory()) return { path: current, missing }
+    } catch {
+      // keep walking up
+    }
+    const parent = path.dirname(current)
+    if (parent === current) return { path: current, missing }
+    missing.unshift(path.basename(current))
+    current = parent
+  }
+}
+
 /**
  * List a directory for the project browser. One readdir syscall pass:
  * git detection and dir/file split both come from the same dirent array.
- * Defaults to the home directory when no path is given.
+ * Defaults to the home directory when no path is given. With `nearest`,
+ * a missing path falls back to its closest existing ancestor and the
+ * result carries the missing remainder in `missingSuffix`.
  */
-export async function listDirectory(requestedPath?: string): Promise<FsListResult> {
-  const resolved = requestedPath?.trim() ? resolveLocalPath(requestedPath) : homedir()
+export async function listDirectory(
+  requestedPath?: string,
+  opts?: { nearest?: boolean }
+): Promise<FsListResult> {
+  let resolved = requestedPath?.trim() ? resolveLocalPath(requestedPath) : homedir()
+  let missingSuffix: string | undefined
+
+  if (opts?.nearest) {
+    const nearest = await findNearestDirectory(resolved)
+    resolved = nearest.path
+    missingSuffix = nearest.missing.length > 0 ? nearest.missing.join("/") : undefined
+  }
 
   let dirents
   try {
@@ -142,6 +172,7 @@ export async function listDirectory(requestedPath?: string): Promise<FsListResul
     isGitRepo,
     entries: truncated ? entries.slice(0, FS_LIST_ENTRY_LIMIT) : entries,
     truncated,
+    ...(missingSuffix ? { missingSuffix } : {}),
   }
 }
 

@@ -1087,7 +1087,7 @@ export function createWsRouter({
           return
         }
         case "fs.list": {
-          const result = await listDirectory(command.path)
+          const result = await listDirectory(command.path, { nearest: command.nearest })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }

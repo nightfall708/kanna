@@ -96,7 +96,7 @@ interface LocalDevProps {
   onNewProjectOpenChange: (open: boolean) => void
   onOpenProject: (localPath: string) => Promise<void>
   onCreateProject: (project: { mode: "new" | "existing" | "clone"; localPath: string; fallbackPath?: string; title: string; cloneUrl?: string }) => Promise<void>
-  onListDirectory: (path?: string) => Promise<FsListResult>
+  onListDirectory: (path?: string, nearest?: boolean) => Promise<FsListResult>
   onMakeDirectory: (path: string) => Promise<FsListResult>
 }
 
