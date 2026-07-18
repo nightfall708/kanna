@@ -380,7 +380,8 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
 
               <div className="border border-border rounded-lg overflow-hidden">
                 {/* Location bar */}
-                <div className="flex items-center gap-1 border-b border-border bg-muted/40 px-1.5 py-1">
+                {/* pl-2 + the 4px centering inset inside the h-6 button lines the arrow up with the row icons (p-1 + px-2) */}
+                <div className="flex items-center gap-1 border-b border-border bg-muted/40 pl-2 pr-1.5 py-1">
                   <Button
                     variant="ghost"
                     size="icon"
@@ -389,7 +390,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
                     onClick={goBack}
                     aria-label="Back"
                   >
-                    <ArrowLeft className="h-3.5 w-3.5" />
+                    <ArrowLeft className="h-4 w-4" />
                   </Button>
                   <span className="flex-1 min-w-0 truncate px-1 font-mono text-xs text-muted-foreground" title={dir?.path}>
                     {dir ? abbreviateHomePath(dir.path, dir.homePath) : " "}
