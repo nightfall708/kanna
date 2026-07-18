@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process"
-import { mkdir, stat } from "node:fs/promises"
+import { mkdir, readdir, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
+import type { FsDirEntry, FsListResult } from "../shared/types"
 
 export function resolveLocalPath(localPath: string) {
   const trimmed = localPath.trim()
@@ -88,6 +89,59 @@ export async function cloneRepository(cloneUrl: string, resolvedPath: string): P
       }
     })
   })
+}
+
+export const FS_LIST_ENTRY_LIMIT = 2_000
+
+function compareEntryNames(a: FsDirEntry, b: FsDirEntry) {
+  return a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+}
+
+/**
+ * List a directory for the project browser. One readdir syscall pass:
+ * git detection and dir/file split both come from the same dirent array.
+ * Defaults to the home directory when no path is given.
+ */
+export async function listDirectory(requestedPath?: string): Promise<FsListResult> {
+  const resolved = requestedPath?.trim() ? resolveLocalPath(requestedPath) : homedir()
+
+  let dirents
+  try {
+    dirents = await readdir(resolved, { withFileTypes: true })
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "ENOENT") throw new Error(`Folder not found: ${resolved}`)
+    if (code === "ENOTDIR") throw new Error(`Not a folder: ${resolved}`)
+    if (code === "EACCES" || code === "EPERM") throw new Error(`Permission denied: ${resolved}`)
+    throw error
+  }
+
+  let isGitRepo = false
+  const dirs: FsDirEntry[] = []
+  const files: FsDirEntry[] = []
+  for (const dirent of dirents) {
+    if (dirent.isDirectory()) {
+      if (dirent.name === ".git") isGitRepo = true
+      dirs.push({ name: dirent.name, kind: "dir" })
+    } else {
+      files.push({ name: dirent.name, kind: "file" })
+    }
+  }
+  dirs.sort(compareEntryNames)
+  files.sort(compareEntryNames)
+
+  const entries = [...dirs, ...files]
+  const truncated = entries.length > FS_LIST_ENTRY_LIMIT
+  const parent = path.dirname(resolved)
+
+  return {
+    path: resolved,
+    parentPath: parent === resolved ? null : parent,
+    homePath: homedir(),
+    isGitRepo,
+    entries: truncated ? entries.slice(0, FS_LIST_ENTRY_LIMIT) : entries,
+    truncated,
+  }
 }
 
 export function getProjectUploadDir(localPath: string) {

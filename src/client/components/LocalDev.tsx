@@ -13,7 +13,7 @@ import {
   Terminal,
 } from "lucide-react"
 import { APP_NAME, getCliInvocation, SDK_CLIENT_APP } from "../../shared/branding"
-import type { LocalProjectSummary, LocalProjectsSnapshot } from "../../shared/types"
+import type { FsListResult, LocalProjectSummary, LocalProjectsSnapshot } from "../../shared/types"
 import type { SocketStatus } from "../app/socket"
 import { PageHeader } from "../app/PageHeader"
 import { getPathBasename } from "../lib/formatters"
@@ -96,6 +96,7 @@ interface LocalDevProps {
   onNewProjectOpenChange: (open: boolean) => void
   onOpenProject: (localPath: string) => Promise<void>
   onCreateProject: (project: { mode: "new" | "existing" | "clone"; localPath: string; fallbackPath?: string; title: string; cloneUrl?: string }) => Promise<void>
+  onListDirectory: (path?: string) => Promise<FsListResult>
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -239,6 +240,7 @@ export function LocalDev({
   onNewProjectOpenChange,
   onOpenProject,
   onCreateProject,
+  onListDirectory,
 }: LocalDevProps) {
   const projects = useMemo(() => snapshot?.projects ?? [], [snapshot?.projects])
   const [projectSearch, setProjectSearch] = useState("")
@@ -403,6 +405,7 @@ export function LocalDev({
         open={newProjectOpen}
         onOpenChange={onNewProjectOpenChange}
         onConfirm={(project) => onCreateProject(project)}
+        listDirectory={onListDirectory}
       />
 
       <div className="py-4 text-center">

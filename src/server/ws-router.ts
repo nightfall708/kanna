@@ -15,7 +15,7 @@ import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
 import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
-import { cloneRepository, ensureProjectDirectory, resolveClonePath, resolveLocalPath } from "./paths"
+import { cloneRepository, ensureProjectDirectory, listDirectory, resolveClonePath, resolveLocalPath } from "./paths"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
@@ -1084,6 +1084,11 @@ export function createWsRouter({
       switch (command.type) {
         case "system.ping": {
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
+        case "fs.list": {
+          const result = await listDirectory(command.path)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "browser.listLocalHttpServers": {

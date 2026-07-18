@@ -606,6 +606,26 @@ export interface LocalProjectsSnapshot {
   projects: LocalProjectSummary[]
 }
 
+export interface FsDirEntry {
+  name: string
+  kind: "dir" | "file"
+}
+
+export interface FsListResult {
+  /** Resolved absolute path of the listed directory. */
+  path: string
+  /** Absolute path of the parent directory, or null at the filesystem root. */
+  parentPath: string | null
+  /** The server user's home directory, for `~` display. */
+  homePath: string
+  /** True when the listed directory contains a `.git` entry. */
+  isGitRepo: boolean
+  /** Directories first, then files, each sorted case-insensitively. */
+  entries: FsDirEntry[]
+  /** True when entries were capped at the server-side limit. */
+  truncated: boolean
+}
+
 export interface AppSettingsSnapshot {
   analyticsEnabled: boolean
   browserSettingsMigrated: boolean
