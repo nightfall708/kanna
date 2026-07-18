@@ -79,6 +79,7 @@ export type ClientCommand =
   | { type: "project.readDiffPatch"; projectId: string; path: string }
   | { type: "system.ping" }
   | { type: "fs.list"; path?: string }
+  | { type: "fs.mkdir"; path: string }
   | { type: "browser.listLocalHttpServers"; projectId?: string }
   | { type: "browser.killLocalHttpServer"; port: number }
   | { type: "project.readQuickActions"; projectId: string }

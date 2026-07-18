@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react"
-import { ArrowLeft, Check, Circle, File, Folder, GitBranch, Loader2, Star } from "lucide-react"
-import { DEFAULT_NEW_PROJECT_ROOT } from "../../shared/branding"
+import { ArrowLeft, Check, Circle, File, Folder, FolderPlus, GitBranch, Loader2, Star } from "lucide-react"
 import { parseGitRepoUrl } from "../../shared/git-url"
 import type { FsDirEntry, FsListResult } from "../../shared/types"
 import { cn } from "../lib/utils"
@@ -13,7 +12,6 @@ import {
   DialogFooter,
 } from "./ui/dialog"
 import { Input } from "./ui/input"
-import { SegmentedControl } from "./ui/segmented-control"
 
 export type ProjectMode = "new" | "existing" | "clone"
 
@@ -30,20 +28,20 @@ interface Props {
   onOpenChange: (open: boolean) => void
   onConfirm: (project: NewProjectResult) => Promise<void>
   listDirectory: (path?: string) => Promise<FsListResult>
+  makeDirectory: (path: string) => Promise<FsListResult>
 }
 
-type Tab = "new" | "existing" | "github"
 type CloneStatus = "idle" | "cloning" | "success" | "error"
 
-export type ExistingInputMode = "filter" | "path" | "git"
+export type BrowserInputMode = "filter" | "path" | "repo"
 
-/** Decide what the single browser input means: git URL, absolute path jump, or entry filter. */
-export function classifyExistingInput(value: string): ExistingInputMode {
+/** Decide what the single input means: path jump, git repo to clone, or entry filter. */
+export function classifyBrowserInput(value: string): BrowserInputMode {
   const trimmed = value.trim()
-  if (parseGitRepoUrl(trimmed)) return "git"
   if (trimmed.startsWith("/") || trimmed === "~" || trimmed.startsWith("~/") || /^[A-Za-z]:[\\/]/.test(trimmed)) {
     return "path"
   }
+  if (parseRepoRef(trimmed)) return "repo"
   return "filter"
 }
 
@@ -71,6 +69,12 @@ export function abbreviateHomePath(fullPath: string, homePath: string): string {
 export function joinDirPath(parent: string, name: string): string {
   const sep = parent.includes("\\") && !parent.includes("/") ? "\\" : "/"
   return parent.endsWith(sep) ? parent + name : parent + sep + name
+}
+
+export function pathBasename(value: string): string {
+  const trimmed = value.trim().replace(/[\\/]+$/, "")
+  const base = trimmed.split(/[\\/]/).pop() ?? ""
+  return base === "~" ? "" : base
 }
 
 export interface RepoRef {
@@ -104,10 +108,37 @@ export function parseRepoRef(value: string): RepoRef | null {
   return null
 }
 
-export function pathBasename(value: string): string {
-  const trimmed = value.trim().replace(/[\\/]+$/, "")
-  const base = trimmed.split(/[\\/]/).pop() ?? ""
-  return base === "~" ? "" : base
+export interface CloneDestination {
+  localPath: string
+  fallbackPath: string
+  title: string
+  /** True when the repo clones straight into the (empty) current folder. */
+  direct: boolean
+}
+
+/**
+ * An empty current folder receives the repo contents directly (the
+ * create-a-folder-then-clone-into-it flow); otherwise the clone lands
+ * in a new subfolder named after the repo.
+ */
+export function resolveCloneDestination(
+  dir: Pick<FsListResult, "path" | "entries">,
+  repo: RepoRef
+): CloneDestination {
+  if (dir.entries.length === 0) {
+    return {
+      localPath: dir.path,
+      fallbackPath: joinDirPath(dir.path, repo.repo),
+      title: pathBasename(dir.path) || repo.repo,
+      direct: true,
+    }
+  }
+  return {
+    localPath: joinDirPath(dir.path, repo.repo),
+    fallbackPath: joinDirPath(dir.path, `${repo.owner}-${repo.repo}`),
+    title: repo.repo,
+    direct: false,
+  }
 }
 
 interface RepoMeta {
@@ -121,71 +152,68 @@ interface RepoMeta {
 /** Remembered across modal opens so browsing picks up where the user left off. */
 let lastBrowsedPath: string | undefined
 
-export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }: Props) {
-  const [tab, setTab] = useState<Tab>("new")
+export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory, makeDirectory }: Props) {
   const [cloneStatus, setCloneStatus] = useState<CloneStatus>("idle")
   const [cloneError, setCloneError] = useState<string | null>(null)
 
-  // New tab state
-  const [newPath, setNewPath] = useState(`${DEFAULT_NEW_PROJECT_ROOT}/`)
-  const newPathInputRef = useRef<HTMLInputElement>(null)
-
-  // Browser (existing tab) state
+  // Browser state
   const [dir, setDir] = useState<FsListResult | null>(null)
   const [dirLoading, setDirLoading] = useState(false)
   const [dirError, setDirError] = useState<string | null>(null)
-  const [filter, setFilter] = useState("")
+  const [missingPath, setMissingPath] = useState<string | null>(null)
+  const [input, setInput] = useState("")
   const [highlight, setHighlight] = useState(0)
   const [history, setHistory] = useState<string[]>([])
-  const filterInputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const dirCacheRef = useRef(new Map<string, FsListResult>())
   const requestSeqRef = useRef(0)
   const currentPathRef = useRef<string | null>(null)
 
-  // GitHub tab state
-  const [repoInput, setRepoInput] = useState("")
+  // Inline new-folder state
+  const [creatingFolder, setCreatingFolder] = useState(false)
+  const [folderName, setFolderName] = useState("")
+  const folderInputRef = useRef<HTMLInputElement>(null)
+
+  // Repo metadata state
   const [repoMeta, setRepoMeta] = useState<RepoMeta | null>(null)
   const [repoMetaLoading, setRepoMetaLoading] = useState(false)
   const [repoMetaError, setRepoMetaError] = useState<string | null>(null)
-  const repoInputRef = useRef<HTMLInputElement>(null)
   const repoMetaCacheRef = useRef(new Map<string, RepoMeta>())
   const repoKeyRef = useRef<string | null>(null)
 
   const isBusy = cloneStatus === "cloning" || cloneStatus === "success"
 
-  const parsedRepo = useMemo(() => parseRepoRef(repoInput), [repoInput])
-  const inputMode: ExistingInputMode = useMemo(() => classifyExistingInput(filter), [filter])
+  const inputMode: BrowserInputMode = useMemo(() => classifyBrowserInput(input), [input])
+  const parsedRepo = useMemo(
+    () => (inputMode === "repo" ? parseRepoRef(input) : null),
+    [inputMode, input]
+  )
 
-  /** Pasting a git URL into the New or Existing inputs jumps straight to the GitHub tab. */
-  const redirectGitUrl = useCallback((value: string): boolean => {
-    if (!parseGitRepoUrl(value.trim())) return false
-    setRepoInput(value.trim())
-    setTab("github")
-    return true
+  const arriveAt = useCallback((result: FsListResult, fromBack = false) => {
+    const previous = currentPathRef.current
+    if (!fromBack && previous && previous !== result.path) {
+      setHistory((stack) => [...stack, previous])
+    }
+    currentPathRef.current = result.path
+    lastBrowsedPath = result.path
+    setDir(result)
+    setDirError(null)
+    setMissingPath(null)
+    setInput("")
+    setHighlight(0)
   }, [])
 
   const navigate = useCallback(async (target?: string, fromBack = false) => {
     const seq = ++requestSeqRef.current
     setDirError(null)
-    setFilter("")
-    setHighlight(0)
+    setMissingPath(null)
     // Keep the finder keyboard-driven even after mouse navigation
-    filterInputRef.current?.focus()
-
-    const arriveAt = (result: FsListResult) => {
-      const previous = currentPathRef.current
-      if (!fromBack && previous && previous !== result.path) {
-        setHistory((stack) => [...stack, previous])
-      }
-      currentPathRef.current = result.path
-      lastBrowsedPath = result.path
-      setDir(result)
-    }
+    inputRef.current?.focus()
 
     const cached = target !== undefined ? dirCacheRef.current.get(target) : undefined
     if (cached) {
-      arriveAt(cached)
+      arriveAt(cached, fromBack)
       return
     }
     setDirLoading(true)
@@ -193,14 +221,18 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
       const result = await listDirectory(target)
       dirCacheRef.current.set(result.path, result)
       if (seq !== requestSeqRef.current) return
-      arriveAt(result)
+      arriveAt(result, fromBack)
     } catch (error) {
       if (seq !== requestSeqRef.current) return
-      setDirError(error instanceof Error ? error.message : String(error))
+      const message = error instanceof Error ? error.message : String(error)
+      setDirError(message)
+      if (target && message.startsWith("Folder not found")) {
+        setMissingPath(target)
+      }
     } finally {
       if (seq === requestSeqRef.current) setDirLoading(false)
     }
-  }, [listDirectory])
+  }, [listDirectory, arriveAt])
 
   const goBack = useCallback(() => {
     const previous = history[history.length - 1]
@@ -209,51 +241,59 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
     void navigate(previous, true)
   }, [history, navigate])
 
+  /** Create a folder (inline row or a missing typed path) and step into it. */
+  const createFolder = useCallback(async (target: string) => {
+    setDirLoading(true)
+    setDirError(null)
+    try {
+      const result = await makeDirectory(target)
+      if (result.parentPath) dirCacheRef.current.delete(result.parentPath)
+      dirCacheRef.current.set(result.path, result)
+      arriveAt(result)
+      setCreatingFolder(false)
+      setFolderName("")
+      inputRef.current?.focus()
+    } catch (error) {
+      setDirError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setDirLoading(false)
+    }
+  }, [makeDirectory, arriveAt])
+
+  const trimmedFolderName = folderName.trim()
+  const canCreateFolder = !!trimmedFolderName && !/[\\/]/.test(trimmedFolderName) && !!dir && !dirLoading
+
   useEffect(() => {
     if (open) {
-      setTab("new")
-      setNewPath(`${DEFAULT_NEW_PROJECT_ROOT}/`)
       setCloneStatus("idle")
       setCloneError(null)
       setDir(null)
       setDirError(null)
-      setFilter("")
+      setMissingPath(null)
+      setInput("")
       setHighlight(0)
       setHistory([])
-      setRepoInput("")
+      setCreatingFolder(false)
+      setFolderName("")
       setRepoMeta(null)
       setRepoMetaError(null)
       dirCacheRef.current.clear()
       currentPathRef.current = null
+      setTimeout(() => inputRef.current?.focus(), 0)
+      void navigate(lastBrowsedPath)
     }
+    // Deliberately keyed on `open` alone: `navigate` picks up new prop identities anyway
   }, [open])
 
   useEffect(() => {
-    if (open && !isBusy) {
-      setTimeout(() => {
-        if (tab === "new") {
-          const input = newPathInputRef.current
-          input?.focus()
-          input?.setSelectionRange(input.value.length, input.value.length)
-        } else if (tab === "existing") {
-          filterInputRef.current?.focus()
-        } else {
-          repoInputRef.current?.focus()
-        }
-      }, 0)
+    if (creatingFolder) {
+      setTimeout(() => folderInputRef.current?.focus(), 0)
     }
-  }, [tab, open, isBusy])
-
-  // Lazy-load the browser the first time the existing tab is shown
-  useEffect(() => {
-    if (open && tab === "existing" && !dir && !dirLoading && !dirError) {
-      void navigate(lastBrowsedPath)
-    }
-  }, [open, tab, dir, dirLoading, dirError, navigate])
+  }, [creatingFolder])
 
   // Debounced repo metadata lookup so the user can confirm they picked the right repo
   useEffect(() => {
-    if (tab !== "github" || !open) return
+    if (!open) return
     if (!parsedRepo || parsedRepo.host !== "github.com") {
       repoKeyRef.current = null
       setRepoMeta(null)
@@ -306,18 +346,16 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
       }
     }, 350)
     return () => clearTimeout(timer)
-  }, [tab, open, parsedRepo])
+  }, [open, parsedRepo])
 
-  const trimmedNewPath = newPath.trim()
-  const newBasename = pathBasename(trimmedNewPath)
-
-  // Clone destination derived from the repo name, with owner-repo fallback
-  const clonePath = parsedRepo ? `${DEFAULT_NEW_PROJECT_ROOT}/${parsedRepo.repo}` : ""
-  const cloneFallbackPath = parsedRepo ? `${DEFAULT_NEW_PROJECT_ROOT}/${parsedRepo.owner}-${parsedRepo.repo}` : ""
+  const cloneDestination = useMemo(
+    () => (dir && parsedRepo ? resolveCloneDestination(dir, parsedRepo) : null),
+    [dir, parsedRepo]
+  )
 
   const visibleEntries = useMemo(
-    () => (dir ? filterDirEntries(dir.entries, inputMode === "filter" ? filter : "") : []),
-    [dir, filter, inputMode]
+    () => (dir ? filterDirEntries(dir.entries, inputMode === "filter" ? input : "") : []),
+    [dir, input, inputMode]
   )
   // Server sorts dirs first, so navigable rows are a prefix of visibleEntries
   const visibleDirCount = useMemo(
@@ -334,28 +372,21 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
 
   const dirBasename = dir ? (abbreviateHomePath(dir.path, dir.homePath).split(/[\\/]/).pop() || dir.path) : ""
 
-  const canSubmit = !isBusy && (
-    tab === "new"
-      // A trailing separator means no folder name has been typed yet
-      ? !!newBasename && !/[\\/]$/.test(trimmedNewPath)
-      : tab === "existing"
-        ? !!dir && !dirLoading
-        : !!parsedRepo
-  )
+  const canSubmit = !isBusy && !!dir && !dirLoading && (inputMode !== "repo" || !!cloneDestination)
 
   const handleSubmit = useCallback(async () => {
-    if (!canSubmit) return
+    if (!canSubmit || !dir) return
 
-    if (tab === "github" && parsedRepo) {
+    if (parsedRepo && cloneDestination) {
       // Keep modal open with progress for clones
       setCloneStatus("cloning")
       setCloneError(null)
       try {
         await onConfirm({
           mode: "clone",
-          localPath: clonePath,
-          fallbackPath: cloneFallbackPath,
-          title: parsedRepo.repo,
+          localPath: cloneDestination.localPath,
+          fallbackPath: cloneDestination.fallbackPath,
+          title: cloneDestination.title,
           cloneUrl: parsedRepo.cloneUrl,
         })
         setCloneStatus("success")
@@ -365,25 +396,24 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
         setCloneStatus("error")
         setCloneError(error instanceof Error ? error.message : String(error))
       }
-    } else if (tab === "new") {
-      onConfirm({ mode: "new", localPath: trimmedNewPath, title: newBasename })
-      onOpenChange(false)
-    } else if (dir) {
+    } else {
       const folderName = dir.path.split(/[\\/]/).pop() || dir.path
       onConfirm({ mode: "existing", localPath: dir.path, title: folderName })
       onOpenChange(false)
     }
-  }, [canSubmit, tab, parsedRepo, clonePath, cloneFallbackPath, trimmedNewPath, newBasename, dir, onConfirm, onOpenChange])
+  }, [canSubmit, dir, parsedRepo, cloneDestination, onConfirm, onOpenChange])
 
-  const handleBrowserKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Escape") {
       onOpenChange(false)
       return
     }
     if (e.key === "Enter") {
       e.preventDefault()
-      if (inputMode === "path") {
-        void navigate(filter.trim())
+      if (inputMode === "repo") {
+        void handleSubmit()
+      } else if (inputMode === "path") {
+        void navigate(input.trim())
       } else if (e.metaKey || e.ctrlKey) {
         void handleSubmit()
       } else if (visibleDirCount > 0 && dir) {
@@ -392,7 +422,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
       }
       return
     }
-    if (e.key === "Backspace" && filter === "" && history.length > 0) {
+    if (e.key === "Backspace" && input === "" && history.length > 0) {
       e.preventDefault()
       goBack()
       return
@@ -406,7 +436,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
       e.preventDefault()
       setHighlight(Math.max(0, clampedHighlight - 1))
     }
-  }, [onOpenChange, inputMode, filter, dir, visibleDirCount, visibleEntries, clampedHighlight, history.length, goBack, handleSubmit, navigate])
+  }, [onOpenChange, inputMode, input, dir, visibleDirCount, visibleEntries, clampedHighlight, history.length, goBack, handleSubmit, navigate])
 
   const repoCard = parsedRepo ? (
     <div className="border border-border rounded-lg px-3 py-2.5 space-y-1.5">
@@ -441,35 +471,23 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
       ) : parsedRepo.host !== "github.com" ? (
         <p className="text-xs text-muted-foreground">Repository on {parsedRepo.host}</p>
       ) : null}
-      <p className="text-xs text-muted-foreground font-mono pt-0.5">
-        {clonePath}
-      </p>
+      {cloneDestination && dir ? (
+        <p className="text-xs text-muted-foreground font-mono pt-0.5">
+          Clone {cloneDestination.direct ? "into" : "to"} {abbreviateHomePath(cloneDestination.localPath, dir.homePath)}
+        </p>
+      ) : null}
     </div>
   ) : null
 
   return (
     <Dialog open={open} onOpenChange={isBusy ? undefined : onOpenChange}>
       <DialogContent
-        size={!isBusy && tab === "existing" ? "lg" : tab === "github" ? "md" : "sm"}
+        size="lg"
         onInteractOutside={isBusy ? (e) => e.preventDefault() : undefined}
         onEscapeKeyDown={isBusy ? (e) => e.preventDefault() : undefined}
       >
         <DialogBody className="space-y-4">
           <DialogTitle>Add Project</DialogTitle>
-
-          {!isBusy && (
-            <SegmentedControl
-              value={tab}
-              onValueChange={setTab}
-              options={[
-                { value: "new" as Tab, label: "New" },
-                { value: "existing" as Tab, label: "Existing" },
-                { value: "github" as Tab, label: "GitHub" },
-              ]}
-              className="w-full mb-2"
-              optionClassName="flex-1 justify-center"
-            />
-          )}
 
           {isBusy ? (
             <div className="space-y-3 py-1">
@@ -487,53 +505,26 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
                 </span>
               </div>
             </div>
-          ) : tab === "new" ? (
-            <div className="space-y-2">
-              <input
-                ref={newPathInputRef}
-                type="text"
-                value={newPath}
-                onChange={(e) => {
-                  if (redirectGitUrl(e.target.value)) return
-                  setNewPath(e.target.value)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void handleSubmit()
-                  if (e.key === "Escape") onOpenChange(false)
-                }}
-                spellCheck={false}
-                autoComplete="off"
-                aria-label="New project path"
-                placeholder={`${DEFAULT_NEW_PROJECT_ROOT}/my-project`}
-                className="w-full bg-transparent text-xs text-muted-foreground font-mono focus:text-foreground outline-none placeholder:text-muted-foreground/50"
-              />
-              <p className="text-xs text-muted-foreground">
-                The folder will be created and named after the last path segment.
-              </p>
-            </div>
-          ) : tab === "existing" ? (
+          ) : (
             <div className="space-y-2">
               <Input
-                ref={filterInputRef}
+                ref={inputRef}
                 type="text"
-                value={filter}
-                onChange={(e) => {
-                  if (redirectGitUrl(e.target.value)) return
-                  setFilter(e.target.value)
-                  setHighlight(0)
-                  setCloneError(null)
-                }}
-                onKeyDown={handleBrowserKeyDown}
-                placeholder="Filter folders or jump to a path"
+                value={input}
+                onChange={(e) => { setInput(e.target.value); setHighlight(0); setCloneError(null) }}
+                onKeyDown={handleInputKeyDown}
+                placeholder="Filter folders, jump to a path, or paste a git repo"
                 spellCheck={false}
                 autoComplete="off"
               />
 
               {inputMode === "path" ? (
                 <p className="text-xs text-muted-foreground">
-                  Press <kbd className="px-1 py-0.5 rounded border border-border bg-muted font-mono text-[10px]">Enter</kbd> to go to <span className="font-mono">{filter.trim()}</span>
+                  Press <kbd className="px-1 py-0.5 rounded border border-border bg-muted font-mono text-[10px]">Enter</kbd> to go to <span className="font-mono">{input.trim()}</span>
                 </p>
               ) : null}
+
+              {repoCard}
 
               <div className="border border-border rounded-lg overflow-hidden">
                 {/* pl-2 + the 4px centering inset inside the h-6 button lines the arrow up with the row icons (p-1 + px-2) */}
@@ -562,17 +553,57 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
                 </div>
 
                 {/* Entries */}
-                <div ref={listRef} className="h-64 overflow-y-auto overscroll-contain p-1">
+                <div ref={listRef} className="h-56 overflow-y-auto overscroll-contain p-1">
+                  {creatingFolder && dir ? (
+                    <div className="flex items-center gap-2 px-2 py-1">
+                      <Folder className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                      <Input
+                        ref={folderInputRef}
+                        type="text"
+                        value={folderName}
+                        onChange={(e) => setFolderName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && canCreateFolder) {
+                            void createFolder(joinDirPath(dir.path, trimmedFolderName))
+                          }
+                          if (e.key === "Escape") {
+                            e.stopPropagation()
+                            setCreatingFolder(false)
+                            setFolderName("")
+                            inputRef.current?.focus()
+                          }
+                        }}
+                        placeholder="Folder name"
+                        spellCheck={false}
+                        autoComplete="off"
+                        className="h-7 text-sm"
+                      />
+                    </div>
+                  ) : null}
                   {dirError ? (
-                    <div className="px-2 py-3 text-sm text-destructive">{dirError}</div>
+                    <div className="px-2 py-3 space-y-2">
+                      <p className="text-sm text-destructive">{dirError}</p>
+                      {missingPath ? (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => void createFolder(missingPath)}
+                        >
+                          <FolderPlus className="size-3.5" data-icon="inline-start" />
+                          Create this folder
+                        </Button>
+                      ) : null}
+                    </div>
                   ) : !dir && dirLoading ? (
                     <div className="flex items-center gap-2 px-2 py-3 text-sm text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" /> Loading&hellip;
                     </div>
                   ) : visibleEntries.length === 0 ? (
-                    <div className="px-2 py-3 text-sm text-muted-foreground">
-                      {filter && inputMode === "filter" ? "No matches" : "Empty folder"}
-                    </div>
+                    !creatingFolder ? (
+                      <div className="px-2 py-3 text-sm text-muted-foreground">
+                        {input && inputMode === "filter" ? "No matches" : "Empty folder"}
+                      </div>
+                    ) : null
                   ) : (
                     <>
                       {visibleEntries.map((entry, index) => entry.kind === "dir" ? (
@@ -610,25 +641,8 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
               </div>
 
               <p className="text-xs text-muted-foreground">
-                Open a folder, then add it as a project. <kbd className="px-1 py-0.5 rounded border border-border bg-muted font-mono text-[10px]">&#8984;&#9166;</kbd> adds the current folder.
+                Open a folder and add it as a project, or paste a git repo to clone it there. <kbd className="px-1 py-0.5 rounded border border-border bg-muted font-mono text-[10px]">&#8984;&#9166;</kbd> adds the current folder.
               </p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <Input
-                ref={repoInputRef}
-                type="text"
-                value={repoInput}
-                onChange={(e) => { setRepoInput(e.target.value); setCloneError(null) }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void handleSubmit()
-                  if (e.key === "Escape") onOpenChange(false)
-                }}
-                placeholder="owner/repo or repository URL"
-                spellCheck={false}
-                autoComplete="off"
-              />
-              {repoCard}
             </div>
           )}
 
@@ -639,18 +653,29 @@ export function NewProjectModal({ open, onOpenChange, onConfirm, listDirectory }
           )}
         </DialogBody>
         {!isBusy && (
-          <DialogFooter>
-            <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
+          <DialogFooter className="justify-between">
             <Button
-              variant="secondary"
+              variant="ghost"
               size="sm"
-              onClick={() => void handleSubmit()}
-              disabled={!canSubmit}
+              disabled={!dir || dirLoading || creatingFolder}
+              onClick={() => setCreatingFolder(true)}
             >
-              {tab === "new" ? "Create" : tab === "existing" ? (dir ? `Add "${dirBasename}"` : "Add") : "Clone"}
+              <FolderPlus className="size-3.5" data-icon="inline-start" />
+              New Folder
             </Button>
+            <div className="flex gap-2">
+              <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void handleSubmit()}
+                disabled={!canSubmit}
+              >
+                {inputMode === "repo" ? "Clone" : dir ? `Add "${dirBasename}"` : "Add"}
+              </Button>
+            </div>
           </DialogFooter>
         )}
       </DialogContent>

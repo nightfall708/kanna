@@ -25,6 +25,7 @@ export function LocalProjectsPage() {
         onOpenProject={state.handleOpenLocalProject}
         onCreateProject={state.handleCreateProject}
         onListDirectory={(path) => state.socket.command<FsListResult>({ type: "fs.list", path })}
+        onMakeDirectory={(path) => state.socket.command<FsListResult>({ type: "fs.mkdir", path })}
       />
     </div>
   )

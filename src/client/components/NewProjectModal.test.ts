@@ -2,31 +2,60 @@ import { describe, expect, test } from "bun:test"
 import type { FsDirEntry } from "../../shared/types"
 import {
   abbreviateHomePath,
-  classifyExistingInput,
+  classifyBrowserInput,
   filterDirEntries,
   joinDirPath,
   parseRepoRef,
   pathBasename,
+  resolveCloneDestination,
 } from "./NewProjectModal"
 
-describe("classifyExistingInput", () => {
-  test("detects git URLs", () => {
-    expect(classifyExistingInput("https://github.com/jakemor/kanna")).toBe("git")
-    expect(classifyExistingInput("git@github.com:jakemor/kanna.git")).toBe("git")
+describe("classifyBrowserInput", () => {
+  test("detects git repos (URLs and owner/repo shorthand)", () => {
+    expect(classifyBrowserInput("https://github.com/jakemor/kanna")).toBe("repo")
+    expect(classifyBrowserInput("git@github.com:jakemor/kanna.git")).toBe("repo")
+    expect(classifyBrowserInput("jakemor/kanna")).toBe("repo")
   })
 
-  test("detects path jumps", () => {
-    expect(classifyExistingInput("/Users/jake/Projects")).toBe("path")
-    expect(classifyExistingInput("~")).toBe("path")
-    expect(classifyExistingInput("~/Projects")).toBe("path")
-    expect(classifyExistingInput("C:\\Projects")).toBe("path")
-    expect(classifyExistingInput("  /var/tmp  ")).toBe("path")
+  test("detects path jumps, which win over repo shorthand", () => {
+    expect(classifyBrowserInput("/Users/jake/Projects")).toBe("path")
+    expect(classifyBrowserInput("~")).toBe("path")
+    expect(classifyBrowserInput("~/Projects")).toBe("path")
+    expect(classifyBrowserInput("C:\\Projects")).toBe("path")
+    expect(classifyBrowserInput("  /var/tmp  ")).toBe("path")
   })
 
   test("treats everything else as a filter", () => {
-    expect(classifyExistingInput("")).toBe("filter")
-    expect(classifyExistingInput("kanna")).toBe("filter")
-    expect(classifyExistingInput(".config")).toBe("filter")
+    expect(classifyBrowserInput("")).toBe("filter")
+    expect(classifyBrowserInput("kanna")).toBe("filter")
+    expect(classifyBrowserInput(".config")).toBe("filter")
+  })
+})
+
+describe("resolveCloneDestination", () => {
+  const repo = parseRepoRef("jakemor/kanna")!
+
+  test("clones directly into an empty current folder, titled after it", () => {
+    const dest = resolveCloneDestination({ path: "/home/jake/my-app", entries: [] }, repo)
+    expect(dest).toEqual({
+      localPath: "/home/jake/my-app",
+      fallbackPath: "/home/jake/my-app/kanna",
+      title: "my-app",
+      direct: true,
+    })
+  })
+
+  test("clones to a repo-named subfolder when the current folder has contents", () => {
+    const dest = resolveCloneDestination(
+      { path: "/home/jake/Projects", entries: [{ name: "other", kind: "dir" as const }] },
+      repo
+    )
+    expect(dest).toEqual({
+      localPath: "/home/jake/Projects/kanna",
+      fallbackPath: "/home/jake/Projects/jakemor-kanna",
+      title: "kanna",
+      direct: false,
+    })
   })
 })
 

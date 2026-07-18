@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
-import { listDirectory } from "./paths"
+import { createDirectory, listDirectory, resolveClonePath } from "./paths"
 
 let root: string
 
@@ -69,5 +69,46 @@ describe("listDirectory", () => {
 
   test("throws a friendly error when the path is a file", async () => {
     expect(listDirectory(path.join(root, "zeta.txt"))).rejects.toThrow(/Not a folder/)
+  })
+})
+
+describe("createDirectory", () => {
+  test("creates nested folders and returns their listing", async () => {
+    const target = path.join(root, "made", "deeply")
+    const result = await createDirectory(target)
+    expect(result.path).toBe(target)
+    expect(result.entries).toEqual([])
+    expect(result.parentPath).toBe(path.join(root, "made"))
+  })
+
+  test("is idempotent for existing folders", async () => {
+    const result = await createDirectory(path.join(root, "Alpha"))
+    expect(result.path).toBe(path.join(root, "Alpha"))
+  })
+
+  test("rejects paths that are files", async () => {
+    expect(createDirectory(path.join(root, "zeta.txt"))).rejects.toThrow()
+  })
+})
+
+describe("resolveClonePath", () => {
+  test("accepts a missing path", async () => {
+    const target = path.join(root, "not-yet-here")
+    expect(await resolveClonePath(target)).toBe(target)
+  })
+
+  test("accepts an existing empty directory", async () => {
+    const target = path.join(root, "empty-target")
+    await mkdir(target)
+    expect(await resolveClonePath(target)).toBe(target)
+  })
+
+  test("falls back when the primary is non-empty", async () => {
+    const fallback = path.join(root, "fallback-target")
+    expect(await resolveClonePath(root, fallback)).toBe(fallback)
+  })
+
+  test("throws when primary and fallback are both taken", async () => {
+    expect(resolveClonePath(root, root)).rejects.toThrow(/already exists and is not empty/)
   })
 })

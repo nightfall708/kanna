@@ -28,32 +28,33 @@ export async function ensureProjectDirectory(localPath: string) {
   }
 }
 
-async function pathExists(p: string): Promise<boolean> {
+/** A clone can target a path that doesn't exist yet, or an existing empty directory. */
+async function isAvailableCloneTarget(p: string): Promise<boolean> {
   try {
-    await stat(p)
-    return true
-  } catch {
-    return false
+    const entries = await readdir(p)
+    return entries.length === 0
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT"
   }
 }
 
 /**
- * Pick a clone destination that doesn't already exist.
+ * Pick a clone destination that is missing or empty.
  * Tries `localPath` first, then falls back to `fallbackPath` if provided.
  * Returns the resolved absolute path that was chosen.
  */
 export async function resolveClonePath(localPath: string, fallbackPath?: string): Promise<string> {
   const primary = resolveLocalPath(localPath)
-  if (!(await pathExists(primary))) {
+  if (await isAvailableCloneTarget(primary)) {
     return primary
   }
   if (fallbackPath) {
     const secondary = resolveLocalPath(fallbackPath)
-    if (!(await pathExists(secondary))) {
+    if (await isAvailableCloneTarget(secondary)) {
       return secondary
     }
   }
-  throw new Error(`Destination path '${primary}' already exists`)
+  throw new Error(`Destination path '${primary}' already exists and is not empty`)
 }
 
 /**
@@ -142,6 +143,17 @@ export async function listDirectory(requestedPath?: string): Promise<FsListResul
     entries: truncated ? entries.slice(0, FS_LIST_ENTRY_LIMIT) : entries,
     truncated,
   }
+}
+
+/** Create a directory (parents included) and return its fresh listing. */
+export async function createDirectory(requestedPath: string): Promise<FsListResult> {
+  const resolved = resolveLocalPath(requestedPath)
+  await mkdir(resolved, { recursive: true })
+  const info = await stat(resolved)
+  if (!info.isDirectory()) {
+    throw new Error(`Not a folder: ${resolved}`)
+  }
+  return listDirectory(resolved)
 }
 
 export function getProjectUploadDir(localPath: string) {
