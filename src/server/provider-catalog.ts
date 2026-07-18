@@ -5,6 +5,7 @@ import type {
   CursorModelOptions,
   ClaudeContextWindow,
   ModelOptions,
+  PiModelOptions,
   ProviderCatalogEntry,
   ProviderModelOption,
   ServiceTier,
@@ -16,9 +17,11 @@ import {
   normalizeClaudeContextWindow,
   normalizeClaudeFastMode,
   normalizeCodexReasoningEffort,
+  normalizePiReasoningEffort,
   normalizeProviderModelId,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
+  isPiReasoningEffort,
   supportsProviderFastMode,
 } from "../shared/types"
 
@@ -106,6 +109,10 @@ export function getServerProviderCatalog(provider: AgentProvider): ProviderCatal
 export function normalizeServerModel(provider: AgentProvider, model?: string): string {
   const catalog = getServerProviderCatalog(provider)
   const normalizedModel = normalizeProviderModelId(provider, model, catalog.defaultModel)
+  // Pi accepts arbitrary OpenRouter model ids — the catalog is only a suggestion list.
+  if (provider === "pi") {
+    return normalizedModel
+  }
   if (catalog.models.some((candidate) => candidate.id === normalizedModel)) {
     return normalizedModel
   }
@@ -149,6 +156,18 @@ export function normalizeCodexModelOptions(
 // Claude and Codex both express fast mode as a "fast" service tier at spawn time.
 export function serviceTierFromModelOptions(modelOptions: { fastMode: boolean }): ServiceTier | undefined {
   return modelOptions.fastMode ? "fast" : undefined
+}
+
+export function normalizePiModelOptions(
+  modelOptions?: ModelOptions,
+  legacyEffort?: string,
+): PiModelOptions {
+  const reasoningEffort = modelOptions?.pi?.reasoningEffort
+  return {
+    reasoningEffort: normalizePiReasoningEffort(
+      isPiReasoningEffort(reasoningEffort) ? reasoningEffort : legacyEffort,
+    ),
+  }
 }
 
 export function normalizeCursorModelOptions(modelOptions?: ModelOptions): CursorModelOptions {

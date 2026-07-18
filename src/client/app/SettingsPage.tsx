@@ -1748,6 +1748,33 @@ export function SettingsPage() {
                     </SettingsRow>
 
                     <SettingsRow
+                      title="Pi Defaults"
+                      description="Saved defaults when using Pi (via OpenRouter). Any OpenRouter model id can be entered in the model picker."
+                      alignStart
+                    >
+                      <div className="max-w-[420px]">
+                        <ChatPreferenceControls
+                          availableProviders={PROVIDERS}
+                          selectedProvider="pi"
+                          showProviderPicker={false}
+                          providerLocked
+                          model={providerDefaults.pi.model}
+                          modelOptions={providerDefaults.pi.modelOptions}
+                          onModelChange={(_, model) => {
+                            handleProviderDefaultModelChange("pi", model)
+                          }}
+                          onModelOptionChange={(change) => {
+                            if (change.type === "piReasoningEffort") {
+                              handleProviderDefaultModelOptionsChange("pi", { reasoningEffort: change.effort })
+                            }
+                          }}
+                          planMode={providerDefaults.pi.planMode}
+                          className="justify-start flex-wrap"
+                        />
+                      </div>
+                    </SettingsRow>
+
+                    <SettingsRow
                       title="Quick Response SDK"
                       description={llmValidationDescription}
                       alignStart

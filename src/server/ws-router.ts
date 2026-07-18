@@ -489,6 +489,13 @@ export function createWsRouter({
         },
         planMode: false,
       },
+      pi: {
+        model: "moonshotai/kimi-k2.6",
+        modelOptions: {
+          reasoningEffort: "medium",
+        },
+        planMode: false,
+      },
     },
     boardAutoReturn: false,
     warning: null,
@@ -528,6 +535,14 @@ export function createWsRouter({
         modelOptions: {
           ...snapshot.providerDefaults.cursor.modelOptions,
           ...patch.providerDefaults?.cursor?.modelOptions,
+        },
+      },
+      pi: {
+        ...snapshot.providerDefaults.pi,
+        ...patch.providerDefaults?.pi,
+        modelOptions: {
+          ...snapshot.providerDefaults.pi.modelOptions,
+          ...patch.providerDefaults?.pi?.modelOptions,
         },
       },
     },

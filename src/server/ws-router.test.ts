@@ -110,6 +110,13 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       },
       planMode: false,
     },
+    pi: {
+      model: "moonshotai/kimi-k2.6",
+      modelOptions: {
+        reasoningEffort: "medium",
+      },
+      planMode: false,
+    },
   },
   boardAutoReturn: false,
   warning: null,

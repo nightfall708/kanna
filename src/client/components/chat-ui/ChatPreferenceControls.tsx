@@ -1,8 +1,9 @@
 import { useState, type ComponentType, type SVGProps } from "react"
-import { Box, Brain, Gauge, ListTodo, LockOpen, SquareMenu, SquareMinus } from "lucide-react"
+import { Box, Brain, Gauge, ListTodo, LockOpen, PencilLine, SquareMenu, SquareMinus } from "lucide-react"
 import {
   CLAUDE_CONTEXT_WINDOW_OPTIONS,
   CLAUDE_REASONING_OPTIONS,
+  PI_REASONING_OPTIONS,
   getCodexReasoningOptions,
   type AgentProvider,
   type ClaudeContextWindow,
@@ -11,6 +12,8 @@ import {
   type CodexModelOptions,
   type CodexReasoningEffort,
   type CursorModelOptions,
+  type PiModelOptions,
+  type PiReasoningEffort,
   type ProviderCatalogEntry,
   supportsClaudeMaxReasoningEffort,
 } from "../../../shared/types"
@@ -63,10 +66,30 @@ function CursorIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
   )
 }
 
+function PiIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      aria-hidden="true"
+      className={cn("shrink-0", className)}
+      {...props}
+    >
+      <path d="M4 6.5c1.2-1.4 3-1.5 5-1.5h11" />
+      <path d="M8.5 5.5V19" />
+      <path d="M15.5 5.5V16c0 2 1 3 2.5 3 1 0 1.7-.4 2-1" />
+    </svg>
+  )
+}
+
 export const PROVIDER_ICONS: Record<AgentProvider, IconComponent> = {
   claude: AnthropicIcon,
   codex: OpenAIIcon,
   cursor: CursorIcon,
+  pi: PiIcon,
 }
 
 export function PopoverMenuItem({
@@ -154,7 +177,50 @@ export type ModelOptionChange =
   | { type: "claudeReasoningEffort"; effort: ClaudeReasoningEffort }
   | { type: "contextWindow"; contextWindow: ClaudeContextWindow }
   | { type: "codexReasoningEffort"; effort: CodexReasoningEffort }
+  | { type: "piReasoningEffort"; effort: PiReasoningEffort }
   | { type: "fastMode"; fastMode: boolean }
+
+/**
+ * Free-text model entry for providers that accept arbitrary model ids (pi →
+ * any OpenRouter model). Rendered at the bottom of the model picker popover.
+ */
+function CustomModelInput({
+  placeholder,
+  onSubmit,
+}: {
+  placeholder: string
+  onSubmit: (model: string) => void
+}) {
+  const [value, setValue] = useState("")
+
+  const submit = () => {
+    const trimmed = value.trim()
+    if (!trimmed) return
+    onSubmit(trimmed)
+  }
+
+  return (
+    <div className="flex items-center gap-2 p-2 border-t border-border/50">
+      <PencilLine className="h-4 w-4 shrink-0 text-muted-foreground" />
+      <input
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault()
+            submit()
+          }
+          event.stopPropagation()
+        }}
+        placeholder={placeholder}
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+      />
+    </div>
+  )
+}
 
 interface ChatPreferenceControlsProps {
   availableProviders: ProviderCatalogEntry[]
@@ -162,7 +228,7 @@ interface ChatPreferenceControlsProps {
   showProviderPicker?: boolean
   providerLocked?: boolean
   model: string
-  modelOptions: ClaudeModelOptions | CodexModelOptions | CursorModelOptions
+  modelOptions: ClaudeModelOptions | CodexModelOptions | CursorModelOptions | PiModelOptions
   onProviderChange?: (provider: AgentProvider) => void
   onModelChange: (provider: AgentProvider, model: string) => void
   onModelOptionChange: (change: ModelOptionChange) => void
@@ -194,6 +260,7 @@ export function ChatPreferenceControls({
   const claudeModelOptions = selectedProvider === "claude" ? modelOptions as ClaudeModelOptions : null
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
   const cursorModelOptions = selectedProvider === "cursor" ? modelOptions as CursorModelOptions : null
+  const piModelOptions = selectedProvider === "pi" ? modelOptions as PiModelOptions : null
   const codexReasoningOptions = getCodexReasoningOptions(model)
   const selectedModelOption = providerConfig.models.find((candidate) => candidate.id === model)
   const contextWindowOptions = selectedModelOption?.contextWindowOptions ?? []
@@ -239,34 +306,47 @@ export function ChatPreferenceControls({
           </>
         )}
       >
-        {(close) => providerConfig.models.map((candidate) => {
-          const Icon = Box
-          const downgradesUltraToMax = candidate.id === "gpt-5.6-luna"
-            && codexModelOptions?.reasoningEffort === "ultra"
-          return (
-            <PopoverMenuItem
-              key={candidate.id}
-              onClick={() => {
-                onModelChange(selectedProvider, candidate.id)
-                close()
-              }}
-              selected={model === candidate.id}
-              icon={<Icon className="h-4 w-4 text-muted-foreground" />}
-              label={
-                downgradesUltraToMax
-                  ? (
-                    <>
-                      {candidate.label}{" "}
-                      <span className="text-xs font-normal text-muted-foreground">
-                        Ultra → Max
-                      </span>
-                    </>
-                  )
-                  : candidate.label
-              }
-            />
-          )
-        })}
+        {(close) => (
+          <>
+            {providerConfig.models.map((candidate) => {
+              const Icon = Box
+              const downgradesUltraToMax = candidate.id === "gpt-5.6-luna"
+                && codexModelOptions?.reasoningEffort === "ultra"
+              return (
+                <PopoverMenuItem
+                  key={candidate.id}
+                  onClick={() => {
+                    onModelChange(selectedProvider, candidate.id)
+                    close()
+                  }}
+                  selected={model === candidate.id}
+                  icon={<Icon className="h-4 w-4 text-muted-foreground" />}
+                  label={
+                    downgradesUltraToMax
+                      ? (
+                        <>
+                          {candidate.label}{" "}
+                          <span className="text-xs font-normal text-muted-foreground">
+                            Ultra → Max
+                          </span>
+                        </>
+                      )
+                      : candidate.label
+                  }
+                />
+              )
+            })}
+            {selectedProvider === "pi" ? (
+              <CustomModelInput
+                placeholder="Any OpenRouter model id…"
+                onSubmit={(customModel) => {
+                  onModelChange(selectedProvider, customModel)
+                  close()
+                }}
+              />
+            ) : null}
+          </>
+        )}
       </InputPopover>
 
       {selectedProvider !== "cursor" ? (
@@ -277,7 +357,9 @@ export function ChatPreferenceControls({
               <span>{
                 selectedProvider === "claude"
                   ? CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === claudeModelOptions?.reasoningEffort)?.label ?? claudeModelOptions?.reasoningEffort
-                  : codexReasoningOptions.find((effort) => effort.id === codexModelOptions?.reasoningEffort)?.label ?? codexModelOptions?.reasoningEffort
+                  : selectedProvider === "pi"
+                    ? PI_REASONING_OPTIONS.find((effort) => effort.id === piModelOptions?.reasoningEffort)?.label ?? piModelOptions?.reasoningEffort
+                    : codexReasoningOptions.find((effort) => effort.id === codexModelOptions?.reasoningEffort)?.label ?? codexModelOptions?.reasoningEffort
               }</span>
             </>
           )}
@@ -297,19 +379,32 @@ export function ChatPreferenceControls({
                   disabled={effort.id === "max" && !supportsClaudeMaxReasoningEffort(model)}
                 />
               ))
-              : codexReasoningOptions.map((effort) => (
-                <PopoverMenuItem
-                  key={effort.id}
-                  onClick={() => {
-                    onModelOptionChange({ type: "codexReasoningEffort", effort: effort.id })
-                    close()
-                  }}
-                  selected={codexModelOptions?.reasoningEffort === effort.id}
-                  icon={<Brain className="h-4 w-4 text-muted-foreground" />}
-                  label={effort.label}
-                  description={effort.description}
-                />
-              ))
+              : selectedProvider === "pi"
+                ? PI_REASONING_OPTIONS.map((effort) => (
+                  <PopoverMenuItem
+                    key={effort.id}
+                    onClick={() => {
+                      onModelOptionChange({ type: "piReasoningEffort", effort: effort.id })
+                      close()
+                    }}
+                    selected={piModelOptions?.reasoningEffort === effort.id}
+                    icon={<Brain className="h-4 w-4 text-muted-foreground" />}
+                    label={effort.label}
+                  />
+                ))
+                : codexReasoningOptions.map((effort) => (
+                  <PopoverMenuItem
+                    key={effort.id}
+                    onClick={() => {
+                      onModelOptionChange({ type: "codexReasoningEffort", effort: effort.id })
+                      close()
+                    }}
+                    selected={codexModelOptions?.reasoningEffort === effort.id}
+                    icon={<Brain className="h-4 w-4 text-muted-foreground" />}
+                    label={effort.label}
+                    description={effort.description}
+                  />
+                ))
           )}
         </InputPopover>
       ) : null}
