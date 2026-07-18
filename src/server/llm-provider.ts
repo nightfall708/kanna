@@ -31,7 +31,7 @@ function normalizeString(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
-export const MAX_FAVE_MODELS = 30
+const MAX_FAVE_MODELS = 30
 
 /** Drop malformed/empty entries; a fave needs an id, its label falls back to a name derived from the id. */
 export function normalizeFaveModels(value: unknown): FaveModel[] {

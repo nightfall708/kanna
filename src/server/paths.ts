@@ -102,7 +102,7 @@ export async function cloneRepository(cloneUrl: string, resolvedPath: string): P
   })
 }
 
-export const FS_LIST_ENTRY_LIMIT = 2_000
+const FS_LIST_ENTRY_LIMIT = 2_000
 
 function compareEntryNames(a: FsDirEntry, b: FsDirEntry) {
   return a.name.localeCompare(b.name, undefined, { sensitivity: "base" })

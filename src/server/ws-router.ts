@@ -36,79 +36,8 @@ import type {
 const DEFAULT_CHAT_RECENT_LIMIT = 200
 const SKILL_AGENT_ALIASES = ["universal", "claude-code"] as const
 
-function isSendToStartingProfilingEnabled() {
-  return process.env.KANNA_PROFILE_SEND_TO_STARTING === "1"
-}
 
-function logSendToStartingProfile(
-  traceId: string | null | undefined,
-  startedAt: number | null | undefined,
-  stage: string,
-  details?: Record<string, unknown>
-) {
-  if (!traceId || startedAt === undefined || startedAt === null || !isSendToStartingProfilingEnabled()) {
-    return
-  }
 
-  console.log("[kanna/send->starting][server]", JSON.stringify({
-    traceId,
-    stage,
-    elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
-    ...details,
-  }))
-}
-
-function countSubscriptionsByTopic(ws: ServerWebSocket<ClientState>) {
-  let sidebar = 0
-  let chat = 0
-  let projectGit = 0
-  let localProjects = 0
-  let update = 0
-  let keybindings = 0
-  let appSettings = 0
-  let terminal = 0
-
-  for (const topic of ws.data.subscriptions.values()) {
-    switch (topic.type) {
-      case "sidebar":
-        sidebar += 1
-        break
-      case "chat":
-        chat += 1
-        break
-      case "project-git":
-        projectGit += 1
-        break
-      case "local-projects":
-        localProjects += 1
-        break
-      case "update":
-        update += 1
-        break
-      case "keybindings":
-        keybindings += 1
-        break
-      case "app-settings":
-        appSettings += 1
-        break
-      case "terminal":
-        terminal += 1
-        break
-    }
-  }
-
-  return {
-    total: ws.data.subscriptions.size,
-    sidebar,
-    chat,
-    projectGit,
-    localProjects,
-    update,
-    keybindings,
-    appSettings,
-    terminal,
-  }
-}
 
 export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
@@ -151,6 +80,8 @@ interface SnapshotComputationCache {
     data: ReturnType<typeof deriveSidebarData>
     signature: string
   }
+  /** Serialized chat snapshots keyed by `chatId:recentLimit`, shared across sockets in one broadcast. */
+  chat?: Map<string, string>
 }
 
 function getSidebarProjectOrder(store: EventStore) {
@@ -163,6 +94,14 @@ function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
   const payload = JSON.stringify(message)
   ws.send(payload)
   return payload.length
+}
+
+/**
+ * Send a snapshot whose body was already serialized once for this broadcast,
+ * so N subscribers cost one JSON.stringify instead of N.
+ */
+function sendSerializedSnapshot(ws: ServerWebSocket<ClientState>, id: string, snapshotJson: string) {
+  ws.send(`{"v":${PROTOCOL_VERSION},"type":"snapshot","id":${JSON.stringify(id)},"snapshot":${snapshotJson}}`)
 }
 
 export function assertSafeSkillSource(source: string) {
@@ -600,24 +539,13 @@ export function createWsRouter({
   }
 
   async function maybePruneStaleEmptyChats(extraSockets?: Iterable<ServerWebSocket<ClientState>>) {
-    const startedAt = performance.now()
     const activeChatIds = getProtectedChatIds()
     const protectedDraftChatIds = getProtectedDraftChatIds(extraSockets)
     const prunedChatIds = await store.pruneStaleEmptyChats?.({
       activeChatIds,
       protectedChatIds: protectedDraftChatIds,
     })
-    if (isSendToStartingProfilingEnabled()) {
-      console.log("[kanna/send->starting][server]", JSON.stringify({
-        stage: "ws.prune_stale_empty_chats",
-        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
-        activeChatCount: activeChatIds.size,
-        protectedDraftChatCount: protectedDraftChatIds.size,
-        prunedCount: prunedChatIds?.length ?? 0,
-        totalChatCount: store.state.chatsById.size,
-        totalProjectCount: store.state.projectsById.size,
-      }))
-    }
+    return prunedChatIds ?? []
   }
 
   function shouldIncludeTopic(topic: SubscriptionTopic, filter?: SnapshotBroadcastFilter) {
@@ -658,7 +586,6 @@ export function createWsRouter({
       return cache.sidebar
     }
 
-    const startedAt = performance.now()
     const activeStatuses = agent.getActiveStatuses()
     const pendingToolKinds = new Map<string, string>()
     for (const [chatId, status] of activeStatuses) {
@@ -671,17 +598,6 @@ export function createWsRouter({
       drainingChatIds: agent.getDrainingChatIds(),
       pendingToolKinds,
     })
-    if (isSendToStartingProfilingEnabled()) {
-      const totalChats = data.projectGroups.reduce((count, group) => count + group.chats.length, 0)
-      console.log("[kanna/send->starting][server]", JSON.stringify({
-        stage: "ws.sidebar_snapshot_built",
-        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
-        projectGroupCount: data.projectGroups.length,
-        chatCount: totalChats,
-        totalChatCount: store.state.chatsById.size,
-        totalProjectCount: store.state.projectsById.size,
-      }))
-    }
 
     const sidebar = {
       data,
@@ -826,166 +742,130 @@ export function createWsRouter({
     }
   }
 
+  function getChatSnapshotJson(chatId: string, recentLimit: number | undefined, cache?: SnapshotComputationCache) {
+    const limit = recentLimit ?? DEFAULT_CHAT_RECENT_LIMIT
+    const key = `${chatId}:${limit}`
+    const existing = cache?.chat?.get(key)
+    if (existing !== undefined) {
+      return existing
+    }
+    const data = deriveChatSnapshot(
+      store.state,
+      agent.getActiveStatuses(),
+      agent.getDrainingChatIds(),
+      chatId,
+      (id) => store.getRecentChatHistory(id, limit)
+    )
+    const snapshotJson = JSON.stringify({ type: "chat", data })
+    if (cache) {
+      (cache.chat ??= new Map()).set(key, snapshotJson)
+    }
+    return snapshotJson
+  }
+
   async function pushSnapshots(
     ws: ServerWebSocket<ClientState>,
     options?: { skipPrune?: boolean; filter?: SnapshotBroadcastFilter; cache?: SnapshotComputationCache }
   ) {
-    const pushStartedAt = performance.now()
     if (!options?.skipPrune) {
       await maybePruneStaleEmptyChats([ws])
     }
     const snapshotSignatures = ensureSnapshotSignatures(ws)
-    let sentCount = 0
-    let skippedCount = 0
     for (const [id, topic] of ws.data.subscriptions.entries()) {
       if (!shouldIncludeTopic(topic, options?.filter)) {
         continue
       }
-      // Cheap signatures (computed without building the snapshot payload) let
-      // us skip serializing large snapshots — e.g. a project-git snapshot with
-      // thousands of changed files — when nothing changed since the last push.
-      const precomputedSignature = topic.type === "sidebar"
-        ? getSidebarSnapshotCacheEntry(options?.cache).signature
-        : topic.type === "project-git"
-          ? getProjectGitSignature(topic.projectId)
-          : null
-      if (precomputedSignature !== null && snapshotSignatures.get(id) === precomputedSignature) {
-        skippedCount += 1
+      // Sidebar and chat snapshots are serialized once per broadcast (shared
+      // via the cache) and that serialization doubles as the dedupe signature,
+      // so unchanged snapshots cost neither a derive nor a stringify per
+      // socket, and changed ones are stringified exactly once.
+      if (topic.type === "sidebar") {
+        const sidebar = getSidebarSnapshotCacheEntry(options?.cache)
+        if (snapshotSignatures.get(id) === sidebar.signature) {
+          continue
+        }
+        snapshotSignatures.set(id, sidebar.signature)
+        sendSerializedSnapshot(ws, id, sidebar.signature)
         continue
       }
-      const envelopeStartedAt = performance.now()
+      if (topic.type === "chat") {
+        const snapshotJson = getChatSnapshotJson(topic.chatId, topic.recentLimit, options?.cache)
+        if (snapshotSignatures.get(id) === snapshotJson) {
+          continue
+        }
+        snapshotSignatures.set(id, snapshotJson)
+        sendSerializedSnapshot(ws, id, snapshotJson)
+        continue
+      }
+      // project-git has a cheap version-counter signature, so an unchanged
+      // snapshot (e.g. thousands of diff files) skips payload building entirely.
+      const precomputedSignature = topic.type === "project-git"
+        ? getProjectGitSignature(topic.projectId)
+        : null
+      if (precomputedSignature !== null && snapshotSignatures.get(id) === precomputedSignature) {
+        continue
+      }
       const envelope = createEnvelope(id, topic, options?.cache)
-      const createdAt = performance.now()
       if (envelope.type !== "snapshot") continue
       const signature = precomputedSignature ?? JSON.stringify(envelope.snapshot)
-      const signatureReadyAt = precomputedSignature !== null ? createdAt : performance.now()
       if (snapshotSignatures.get(id) === signature) {
-        skippedCount += 1
         continue
       }
       snapshotSignatures.set(id, signature)
-      if (topic.type === "chat" && envelope.snapshot.type === "chat" && envelope.snapshot.data?.runtime.status === "starting") {
-        const profile = agent.getActiveTurnProfile(topic.chatId)
-        logSendToStartingProfile(profile?.traceId, profile?.startedAt, "ws.snapshot_sent", {
-          chatId: topic.chatId,
-          status: envelope.snapshot.data.runtime.status,
-          messageCount: envelope.snapshot.data.messages.length,
-          buildMs: Number((createdAt - envelopeStartedAt).toFixed(1)),
-          signatureMs: Number((signatureReadyAt - createdAt).toFixed(1)),
-          signatureBytes: signature.length,
-        })
-      }
-      const payloadBytes = send(ws, envelope)
-      sentCount += 1
-      if (topic.type === "chat" && envelope.snapshot.type === "chat" && envelope.snapshot.data?.runtime.status === "starting") {
-        const profile = agent.getActiveTurnProfile(topic.chatId)
-        logSendToStartingProfile(profile?.traceId, profile?.startedAt, "ws.snapshot_send_completed", {
-          chatId: topic.chatId,
-          payloadBytes,
-        })
-      }
-    }
-    if (isSendToStartingProfilingEnabled()) {
-      console.log("[kanna/send->starting][server]", JSON.stringify({
-        stage: "ws.push_snapshots_completed",
-        elapsedMs: Number((performance.now() - pushStartedAt).toFixed(1)),
-        skipPrune: Boolean(options?.skipPrune),
-        sentCount,
-        skippedCount,
-        ...countSubscriptionsByTopic(ws),
-      }))
+      send(ws, envelope)
     }
   }
 
   async function broadcastSnapshots() {
-    const startedAt = performance.now()
-    let socketCount = 0
     const cache: SnapshotComputationCache = {}
     for (const ws of sockets) {
-      socketCount += 1
       await pushSnapshots(ws, { skipPrune: true, cache })
-    }
-    if (isSendToStartingProfilingEnabled()) {
-      console.log("[kanna/send->starting][server]", JSON.stringify({
-        stage: "ws.broadcast_snapshots_completed",
-        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
-        pruneMs: 0,
-        socketCount,
-        totalChatCount: store.state.chatsById.size,
-        totalProjectCount: store.state.projectsById.size,
-      }))
     }
   }
 
   async function broadcastFilteredSnapshots(filter: SnapshotBroadcastFilter) {
-    const startedAt = performance.now()
-    let socketCount = 0
     const cache: SnapshotComputationCache = {}
     for (const ws of sockets) {
-      socketCount += 1
       await pushSnapshots(ws, { skipPrune: true, filter, cache })
     }
-    if (isSendToStartingProfilingEnabled()) {
-      console.log("[kanna/send->starting][server]", JSON.stringify({
-        stage: "ws.broadcast_filtered_snapshots_completed",
-        elapsedMs: Number((performance.now() - startedAt).toFixed(1)),
-        socketCount,
-        includeSidebar: Boolean(filter.includeSidebar),
-        chatCount: filter.chatIds?.size ?? 0,
-        projectCount: filter.projectIds?.size ?? 0,
-      }))
+  }
+
+  function flushPendingBroadcast() {
+    pendingBroadcastTimer = null
+    const shouldBroadcastAll = pendingBroadcastAll
+    const chatIds = new Set(pendingBroadcastChatIds)
+    pendingBroadcastAll = false
+    pendingBroadcastChatIds.clear()
+    if (shouldBroadcastAll) {
+      void broadcastSnapshots()
+      return
     }
+    if (chatIds.size > 0) {
+      void broadcastFilteredSnapshots({
+        includeSidebar: true,
+        chatIds,
+      })
+    }
+  }
+
+  function armPendingBroadcastTimer() {
+    if (pendingBroadcastTimer) {
+      return
+    }
+    pendingBroadcastTimer = setTimeout(flushPendingBroadcast, 16)
   }
 
   function scheduleBroadcast() {
     pendingBroadcastAll = true
     pendingBroadcastChatIds.clear()
-    if (pendingBroadcastTimer) {
-      return
-    }
-    pendingBroadcastTimer = setTimeout(() => {
-      pendingBroadcastTimer = null
-      const shouldBroadcastAll = pendingBroadcastAll
-      const chatIds = new Set(pendingBroadcastChatIds)
-      pendingBroadcastAll = false
-      pendingBroadcastChatIds.clear()
-      if (shouldBroadcastAll) {
-        void broadcastSnapshots()
-        return
-      }
-      if (chatIds.size > 0) {
-        void broadcastFilteredSnapshots({
-          includeSidebar: true,
-          chatIds,
-        })
-      }
-    }, 16)
+    armPendingBroadcastTimer()
   }
 
   function scheduleChatStateBroadcast(chatId: string) {
     if (!pendingBroadcastAll) {
       pendingBroadcastChatIds.add(chatId)
     }
-    if (pendingBroadcastTimer) {
-      return
-    }
-    pendingBroadcastTimer = setTimeout(() => {
-      pendingBroadcastTimer = null
-      const shouldBroadcastAll = pendingBroadcastAll
-      const chatIds = new Set(pendingBroadcastChatIds)
-      pendingBroadcastAll = false
-      pendingBroadcastChatIds.clear()
-      if (shouldBroadcastAll) {
-        void broadcastSnapshots()
-        return
-      }
-      if (chatIds.size > 0) {
-        void broadcastFilteredSnapshots({
-          includeSidebar: true,
-          chatIds,
-        })
-      }
-    }, 16)
+    armPendingBroadcastTimer()
   }
 
   async function broadcastChatAndSidebar(chatId: string) {
@@ -1274,7 +1154,8 @@ export function createWsRouter({
           if (!existingProjectId) {
             resolvedAnalytics.track("project_opened")
           }
-          break
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
+          return
         }
         case "project.rename": {
           await store.renameProjectSidebarTitle(command.projectId, command.title)
@@ -1288,13 +1169,17 @@ export function createWsRouter({
           const project = await store.openProject(cloneDest, command.title)
           await refreshDiscovery()
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id, localPath: cloneDest } })
-          break
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
+          return
         }
         case "project.remove": {
           await store.removeProject(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           resolvedAnalytics.track("project_removed")
-          break
+          // Removing a project tombstones its chats too, so subscribers of any
+          // topic may need fresh state.
+          await broadcastSnapshots()
+          return
         }
         case "sidebar.reorderProjectGroups": {
           await store.setSidebarProjectOrder(command.projectIds)
@@ -1317,7 +1202,7 @@ export function createWsRouter({
         case "system.openExternal": {
           await openExternal(command)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          return
         }
         case "chat.create": {
           const chat = await store.createChat(command.projectId)
@@ -1376,23 +1261,14 @@ export function createWsRouter({
           return
         }
         case "chat.setDraftProtection": {
+          // Only adjusts this socket's prune protection — no snapshot changes.
           ws.data.protectedDraftChatIds = new Set(command.chatIds)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          break
+          return
         }
         case "chat.send": {
           const result = await agent.send(command)
-          const profile = command.clientTraceId && result.chatId
-            ? agent.getActiveTurnProfile(result.chatId)
-            : null
-          logSendToStartingProfile(profile?.traceId ?? command.clientTraceId, profile?.startedAt, "ws.chat_send_ack", {
-            chatId: result.chatId ?? null,
-          })
-          const payloadBytes = send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          logSendToStartingProfile(profile?.traceId ?? command.clientTraceId, profile?.startedAt, "ws.chat_send_ack_completed", {
-            chatId: result.chatId ?? null,
-            payloadBytes,
-          })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "chat.refreshDiffs": {
@@ -1655,8 +1531,6 @@ export function createWsRouter({
           return
         }
       }
-
-      await broadcastSnapshots()
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
       console.error("[ws-router] command failed", {

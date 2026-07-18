@@ -169,7 +169,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
 
   const staleEmptyChatPruneInterval = setInterval(() => {
     void router.pruneStaleEmptyChats()
-      .then(() => router.broadcastSnapshots())
+      .then((prunedChatIds) => {
+        if (prunedChatIds.length > 0) {
+          return router.broadcastSnapshots()
+        }
+      })
   }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")

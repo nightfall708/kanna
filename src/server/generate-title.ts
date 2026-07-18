@@ -1,4 +1,4 @@
-import { QuickResponseAdapter } from "./quick-response"
+import { getSharedQuickResponseAdapter } from "./quick-response"
 
 const TITLE_SCHEMA = {
   type: "object",
@@ -37,7 +37,7 @@ function summarizeFailures(failures: Array<{ provider: "openai" | "claude" | "co
 export async function generateTitleForChatDetailed(
   messageContent: string,
   cwd: string,
-  adapter = new QuickResponseAdapter()
+  adapter = getSharedQuickResponseAdapter()
 ): Promise<GenerateChatTitleResult> {
   const result = await adapter.generateStructuredWithDiagnostics<string>({
     cwd,

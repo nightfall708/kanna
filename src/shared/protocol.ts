@@ -132,7 +132,6 @@ export type ClientCommand =
       type: "chat.send"
       chatId?: string
       projectId?: string
-      clientTraceId?: string
       provider?: AgentProvider
       content: string
       attachments?: ChatAttachment[]

@@ -1269,29 +1269,28 @@ export interface ExitPlanModeToolResult {
   discarded?: boolean
 }
 
-export type HydratedAskUserQuestionToolCall =
-  HydratedToolCallBase<"ask_user_question", AskUserQuestionToolCall["input"], AskUserQuestionToolResult>
+/** Per-kind hydrated result payloads; kinds not listed hydrate with `unknown`. */
+interface HydratedToolResultOverrides {
+  ask_user_question: AskUserQuestionToolResult
+  exit_plan_mode: ExitPlanModeToolResult
+  read_file: ReadFileToolResult | string
+}
 
-export type HydratedExitPlanModeToolCall =
-  HydratedToolCallBase<"exit_plan_mode", ExitPlanModeToolCall["input"], ExitPlanModeToolResult>
+/** Hydrated counterpart of the NormalizedToolCall member with kind `K`. */
+export type HydratedToolCallOf<K extends NormalizedToolCall["toolKind"]> = HydratedToolCallBase<
+  K,
+  Extract<NormalizedToolCall, { toolKind: K }>["input"],
+  K extends keyof HydratedToolResultOverrides ? HydratedToolResultOverrides[K] : unknown
+>
 
-export type HydratedTodoWriteToolCall =
-  HydratedToolCallBase<"todo_write", TodoWriteToolCall["input"], unknown>
-
-export type HydratedSkillToolCall =
-  HydratedToolCallBase<"skill", SkillToolCall["input"], unknown>
-
-export type HydratedGlobToolCall =
-  HydratedToolCallBase<"glob", GlobToolCall["input"], unknown>
-
-export type HydratedGrepToolCall =
-  HydratedToolCallBase<"grep", GrepToolCall["input"], unknown>
-
-export type HydratedBashToolCall =
-  HydratedToolCallBase<"bash", BashToolCall["input"], unknown>
-
-export type HydratedWebSearchToolCall =
-  HydratedToolCallBase<"web_search", WebSearchToolCall["input"], unknown>
+export type HydratedAskUserQuestionToolCall = HydratedToolCallOf<"ask_user_question">
+export type HydratedExitPlanModeToolCall = HydratedToolCallOf<"exit_plan_mode">
+export type HydratedTodoWriteToolCall = HydratedToolCallOf<"todo_write">
+export type HydratedSkillToolCall = HydratedToolCallOf<"skill">
+export type HydratedGlobToolCall = HydratedToolCallOf<"glob">
+export type HydratedGrepToolCall = HydratedToolCallOf<"grep">
+export type HydratedBashToolCall = HydratedToolCallOf<"bash">
+export type HydratedWebSearchToolCall = HydratedToolCallOf<"web_search">
 
 export interface ReadFileTextBlock {
   type: "text"
@@ -1309,43 +1308,18 @@ export interface ReadFileToolResult {
   blocks?: Array<ReadFileTextBlock | ReadFileImageBlock>
 }
 
-export type HydratedReadFileToolCall =
-  HydratedToolCallBase<"read_file", ReadFileToolCall["input"], ReadFileToolResult | string>
+export type HydratedReadFileToolCall = HydratedToolCallOf<"read_file">
+export type HydratedWriteFileToolCall = HydratedToolCallOf<"write_file">
+export type HydratedEditFileToolCall = HydratedToolCallOf<"edit_file">
+export type HydratedDeleteFileToolCall = HydratedToolCallOf<"delete_file">
+export type HydratedSubagentTaskToolCall = HydratedToolCallOf<"subagent_task">
+export type HydratedMcpGenericToolCall = HydratedToolCallOf<"mcp_generic">
+export type HydratedUnknownToolCall = HydratedToolCallOf<"unknown_tool">
 
-export type HydratedWriteFileToolCall =
-  HydratedToolCallBase<"write_file", WriteFileToolCall["input"], unknown>
-
-export type HydratedEditFileToolCall =
-  HydratedToolCallBase<"edit_file", EditFileToolCall["input"], unknown>
-
-export type HydratedDeleteFileToolCall =
-  HydratedToolCallBase<"delete_file", DeleteFileToolCall["input"], unknown>
-
-export type HydratedSubagentTaskToolCall =
-  HydratedToolCallBase<"subagent_task", SubagentTaskToolCall["input"], unknown>
-
-export type HydratedMcpGenericToolCall =
-  HydratedToolCallBase<"mcp_generic", McpGenericToolCall["input"], unknown>
-
-export type HydratedUnknownToolCall =
-  HydratedToolCallBase<"unknown_tool", UnknownToolCall["input"], unknown>
-
-export type HydratedToolCall =
-  | HydratedAskUserQuestionToolCall
-  | HydratedExitPlanModeToolCall
-  | HydratedTodoWriteToolCall
-  | HydratedSkillToolCall
-  | HydratedGlobToolCall
-  | HydratedGrepToolCall
-  | HydratedBashToolCall
-  | HydratedWebSearchToolCall
-  | HydratedReadFileToolCall
-  | HydratedWriteFileToolCall
-  | HydratedEditFileToolCall
-  | HydratedDeleteFileToolCall
-  | HydratedSubagentTaskToolCall
-  | HydratedMcpGenericToolCall
-  | HydratedUnknownToolCall
+/** Distributive union of HydratedToolCallOf over every NormalizedToolCall kind. */
+export type HydratedToolCall = {
+  [K in NormalizedToolCall["toolKind"]]: HydratedToolCallOf<K>
+}[NormalizedToolCall["toolKind"]]
 
 export type HydratedTranscriptMessage =
   | ({ kind: "user_prompt"; content: string; attachments?: ChatAttachment[]; steered?: boolean; id: string; messageId?: string; timestamp: string; hidden?: boolean })

@@ -633,6 +633,8 @@ async function getBranchHistory(args: {
   repoRoot: string
   ref: string
   limit: number
+  /** Pass a known origin URL to skip re-reading it. */
+  remoteUrl?: string | null
 }): Promise<ChatBranchHistorySnapshot> {
   const logResult = await runGit(
     [
@@ -649,7 +651,7 @@ async function getBranchHistory(args: {
     throw new Error(logResult.stderr.trim() || "Failed to read git log")
   }
 
-  const remoteUrl = await getOriginRemoteUrl(args.repoRoot)
+  const remoteUrl = args.remoteUrl !== undefined ? args.remoteUrl : await getOriginRemoteUrl(args.repoRoot)
   const parsedRecords: Array<{ sha: string; summary: string; description: string; authorName?: string; authoredAt: string }> = []
 
   for (const record of logResult.stdout.split("\u001e")) {
@@ -1525,28 +1527,36 @@ export class DiffStore {
 
     const lineCountCache = this.lineCountCaches.get(projectId) ?? new Map<string, LineCountCacheEntry>()
     const nextLineCountCache = new Map<string, LineCountCacheEntry>()
-    const files = await computeCurrentFiles(repo.repoRoot, repo.baseCommit, {
-      cache: lineCountCache,
-      nextCache: nextLineCountCache,
-    })
+    // These are all read-only git queries — run them concurrently instead of
+    // paying ~10 sequential subprocess round-trips per refresh.
+    const [files, branchName, defaultBranchName, originRemoteUrl, hasUpstream, lastFetchedAt] = await Promise.all([
+      computeCurrentFiles(repo.repoRoot, repo.baseCommit, {
+        cache: lineCountCache,
+        nextCache: nextLineCountCache,
+      }),
+      getBranchName(repo.repoRoot),
+      resolveDefaultBranchName(repo.repoRoot),
+      getOriginRemoteUrl(repo.repoRoot),
+      hasUpstreamBranch(repo.repoRoot),
+      getLastFetchedAt(repo.repoRoot),
+    ])
     this.lineCountCaches.set(projectId, nextLineCountCache)
-    const branchName = await getBranchName(repo.repoRoot)
-    const defaultBranchName = await resolveDefaultBranchName(repo.repoRoot)
-    const originRemoteUrl = await getOriginRemoteUrl(repo.repoRoot)
     const hasOriginRemote = originRemoteUrl !== null
     const originRepoSlug = extractGitHubRepoSlug(originRemoteUrl) ?? undefined
-    const hasUpstream = await hasUpstreamBranch(repo.repoRoot)
-    const { aheadCount, behindCount } = hasUpstream
-      ? await getUpstreamStatusCounts(repo.repoRoot)
-      : { aheadCount: undefined, behindCount: undefined }
-    const lastFetchedAt = await getLastFetchedAt(repo.repoRoot)
-    const branchHistory = repo.baseCommit
-      ? await getBranchHistory({
-          repoRoot: repo.repoRoot,
-          ref: branchName ?? "HEAD",
-          limit: 20,
-        })
-      : { entries: [] }
+    const [upstreamCounts, branchHistory] = await Promise.all([
+      hasUpstream
+        ? getUpstreamStatusCounts(repo.repoRoot)
+        : Promise.resolve({ aheadCount: undefined, behindCount: undefined }),
+      repo.baseCommit
+        ? getBranchHistory({
+            repoRoot: repo.repoRoot,
+            ref: branchName ?? "HEAD",
+            limit: 20,
+            remoteUrl: originRemoteUrl,
+          })
+        : Promise.resolve({ entries: [] }),
+    ])
+    const { aheadCount, behindCount } = upstreamCounts
     const nextState = {
       status: "ready",
       branchName,

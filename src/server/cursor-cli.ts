@@ -196,7 +196,7 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
     case "assistant": {
       const text = extractAssistantText(value.message)
       if (!text) return []
-      return [{ type: "transcript", entry: timestamped({ kind: "assistant_text", text, debugRaw }) }]
+      return [{ type: "transcript", entry: timestamped({ kind: "assistant_text", text }) }]
     }
 
     case "tool_call": {
@@ -212,7 +212,6 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
             entry: timestamped({
               kind: "tool_call",
               tool: normalizeToolCall({ toolName, toolId: callId, input }),
-              debugRaw,
             }),
           },
         ]
@@ -232,7 +231,6 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
               toolId: callId,
               content,
               isError,
-              debugRaw,
             }),
           },
         ]
@@ -259,7 +257,6 @@ export function parseCursorLine(line: string, configuredModel: string): HarnessE
           isError,
           durationMs: asNumber(value.duration_ms) ?? 0,
           result: asString(value.result) ?? "",
-          debugRaw,
         }),
       })
       return events
