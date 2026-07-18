@@ -3,8 +3,6 @@ import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
   DEFAULT_CURSOR_MODEL_OPTIONS,
-  DEFAULT_PI_MODEL,
-  DEFAULT_PI_MODEL_OPTIONS,
   normalizeClaudeContextWindow,
   normalizeClaudeFastMode,
   normalizeClaudeModelId,
@@ -27,105 +25,19 @@ import {
   type ProviderPreference,
   type ProviderModelOptionsByProvider,
 } from "../../shared/types"
-import { assertNever } from "../../shared/assert"
 
 export type { ChatProviderPreferences, DefaultProviderPreference, ProviderPreference }
 
-export type ComposerState =
-  | {
-    provider: "claude"
+export type ComposerState = {
+  [TProvider in AgentProvider]: {
+    provider: TProvider
     model: string
-    modelOptions: ClaudeModelOptions
+    modelOptions: ProviderModelOptionsByProvider[TProvider]
     planMode: boolean
   }
-  | {
-    provider: "codex"
-    model: string
-    modelOptions: CodexModelOptions
-    planMode: boolean
-  }
-  | {
-    provider: "cursor"
-    model: string
-    modelOptions: CursorModelOptions
-    planMode: boolean
-  }
-  | {
-    provider: "pi"
-    model: string
-    modelOptions: PiModelOptions
-    planMode: boolean
-  }
+}[AgentProvider]
 
 export const NEW_CHAT_COMPOSER_ID = "__new__"
-
-type LegacyPersistedChatPreferencesState = Partial<{
-  defaultProvider: string
-  providerDefaults: {
-    claude?: {
-      model?: string
-      effort?: string
-      modelOptions?: Partial<ClaudeModelOptions>
-      planMode?: boolean
-    }
-    codex?: {
-      model?: string
-      effort?: string
-      modelOptions?: Partial<CodexModelOptions>
-      planMode?: boolean
-    }
-  }
-  composerState: PersistedComposerState
-  liveProvider: AgentProvider
-  livePreferences: {
-    claude?: {
-      model?: string
-      effort?: string
-      modelOptions?: Partial<ClaudeModelOptions>
-      planMode?: boolean
-    }
-    codex?: {
-      model?: string
-      effort?: string
-      modelOptions?: Partial<CodexModelOptions>
-      planMode?: boolean
-    }
-  }
-}>
-
-type PersistedComposerState =
-  | {
-    provider: "claude"
-    model?: string
-    effort?: string
-    modelOptions?: Partial<ClaudeModelOptions>
-    planMode?: boolean
-  }
-  | {
-    provider: "codex"
-    model?: string
-    effort?: string
-    modelOptions?: Partial<CodexModelOptions>
-    planMode?: boolean
-  }
-  | {
-    provider: "cursor"
-    model?: string
-    modelOptions?: Partial<CursorModelOptions>
-    planMode?: boolean
-  }
-  | {
-    provider: "pi"
-    model?: string
-    effort?: string
-    modelOptions?: Partial<PiModelOptions>
-    planMode?: boolean
-  }
-
-type PersistedChatPreferencesState = Pick<
-  ChatPreferencesState,
-  "defaultProvider" | "providerDefaults" | "chatStates" | "legacyComposerState"
-> & LegacyPersistedChatPreferencesState
 
 export function normalizeDefaultProvider(value?: string): DefaultProviderPreference {
   if (value === "claude" || value === "codex" || value === "cursor" || value === "pi") return value
@@ -144,12 +56,17 @@ type ProviderModelOptionsInput = {
   fastMode?: boolean
 }
 
-export function normalizeClaudePreference(value?: {
+// Loose provider preference shape accepted by the normalizers: current
+// ProviderPreference values, persisted composer states, and legacy persisted
+// shapes (with a top-level `effort`) are all assignable to it.
+type ProviderPreferenceInput = {
   model?: string
   effort?: string
   modelOptions?: ProviderModelOptionsInput
   planMode?: boolean
-}): ProviderPreference<ClaudeModelOptions> {
+}
+
+export function normalizeClaudePreference(value?: ProviderPreferenceInput): ProviderPreference<ClaudeModelOptions> {
   const reasoningEffort = value?.modelOptions?.reasoningEffort
   const normalizedEffort = isClaudeReasoningEffort(reasoningEffort)
     ? reasoningEffort
@@ -170,12 +87,7 @@ export function normalizeClaudePreference(value?: {
   }
 }
 
-export function normalizeCodexPreference(value?: {
-  model?: string
-  effort?: string
-  modelOptions?: ProviderModelOptionsInput
-  planMode?: boolean
-}): ProviderPreference<CodexModelOptions> {
+export function normalizeCodexPreference(value?: ProviderPreferenceInput): ProviderPreference<CodexModelOptions> {
   const model = normalizeCodexModelId(value?.model)
   const reasoningEffort = value?.modelOptions?.reasoningEffort
   return {
@@ -193,11 +105,7 @@ export function normalizeCodexPreference(value?: {
   }
 }
 
-export function normalizeCursorPreference(value?: {
-  model?: string
-  modelOptions?: ProviderModelOptionsInput
-  planMode?: boolean
-}): ProviderPreference<CursorModelOptions> {
+export function normalizeCursorPreference(value?: ProviderPreferenceInput): ProviderPreference<CursorModelOptions> {
   return {
     model: normalizeCursorModelId(value?.model),
     modelOptions: {
@@ -209,12 +117,7 @@ export function normalizeCursorPreference(value?: {
   }
 }
 
-export function normalizePiPreference(value?: {
-  model?: string
-  effort?: string
-  modelOptions?: ProviderModelOptionsInput
-  planMode?: boolean
-}): ProviderPreference<PiModelOptions> {
+export function normalizePiPreference(value?: ProviderPreferenceInput): ProviderPreference<PiModelOptions> {
   const reasoningEffort = value?.modelOptions?.reasoningEffort
   return {
     model: normalizePiModelId(value?.model),
@@ -227,98 +130,39 @@ export function normalizePiPreference(value?: {
   }
 }
 
-type ProviderPreferenceInput = {
-  model?: string
-  effort?: string
-  modelOptions?: ProviderModelOptionsInput
-  planMode?: boolean
+// Exhaustive provider dispatch: the record is keyed by AgentProvider, so adding a
+// provider to AgentProvider forces a new entry here instead of silently falling
+// through to one provider's branch.
+const PROVIDER_NORMALIZERS: {
+  [TProvider in AgentProvider]: (value?: ProviderPreferenceInput) => ChatProviderPreferences[TProvider]
+} = {
+  claude: normalizeClaudePreference,
+  codex: normalizeCodexPreference,
+  cursor: normalizeCursorPreference,
+  pi: normalizePiPreference,
 }
 
-// Exhaustive provider dispatch: adding a provider to AgentProvider forces a new case
-// here (via assertNever) instead of silently falling through to one provider's branch.
-export function normalizeProviderPreference(
-  provider: AgentProvider,
+export function normalizeProviderPreference<TProvider extends AgentProvider>(
+  provider: TProvider,
   value?: ProviderPreferenceInput
-): ChatProviderPreferences[AgentProvider] {
-  switch (provider) {
-    case "claude":
-      return normalizeClaudePreference(value)
-    case "codex":
-      return normalizeCodexPreference(value)
-    case "cursor":
-      return normalizeCursorPreference(value)
-    case "pi":
-      return normalizePiPreference(value)
-    default:
-      return assertNever(provider)
-  }
+): ChatProviderPreferences[TProvider] {
+  return PROVIDER_NORMALIZERS[provider](value)
 }
 
 function composerStateForProvider(provider: AgentProvider, value?: ProviderPreferenceInput): ComposerState {
-  switch (provider) {
-    case "claude":
-      return { provider, ...normalizeClaudePreference(value) }
-    case "codex":
-      return { provider, ...normalizeCodexPreference(value) }
-    case "cursor":
-      return { provider, ...normalizeCursorPreference(value) }
-    case "pi":
-      return { provider, ...normalizePiPreference(value) }
-    default:
-      return assertNever(provider)
-  }
+  // The normalizer record is keyed by provider, so the provider tag always matches
+  // its normalized modelOptions shape; TS can't prove that across the union.
+  return { provider, ...normalizeProviderPreference(provider, value) } as ComposerState
 }
 
 export function createDefaultProviderDefaults(): ChatProviderPreferences {
-  return {
-    claude: {
-      model: "claude-opus-4-8",
-      modelOptions: { ...DEFAULT_CLAUDE_MODEL_OPTIONS },
-      planMode: false,
-    },
-    codex: {
-      model: "gpt-5.6-sol",
-      modelOptions: { ...DEFAULT_CODEX_MODEL_OPTIONS },
-      planMode: false,
-    },
-    cursor: {
-      model: "composer-2.5",
-      modelOptions: { ...DEFAULT_CURSOR_MODEL_OPTIONS },
-      planMode: false,
-    },
-    pi: {
-      model: DEFAULT_PI_MODEL,
-      modelOptions: { ...DEFAULT_PI_MODEL_OPTIONS },
-      planMode: false,
-    },
-  }
+  // Normalizing an empty preference yields each provider's default model/options.
+  return normalizeProviderDefaults()
 }
 
-export function normalizeProviderDefaults(value?: {
-  claude?: {
-    model?: string
-    effort?: string
-    modelOptions?: Partial<ClaudeModelOptions>
-    planMode?: boolean
-  }
-  codex?: {
-    model?: string
-    effort?: string
-    modelOptions?: Partial<CodexModelOptions>
-    planMode?: boolean
-  }
-  cursor?: {
-    model?: string
-    modelOptions?: Partial<CursorModelOptions>
-    planMode?: boolean
-  }
-  pi?: {
-    model?: string
-    effort?: string
-    modelOptions?: Partial<PiModelOptions>
-    planMode?: boolean
-  }
-}): ChatProviderPreferences {
+export function normalizeProviderDefaults(
+  value?: Partial<Record<AgentProvider, ProviderPreferenceInput | undefined>>
+): ChatProviderPreferences {
   return {
     claude: normalizeClaudePreference(value?.claude),
     codex: normalizeCodexPreference(value?.codex),
@@ -326,6 +170,21 @@ export function normalizeProviderDefaults(value?: {
     pi: normalizePiPreference(value?.pi),
   }
 }
+
+type PersistedComposerState = ProviderPreferenceInput & { provider: AgentProvider }
+
+type LegacyPersistedChatPreferencesState = Partial<{
+  defaultProvider: string
+  providerDefaults: Partial<Record<AgentProvider, ProviderPreferenceInput>>
+  composerState: PersistedComposerState
+  liveProvider: AgentProvider
+  livePreferences: Partial<Record<"claude" | "codex", ProviderPreferenceInput>>
+}>
+
+type PersistedChatPreferencesState = LegacyPersistedChatPreferencesState & Partial<{
+  chatStates: Record<string, PersistedComposerState | ComposerState>
+  legacyComposerState: PersistedComposerState | ComposerState | null
+}>
 
 function logChatPreferences(message: string, details?: unknown) {
   if (details === undefined) {
@@ -344,62 +203,17 @@ function composerFromProviderDefaults(
 }
 
 function cloneComposerState(state: ComposerState): ComposerState {
-  if (state.provider === "claude") {
-    return {
-      provider: "claude",
-      model: state.model,
-      modelOptions: { ...state.modelOptions },
-      planMode: state.planMode,
-    }
-  }
-  if (state.provider === "cursor") {
-    return {
-      provider: "cursor",
-      model: state.model,
-      modelOptions: { ...state.modelOptions },
-      planMode: state.planMode,
-    }
-  }
-  if (state.provider === "pi") {
-    return {
-      provider: "pi",
-      model: state.model,
-      modelOptions: { ...state.modelOptions },
-      planMode: state.planMode,
-    }
-  }
-  return {
-    provider: "codex",
-    model: state.model,
-    modelOptions: { ...state.modelOptions },
-    planMode: state.planMode,
-  }
+  return { ...state, modelOptions: { ...state.modelOptions } } as ComposerState
 }
 
 function sameComposerState(left: ComposerState | undefined, right: ComposerState): boolean {
   if (!left || left.provider !== right.provider) return false
   if (left.model !== right.model || left.planMode !== right.planMode) return false
 
-  if (left.provider === "claude" && right.provider === "claude") {
-    return left.modelOptions.reasoningEffort === right.modelOptions.reasoningEffort
-      && left.modelOptions.contextWindow === right.modelOptions.contextWindow
-      && left.modelOptions.fastMode === right.modelOptions.fastMode
-  }
-
-  if (left.provider === "codex" && right.provider === "codex") {
-    return left.modelOptions.reasoningEffort === right.modelOptions.reasoningEffort
-      && left.modelOptions.fastMode === right.modelOptions.fastMode
-  }
-
-  if (left.provider === "cursor" && right.provider === "cursor") {
-    return left.modelOptions.fastMode === right.modelOptions.fastMode
-  }
-
-  if (left.provider === "pi" && right.provider === "pi") {
-    return left.modelOptions.reasoningEffort === right.modelOptions.reasoningEffort
-  }
-
-  return false
+  const leftOptions: Record<string, unknown> = { ...left.modelOptions }
+  const rightOptions: Record<string, unknown> = { ...right.modelOptions }
+  const keys = new Set([...Object.keys(leftOptions), ...Object.keys(rightOptions)])
+  return [...keys].every((key) => leftOptions[key] === rightOptions[key])
 }
 
 function normalizeComposerState(
@@ -408,64 +222,14 @@ function normalizeComposerState(
   legacyLiveProvider?: AgentProvider,
   legacyLivePreferences?: LegacyPersistedChatPreferencesState["livePreferences"]
 ): ComposerState {
-  if (value?.provider === "claude") {
-    const preference = normalizeClaudePreference(value)
-    return {
-      provider: "claude",
-      model: preference.model,
-      modelOptions: preference.modelOptions,
-      planMode: preference.planMode,
-    }
+  // Persisted data is untrusted: only dispatch on providers we actually know.
+  const provider = value?.provider
+  if (provider && provider in PROVIDER_NORMALIZERS) {
+    return composerStateForProvider(provider, value)
   }
 
-  if (value?.provider === "codex") {
-    const preference = normalizeCodexPreference(value)
-    return {
-      provider: "codex",
-      model: preference.model,
-      modelOptions: preference.modelOptions,
-      planMode: preference.planMode,
-    }
-  }
-
-  if (value?.provider === "cursor") {
-    const preference = normalizeCursorPreference(value)
-    return {
-      provider: "cursor",
-      model: preference.model,
-      modelOptions: preference.modelOptions,
-      planMode: preference.planMode,
-    }
-  }
-
-  if (value?.provider === "pi") {
-    const preference = normalizePiPreference(value)
-    return {
-      provider: "pi",
-      model: preference.model,
-      modelOptions: preference.modelOptions,
-      planMode: preference.planMode,
-    }
-  }
-
-  if (legacyLiveProvider === "claude") {
-    const preference = normalizeClaudePreference(legacyLivePreferences?.claude)
-    return {
-      provider: "claude",
-      model: preference.model,
-      modelOptions: preference.modelOptions,
-      planMode: preference.planMode,
-    }
-  }
-
-  if (legacyLiveProvider === "codex") {
-    const preference = normalizeCodexPreference(legacyLivePreferences?.codex)
-    return {
-      provider: "codex",
-      model: preference.model,
-      modelOptions: preference.modelOptions,
-      planMode: preference.planMode,
-    }
+  if (legacyLiveProvider === "claude" || legacyLiveProvider === "codex") {
+    return composerStateForProvider(legacyLiveProvider, legacyLivePreferences?.[legacyLiveProvider])
   }
 
   return composerFromProviderDefaults("claude", providerDefaults)
@@ -571,7 +335,7 @@ interface ChatPreferencesState {
 }
 
 export function migrateChatPreferencesState(
-  persistedState: Partial<PersistedChatPreferencesState> | undefined
+  persistedState: PersistedChatPreferencesState | undefined
 ): Pick<ChatPreferencesState, "defaultProvider" | "providerDefaults" | "chatStates" | "legacyComposerState"> {
   const providerDefaults = normalizeProviderDefaults(persistedState?.providerDefaults)
   const legacyComposerState = normalizePersistedComposerState(
@@ -684,21 +448,11 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set((state) => ({
           chatStates: {
             ...state.chatStates,
-            [chatId]: composerState.provider === "claude"
-              ? {
-                provider: "claude",
-                model: normalizeClaudePreference(composerState).model,
-                modelOptions: normalizeClaudePreference(composerState).modelOptions,
-                planMode: composerState.planMode,
-              }
-              : composerState.provider === "codex"
-                ? {
-                  provider: "codex",
-                  model: normalizeCodexPreference(composerState).model,
-                  modelOptions: normalizeCodexPreference(composerState).modelOptions,
-                  planMode: composerState.planMode,
-                }
-                : cloneComposerState(composerState),
+            // Claude/Codex states are re-normalized (model aliases, effort clamps);
+            // Cursor/Pi states are historically stored as provided.
+            [chatId]: composerState.provider === "claude" || composerState.provider === "codex"
+              ? composerStateForProvider(composerState.provider, composerState)
+              : cloneComposerState(composerState),
           },
         })),
       setChatComposerProvider: (chatId, provider) =>
