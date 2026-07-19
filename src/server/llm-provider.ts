@@ -7,6 +7,7 @@ import { formatDisplayPath } from "./paths"
 import {
   DEFAULT_OPENAI_SDK_MODEL,
   DEFAULT_OPENROUTER_SDK_MODEL,
+  DEFAULT_PI_FAVE_MODELS,
   deriveModelLabel,
   type FaveModel,
   type LlmProviderFile,
@@ -33,19 +34,24 @@ function normalizeString(value: unknown) {
 
 const MAX_FAVE_MODELS = 30
 
-/** Drop malformed/empty entries; a fave needs an id, its label falls back to a name derived from the id. */
+/**
+ * Drop malformed/empty entries; a fave needs an id, its label falls back to a
+ * name derived from the id. An empty list is seeded with the built-in defaults
+ * so settings and the pi model picker always agree on one list.
+ */
 export function normalizeFaveModels(value: unknown): FaveModel[] {
-  if (!Array.isArray(value)) return []
   const faves: FaveModel[] = []
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") continue
-    const id = normalizeString((entry as Record<string, unknown>).id)
-    if (!id) continue
-    const label = normalizeString((entry as Record<string, unknown>).label)
-    faves.push({ id, label: label || deriveModelLabel(id) })
-    if (faves.length >= MAX_FAVE_MODELS) break
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (!entry || typeof entry !== "object") continue
+      const id = normalizeString((entry as Record<string, unknown>).id)
+      if (!id) continue
+      const label = normalizeString((entry as Record<string, unknown>).label)
+      faves.push({ id, label: label || deriveModelLabel(id) })
+      if (faves.length >= MAX_FAVE_MODELS) break
+    }
   }
-  return faves
+  return faves.length > 0 ? faves : DEFAULT_PI_FAVE_MODELS.map((fave) => ({ ...fave }))
 }
 
 export function resolveLlmProviderBaseUrl(provider: LlmProviderKind, baseUrl: string) {
@@ -122,7 +128,7 @@ function createDefaultSnapshot(filePath: string, warning: string | null = null):
     model: DEFAULT_OPENAI_SDK_MODEL,
     baseUrl: "",
     resolvedBaseUrl: OPENAI_BASE_URL,
-    faveModels: [],
+    faveModels: normalizeFaveModels([]),
     enabled: false,
     warning,
     filePathDisplay: formatDisplayPath(filePath),

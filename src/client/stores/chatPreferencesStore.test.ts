@@ -73,7 +73,7 @@ describe("migrateChatPreferencesState", () => {
           planMode: false,
         },
         pi: {
-          model: "moonshotai/kimi-k2.6",
+          model: "~anthropic/claude-fable-latest",
           modelOptions: { reasoningEffort: "medium" },
           planMode: false,
         },

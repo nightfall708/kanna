@@ -135,6 +135,13 @@ export interface ProviderModelOption {
   defaultReasoningEffort?: CodexReasoningEffort
   supportsFastMode?: boolean
   contextWindowOptions?: readonly ProviderContextWindowOption[]
+  /**
+   * Fixed context window (in tokens) for models that expose a single,
+   * non-selectable window. Drives the input-footer meter directly, bypassing
+   * the 200k/1m selector machinery. When set, `contextWindowOptions` should be
+   * omitted (no picker).
+   */
+  contextWindowTokens?: number
   supportsMaxReasoningEffort?: boolean
 }
 
@@ -250,7 +257,7 @@ export const DEFAULT_CURSOR_MODEL_OPTIONS = {
   fastMode: false,
 } as const satisfies CursorModelOptions
 
-export const DEFAULT_PI_MODEL = "moonshotai/kimi-k2.6"
+export const DEFAULT_PI_MODEL = "~anthropic/claude-fable-latest"
 
 export const DEFAULT_PI_MODEL_OPTIONS = {
   reasoningEffort: "medium",
@@ -334,6 +341,53 @@ export interface ProviderCatalogEntry {
   efforts: ProviderEffortOption[]
 }
 
+/**
+ * The default Model Registry models for pi: `~vendor/model-latest` registry
+ * aliases that track the latest release of each family. This is the canonical
+ * list — the pi catalog, the Default Models settings, and the chat-input model
+ * picker all derive from it (overridden by the user's fave models when set).
+ */
+export const DEFAULT_PI_FAVE_MODELS: FaveModel[] = [
+  "~anthropic/claude-fable-latest",
+  "~anthropic/claude-opus-latest",
+  "~anthropic/claude-sonnet-latest",
+  "~openai/gpt-latest",
+  "~moonshotai/kimi-latest",
+  "~x-ai/grok-latest",
+  "~google/gemini-flash-latest",
+].map((id) => ({ id, label: deriveModelLabel(id) }))
+
+/** Map fave models (Default Models settings) into pi catalog picker entries. */
+export function piModelOptionsFromFaves(faveModels: ReadonlyArray<FaveModel>): ProviderModelOption[] {
+  return faveModels.map((fave) => ({
+    id: fave.id,
+    label: fave.label || deriveModelLabel(fave.id),
+    supportsEffort: true,
+  }))
+}
+
+/**
+ * Return the catalog with pi's picker replaced by the user's fave models (the
+ * first fave becomes the default model). An empty list leaves the built-in
+ * defaults in place. Pure — used by the server catalog and by clients that
+ * render outside a chat snapshot, so both always show the same list.
+ */
+export function withPiFaveModels(
+  providers: ProviderCatalogEntry[],
+  faveModels: ReadonlyArray<FaveModel>
+): ProviderCatalogEntry[] {
+  if (faveModels.length === 0) return providers
+  return providers.map((provider) => (
+    provider.id === "pi"
+      ? {
+        ...provider,
+        defaultModel: faveModels[0]!.id,
+        models: piModelOptionsFromFaves(faveModels),
+      }
+      : provider
+  ))
+}
+
 export const PROVIDERS: ProviderCatalogEntry[] = [
   {
     id: "claude",
@@ -346,6 +400,9 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         id: "fable",
         label: deriveClaudeModelLabel("fable"),
         supportsEffort: true,
+        // Fable runs a fixed 1M window (no 200k/1m selector). The SDK reports a
+        // 2M window for it, so pin the meter to the real 1M ceiling here.
+        contextWindowTokens: 1_000_000,
       },
       {
         id: "claude-opus-4-8",
@@ -449,32 +506,24 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     label: "Cursor",
     defaultModel: "composer-2.5",
     supportsPlanMode: false,
+    // Static fallback only — the real list is discovered at runtime via
+    // `cursor-agent --list-models` (see applyCursorModels in provider-catalog).
     models: [
-      { id: "composer-2.5", label: "Composer 2.5", supportsEffort: false },
+      { id: "composer-2.5", label: "Composer 2.5", supportsEffort: false, supportsFastMode: true },
     ],
     efforts: [],
   },
   {
-    // Pi (badlogic's pi-coding-agent) runs in-process against OpenRouter. The
-    // model list is a curated starting point — any OpenRouter model id can be
-    // typed in via the custom model input (see normalizePiModelId).
+    // Pi (badlogic's pi-coding-agent) runs in-process against the Model
+    // Registry. The catalog is DEFAULT_PI_FAVE_MODELS until the user edits
+    // their Default Models — any registry model id remains valid (see
+    // normalizePiModelId).
     id: "pi",
     label: "Pi",
     defaultModel: DEFAULT_PI_MODEL,
     defaultEffort: "medium",
     supportsPlanMode: false,
-    models: [
-      { id: "moonshotai/kimi-k2.6", label: "Kimi K2.6", supportsEffort: true },
-      { id: "anthropic/claude-sonnet-4.6", label: "Claude Sonnet 4.6", supportsEffort: true },
-      { id: "anthropic/claude-opus-4.7", label: "Claude Opus 4.7", supportsEffort: true },
-      { id: "openai/gpt-5.5", label: "GPT-5.5", supportsEffort: true },
-      { id: "openai/gpt-5.3-codex", label: "GPT-5.3 Codex", supportsEffort: true },
-      { id: "google/gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", supportsEffort: true },
-      { id: "x-ai/grok-4.1-fast", label: "Grok 4.1 Fast", supportsEffort: true },
-      { id: "deepseek/deepseek-v3.2", label: "DeepSeek V3.2", supportsEffort: true },
-      { id: "minimax/minimax-m2.7", label: "MiniMax M2.7", supportsEffort: true },
-      { id: "qwen/qwen3-coder-plus", label: "Qwen3 Coder Plus", supportsEffort: false },
-    ],
+    models: piModelOptionsFromFaves(DEFAULT_PI_FAVE_MODELS),
     efforts: [...PI_REASONING_OPTIONS],
   },
 ]
@@ -503,6 +552,9 @@ export function normalizeProviderModelId(
   if (provider === "pi") {
     return normalizePiModelId(modelId, fallbackModelId ?? getProviderCatalog(provider).defaultModel)
   }
+  if (provider === "cursor") {
+    return normalizeCursorModelId(modelId, fallbackModelId ?? getProviderCatalog(provider).defaultModel)
+  }
   return getProviderModelMatch(provider, modelId)?.id
     ?? fallbackModelId
     ?? getProviderCatalog(provider).defaultModel
@@ -516,8 +568,16 @@ export function normalizeCodexModelId(modelId?: string, fallbackModelId = "gpt-5
   return normalizeProviderModelId("codex", modelId, fallbackModelId)
 }
 
+// Cursor's real model list is discovered at runtime (`cursor-agent
+// --list-models` → applyCursorModels in the server catalog), so like pi,
+// unknown ids pass through instead of clamping to the static catalog. Kanna
+// tracks "fast" as a separate toggle (CursorModelOptions.fastMode) — a
+// trailing "-fast" folds back into the base id so the id and toggle can't
+// disagree (the suffix is re-applied at spawn time by cursorModelIdForOptions).
 export function normalizeCursorModelId(modelId?: string, fallbackModelId = "composer-2.5"): string {
-  return normalizeProviderModelId("cursor", modelId, fallbackModelId)
+  const trimmed = typeof modelId === "string" ? modelId.trim() : ""
+  const base = trimmed.endsWith("-fast") ? trimmed.slice(0, -"-fast".length) : trimmed
+  return base || fallbackModelId
 }
 
 export function getProviderModelOption(provider: AgentProvider, modelId: string): ProviderModelOption | undefined {
@@ -610,6 +670,14 @@ export function resolveClaudeContextWindowTokens(contextWindow: ClaudeContextWin
     default:
       return 200_000
   }
+}
+
+// Effective context window (in tokens) for the input-footer meter. Models with
+// a fixed window (e.g. fable) short-circuit the 200k/1m selector.
+export function resolveClaudeContextWindowMaxTokens(modelId: string, contextWindow?: unknown): number {
+  const fixed = getClaudeModelOption(modelId)?.contextWindowTokens
+  if (typeof fixed === "number" && fixed > 0) return fixed
+  return resolveClaudeContextWindowTokens(resolveClaudeContextWindow(modelId, contextWindow))
 }
 
 export type KannaStatus =

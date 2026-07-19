@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { DEFAULT_OPENAI_SDK_MODEL, DEFAULT_OPENROUTER_SDK_MODEL } from "../shared/types"
+import { DEFAULT_OPENAI_SDK_MODEL, DEFAULT_OPENROUTER_SDK_MODEL, DEFAULT_PI_FAVE_MODELS } from "../shared/types"
 import {
   normalizeLlmProviderSnapshot,
   OPENAI_BASE_URL,
@@ -47,7 +47,7 @@ describe("normalizeLlmProviderSnapshot", () => {
       model: "gpt-test",
       baseUrl: "https://example.com/v1",
       resolvedBaseUrl: "https://example.com/v1",
-      faveModels: [],
+      faveModels: DEFAULT_PI_FAVE_MODELS,
       enabled: true,
       warning: null,
       filePathDisplay: TEST_FILE_PATH,
@@ -76,7 +76,7 @@ describe("readLlmProviderSnapshot", () => {
       model: DEFAULT_OPENAI_SDK_MODEL,
       baseUrl: "",
       resolvedBaseUrl: OPENAI_BASE_URL,
-      faveModels: [],
+      faveModels: DEFAULT_PI_FAVE_MODELS,
       enabled: false,
       warning: null,
       filePathDisplay: filePath,
@@ -122,7 +122,7 @@ describe("writeLlmProviderSnapshot", () => {
       model: "openrouter/model",
       baseUrl: "ignored",
       resolvedBaseUrl: OPENROUTER_BASE_URL,
-      faveModels: [],
+      faveModels: DEFAULT_PI_FAVE_MODELS,
       enabled: true,
       warning: null,
       filePathDisplay: filePath,
@@ -132,7 +132,7 @@ describe("writeLlmProviderSnapshot", () => {
       apiKey: "test-key",
       model: "openrouter/model",
       baseUrl: null,
-      faveModels: [],
+      faveModels: DEFAULT_PI_FAVE_MODELS,
     })
   })
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react"
 import type {
   AppSettingsPatch,
   AppSettingsSnapshot,
+  FaveModel,
   KeybindingsSnapshot,
   LlmProviderSnapshot,
   LlmProviderValidationResult,
@@ -206,6 +207,19 @@ export function useAppSettingsSync(params: {
     }
   }, [setCommandError, socket])
 
+  // Save only the fave models (the Default Models list), leaving the rest of
+  // the Model Registry settings at their last-committed values.
+  const handleWriteFaveModels = useCallback(async (faveModels: FaveModel[]) => {
+    if (!llmProvider) return
+    await handleWriteLlmProvider({
+      provider: llmProvider.provider,
+      apiKey: llmProvider.apiKey,
+      model: llmProvider.model,
+      baseUrl: llmProvider.baseUrl,
+      faveModels,
+    })
+  }, [handleWriteLlmProvider, llmProvider])
+
   const handleValidateLlmProvider = useCallback(async (
     value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">
   ) => {
@@ -246,6 +260,7 @@ export function useAppSettingsSync(params: {
     handleWriteAppSettings,
     handleReadLlmProvider,
     handleWriteLlmProvider,
+    handleWriteFaveModels,
     handleValidateLlmProvider,
   }
 }

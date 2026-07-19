@@ -31,7 +31,6 @@ import {
   type AgentProvider,
   type InstalledSkillSummary,
   type KeybindingAction,
-  type FaveModel,
   type LlmProviderKind,
   type InstalledSkillsSnapshot,
   type SkillInstallResult,
@@ -42,6 +41,7 @@ import {
 } from "../../shared/types"
 import { markdownComponents } from "../components/messages/shared"
 import { ChatPreferenceControls } from "../components/chat-ui/ChatPreferenceControls"
+import { DefaultModelsDialog } from "../components/DefaultModelsDialog"
 import { EDITOR_OPTIONS, EditorIcon } from "../components/editor-icons"
 import { Button, buttonVariants } from "../components/ui/button"
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogTitle } from "../components/ui/dialog"
@@ -853,7 +853,6 @@ export function SettingsPage() {
     apiKey: "",
     model: "",
     baseUrl: "",
-    faveModels: [] as FaveModel[],
   })
   const [llmProviderError, setLlmProviderError] = useState<string | null>(null)
   const [llmValidationStatus, setLlmValidationStatus] = useState<"idle" | "valid" | "invalid">("idle")
@@ -907,7 +906,6 @@ export function SettingsPage() {
       apiKey: llmProvider.apiKey,
       model: llmProvider.model,
       baseUrl: llmProvider.baseUrl,
-      faveModels: llmProvider.faveModels.map((fave) => ({ ...fave })),
     })
   }, [llmProvider])
 
@@ -1162,36 +1160,7 @@ export function SettingsPage() {
     }
   }
 
-  // Functional updates: row edits arrive per keystroke, and computing the next
-  // array from a render-scope draft corrupts neighbors when events outpace
-  // re-renders (stale closures). Mutations always apply to the current state.
-  function updateFaveModels(mutate: (faves: FaveModel[]) => FaveModel[]) {
-    setLlmProviderDraft((current) => ({ ...current, faveModels: mutate(current.faveModels) }))
-  }
-
-  function setFaveModelField(index: number, field: "label" | "id", value: string) {
-    updateFaveModels((faves) => {
-      // An index past the end targets the always-present blank bottom row —
-      // typing there appends a real entry.
-      if (index >= faves.length) {
-        return [...faves, { label: "", id: "", [field]: value }]
-      }
-      return faves.map((entry, entryIndex) => (entryIndex === index ? { ...entry, [field]: value } : entry))
-    })
-  }
-
-  function closeDefaultModelsDialog() {
-    setDefaultModelsDialogOpen(false)
-    // Drop rows that never got a model id and save the rest.
-    const cleanedDraft = {
-      ...llmProviderDraft,
-      faveModels: llmProviderDraft.faveModels.filter((fave) => fave.id.trim().length > 0),
-    }
-    setLlmProviderDraft(cleanedDraft)
-    void commitLlmProvider(cleanedDraft)
-  }
-
-  const selectedDefaultModelCount = llmProviderDraft.faveModels.filter((fave) => fave.id.trim().length > 0).length
+  const selectedDefaultModelCount = (llmProvider?.faveModels ?? []).length
 
   function handleLlmProviderSelection(nextProvider: LlmProviderKind) {
     const nextDraft = {
@@ -1698,7 +1667,7 @@ export function SettingsPage() {
                     >
                       <div className="max-w-[420px]">
                         <ChatPreferenceControls
-                          availableProviders={PROVIDERS}
+                          availableProviders={state.availableProviders}
                           selectedProvider="claude"
                           showProviderPicker={false}
                           providerLocked
@@ -1731,7 +1700,7 @@ export function SettingsPage() {
                     >
                       <div className="max-w-[420px]">
                         <ChatPreferenceControls
-                          availableProviders={PROVIDERS}
+                          availableProviders={state.availableProviders}
                           selectedProvider="codex"
                           showProviderPicker={false}
                           providerLocked
@@ -1762,7 +1731,7 @@ export function SettingsPage() {
                     >
                       <div className="max-w-[420px]">
                         <ChatPreferenceControls
-                          availableProviders={PROVIDERS}
+                          availableProviders={state.availableProviders}
                           selectedProvider="cursor"
                           showProviderPicker={false}
                           providerLocked
@@ -1784,12 +1753,12 @@ export function SettingsPage() {
 
                     <SettingsRow
                       title="Pi Defaults"
-                      description="Saved defaults when using Pi (connects through the Model Registry). Any model id can be entered in the model picker."
+                      description="Saved defaults when using Pi (connects through the Model Registry)."
                       alignStart
                     >
                       <div className="max-w-[420px]">
                         <ChatPreferenceControls
-                          availableProviders={PROVIDERS}
+                          availableProviders={state.availableProviders}
                           selectedProvider="pi"
                           showProviderPicker={false}
                           providerLocked
@@ -1803,6 +1772,7 @@ export function SettingsPage() {
                               handleProviderDefaultModelOptionsChange("pi", { reasoningEffort: change.effort })
                             }
                           }}
+                          onEditModels={() => setDefaultModelsDialogOpen(true)}
                           planMode={providerDefaults.pi.planMode}
                           className="justify-start flex-wrap"
                         />
@@ -2052,78 +2022,16 @@ export function SettingsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog
+      <DefaultModelsDialog
         open={defaultModelsDialogOpen}
-        onOpenChange={(open) => {
-          if (open) {
-            setDefaultModelsDialogOpen(true)
-          } else {
-            closeDefaultModelsDialog()
-          }
+        onOpenChange={setDefaultModelsDialogOpen}
+        faveModels={llmProvider?.faveModels ?? []}
+        onSave={(faveModels) => {
+          void state.handleWriteFaveModels(faveModels).catch((error) => {
+            setLlmProviderError(error instanceof Error ? error.message : "Unable to save Model Registry settings.")
+          })
         }}
-      >
-        <DialogContent size="lg">
-          <DialogBody className="space-y-4">
-            <DialogTitle>Default Models</DialogTitle>
-            <p className="text-sm text-muted-foreground">
-              Shown in Pi's model picker. Each entry has a display label and the model id sent to the Model Registry endpoint.
-            </p>
-            {/*
-              The modal edits a local draft only — nothing commits until Done
-              or dismissal. Mid-edit commits would echo a snapshot back that
-              resets the draft (normalization drops id-less rows), wiping a
-              row while it's being filled in.
-
-              A blank row is always rendered at the bottom; typing into it
-              appends a real entry (and a fresh blank row appears below).
-            */}
-            <div className="max-h-[55vh] divide-y divide-border/60 overflow-y-auto rounded-lg border border-border bg-background">
-              {[...llmProviderDraft.faveModels, { label: "", id: "" }].map((fave, index) => {
-                const isNewRow = index === llmProviderDraft.faveModels.length
-                return (
-                  <div key={index} className="flex items-center">
-                    <input
-                      value={fave.label}
-                      onChange={(event) => setFaveModelField(index, "label", event.target.value)}
-                      placeholder="Name"
-                      spellCheck={false}
-                      className="w-[160px] shrink-0 bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground/60"
-                    />
-                    <input
-                      value={fave.id}
-                      onChange={(event) => setFaveModelField(index, "id", event.target.value)}
-                      placeholder="Model id"
-                      spellCheck={false}
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      className="min-w-0 flex-1 bg-transparent px-3 py-2 font-mono text-sm outline-none placeholder:text-muted-foreground/60"
-                    />
-                    {isNewRow ? (
-                      <div className="w-9 shrink-0" />
-                    ) : (
-                      <button
-                        type="button"
-                        aria-label="Remove default model"
-                        onClick={() => {
-                          updateFaveModels((faves) => faves.filter((_, entryIndex) => entryIndex !== index))
-                        }}
-                        className="flex w-9 shrink-0 items-center justify-center self-stretch text-muted-foreground transition-colors hover:text-foreground"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </DialogBody>
-          <DialogFooter>
-            <Button variant="secondary" size="sm" onClick={closeDefaultModelsDialog}>
-              Done
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      />
     </div>
   )
 }

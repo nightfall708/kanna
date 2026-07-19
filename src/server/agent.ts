@@ -25,6 +25,7 @@ import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./ge
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
   applyClaudeSdkModels,
+  applyCursorModels,
   type ClaudeSdkModelInfo,
   cursorModelIdForOptions,
   getServerProviderCatalog,
@@ -692,6 +693,7 @@ export class AgentCoordinator {
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private reportBackgroundError: ((message: string) => void) | null = null
+  private cursorModelCatalogApplied = false
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   readonly claudeSessions = new Map<string, ClaudeSessionState>()
@@ -746,6 +748,27 @@ export class AgentCoordinator {
         const message = error instanceof Error ? error.message : String(error)
         this.reportBackgroundError?.(`[claude-models] failed to refresh Claude model catalog: ${message}`)
       })
+  }
+
+  /**
+   * Overlay the account's live Cursor model list (`cursor-agent --list-models`)
+   * on the catalog — the Cursor analog of refreshClaudeModelCatalog. Runs at
+   * server startup and retries on cursor turns until one fetch succeeds (e.g.
+   * the user logs in to cursor-agent while the server is running). Failure is
+   * expected — cursor-agent missing or logged out — so it stays quiet and the
+   * static catalog remains in place.
+   */
+  async refreshCursorModelCatalog() {
+    if (this.cursorModelCatalogApplied) return
+    try {
+      const models = await this.cursorManager.listModels()
+      this.cursorModelCatalogApplied = true
+      if (applyCursorModels(models)) {
+        this.emitStateChange(undefined, { immediate: true })
+      }
+    } catch {
+      // Keep the static fallback catalog; the next cursor turn retries.
+    }
   }
 
 
@@ -946,6 +969,9 @@ export class AgentCoordinator {
         onToolRequest,
       })
     } else if (args.provider === "cursor") {
+      // Refresh the model catalog off the turn's critical path if a previous
+      // fetch never succeeded (e.g. the user just logged in to cursor-agent).
+      void this.refreshCursorModelCatalog()
       // Cursor cannot fork (see canForkChat), so a turn always resumes its own session.
       turn = await this.cursorManager.startTurn({
         cwd: project.localPath,
