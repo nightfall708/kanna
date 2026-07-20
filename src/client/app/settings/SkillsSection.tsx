@@ -1,15 +1,26 @@
-import { useEffect, useState } from "react"
-import { ExternalLink, Loader2, Search, Trash2, X } from "lucide-react"
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react"
+import { Ellipsis, ExternalLink, Loader2, Search, Trash2, X } from "lucide-react"
 import type {
-  InstalledSkillSummary,
-  InstalledSkillsSnapshot,
+  AgentProvider,
+  GlobalSkillSummary,
+  GlobalSkillsSnapshot,
   SkillInstallResult,
   SkillSearchResult,
   SkillSearchSnapshot,
   SkillUninstallResult,
 } from "../../../shared/types"
 import { Button } from "../../components/ui/button"
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "../../components/ui/context-menu"
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip"
+import { PROVIDER_ICONS } from "../../components/chat-ui/ChatPreferenceControls"
 import type { KannaState } from "../useKannaState"
+
+const PROVIDER_LABELS: Record<AgentProvider, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+  pi: "Pi",
+}
 
 function formatInstallCount(count: number) {
   if (!count || count <= 0) return "0 installs"
@@ -26,46 +37,113 @@ function SkillErrorBlock({ message }: { message: string }) {
   )
 }
 
-function InstalledSkillCard({
+/** Raw harness icons for the providers that can invoke this skill (root-attributed). */
+function SkillProviderIcons({ skillName, providers }: { skillName: string; providers: AgentProvider[] }) {
+  return (
+    <div className="flex items-center gap-2 self-end text-muted-foreground">
+      {providers.map((provider) => {
+        const Icon = PROVIDER_ICONS[provider]
+        return (
+          <Tooltip key={provider}>
+            <TooltipTrigger asChild>
+              <span
+                aria-label={`${skillName} is available in ${PROVIDER_LABELS[provider]}`}
+                className="inline-flex"
+              >
+                <Icon className="h-3.5 w-3.5" />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" align="center">
+              {PROVIDER_LABELS[provider]}
+            </TooltipContent>
+          </Tooltip>
+        )
+      })}
+    </div>
+  )
+}
+
+function GlobalSkillCard({
   skill,
   uninstalling,
   onUninstall,
 }: {
-  skill: InstalledSkillSummary
+  skill: GlobalSkillSummary
   uninstalling: boolean
   onUninstall: () => void
 }) {
+  const cardRef = useRef<HTMLDivElement>(null)
   const href = skill.source ? `https://skills.sh/${skill.source}/${skill.name}` : null
+  const hasActions = Boolean(skill.source)
+  const description = skill.description || skill.source || skill.paths[0] || ""
+
+  // Same trick as DiffFileCard: the "..." button synthesizes a contextmenu
+  // event on the card so click and right-click share one menu.
+  function openContextMenuFromButton(event: ReactMouseEvent<HTMLButtonElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    const rect = event.currentTarget.getBoundingClientRect()
+    cardRef.current?.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.bottom,
+      view: window,
+    }))
+  }
+
+  const card = (
+    <div ref={cardRef} className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-card/30 p-3">
+      <div className="flex min-w-0 items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium text-foreground">{skill.name}</div>
+          {description ? (
+            <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{description}</div>
+          ) : null}
+        </div>
+        {hasActions ? (
+          <button
+            type="button"
+            aria-label={`Open actions for ${skill.name}`}
+            onClick={openContextMenuFromButton}
+            className="touch-manipulation flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            {uninstalling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ellipsis className="h-3.5 w-3.5 shrink-0" />}
+          </button>
+        ) : null}
+      </div>
+      <SkillProviderIcons skillName={skill.name} providers={skill.providers} />
+    </div>
+  )
+
+  if (!hasActions) {
+    return card
+  }
 
   return (
-    <div className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-border bg-card/30 p-3">
-      <div className="min-w-0">
-        <div className="truncate text-sm font-medium text-foreground">{skill.name}</div>
-        <div className="truncate text-xs text-muted-foreground">{skill.source || "Unknown source"}</div>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{card}</ContextMenuTrigger>
+      <ContextMenuContent>
         {href ? (
-          <a
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            aria-label={`View ${skill.name} on skills.sh`}
-            className="touch-manipulation inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          <ContextMenuItem
+            onSelect={() => {
+              window.open(href, "_blank", "noreferrer")
+            }}
           >
-            <ExternalLink className="h-4 w-4" />
-          </a>
+            <ExternalLink className="h-3.5 w-3.5" />
+            <span className="text-xs font-medium">View on skills.sh</span>
+          </ContextMenuItem>
         ) : null}
-        <button
-          type="button"
-          aria-label={`Uninstall ${skill.name}`}
+        <ContextMenuItem
           disabled={uninstalling}
-          onClick={onUninstall}
-          className="touch-manipulation inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:pointer-events-none disabled:opacity-50"
+          onSelect={onUninstall}
+          className="text-destructive dark:text-red-400 hover:bg-destructive/10 focus:bg-destructive/10 dark:hover:bg-red-500/20 dark:focus:bg-red-500/20"
         >
-          {uninstalling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-        </button>
-      </div>
-    </div>
+          <Trash2 className="h-3.5 w-3.5" />
+          <span className="text-xs font-medium">Uninstall</span>
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
 
@@ -126,7 +204,7 @@ export function SkillsSection({
   const [results, setResults] = useState<SkillSearchResult[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
-  const [installedSkills, setInstalledSkills] = useState<InstalledSkillSummary[]>([])
+  const [installedSkills, setInstalledSkills] = useState<GlobalSkillSummary[]>([])
   const [installedSkillIds, setInstalledSkillIds] = useState<Set<string>>(() => new Set())
   const [installedLoading, setInstalledLoading] = useState(false)
   const [installedError, setInstalledError] = useState<string | null>(null)
@@ -147,7 +225,7 @@ export function SkillsSection({
     try {
       setInstalledLoading(true)
       setInstalledError(null)
-      const snapshot = await socket.command<InstalledSkillsSnapshot>({ type: "skills.listInstalled" })
+      const snapshot = await socket.command<GlobalSkillsSnapshot>({ type: "skills.listGlobal" })
       setInstalledSkills(snapshot.skills)
       setInstalledSkillIds(new Set(snapshot.skills.map((skill) => skill.name)))
     } catch (error) {
@@ -242,7 +320,7 @@ export function SkillsSection({
     }
   }
 
-  async function uninstallSkill(skill: InstalledSkillSummary) {
+  async function uninstallSkill(skill: GlobalSkillSummary) {
     if (connectionStatus !== "connected") {
       setOperationError("Backend connection required.")
       return
@@ -290,8 +368,8 @@ export function SkillsSection({
         {installedSkills.length > 0 ? (
           <div className="grid gap-3 md:grid-cols-2">
             {installedSkills.map((skill) => (
-              <InstalledSkillCard
-                key={`${skill.source}/${skill.name}`}
+              <GlobalSkillCard
+                key={skill.name}
                 skill={skill}
                 uninstalling={uninstallingSkillId === skill.name}
                 onUninstall={() => { void uninstallSkill(skill) }}

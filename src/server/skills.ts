@@ -2,11 +2,13 @@ import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import type {
+  GlobalSkillsSnapshot,
   InstalledSkillsSnapshot,
   SkillInstallResult,
   SkillSearchSnapshot,
   SkillUninstallResult,
 } from "../shared/types"
+import { listGlobalSkills } from "./harness-skills"
 
 const SKILL_AGENT_ALIASES = ["universal", "claude-code"] as const
 
@@ -208,5 +210,31 @@ export async function uninstallSkill(skillId: string): Promise<SkillUninstallRes
     cwd,
     stdout,
     stderr,
+  }
+}
+
+/**
+ * The settings "Installed" view: scan the global skill roots the harnesses
+ * read (~/.agents, ~/.claude, ~/.cursor, ~/.codex) with per-harness
+ * attribution, then annotate entries the skills-CLI lock file knows about with
+ * their marketplace source — those get skills.sh links and an uninstall
+ * affordance; hand-dropped skills are listed without them.
+ */
+export async function listGlobalSkillsWithSources(args: {
+  home?: string
+  lockFilePath?: string
+} = {}): Promise<GlobalSkillsSnapshot> {
+  const scanned = listGlobalSkills({ home: args.home })
+  const lock = await listInstalledSkills(args.lockFilePath ?? getGlobalSkillLockPath())
+  const sourceByName = new Map(
+    lock.skills
+      .filter((skill) => skill.source)
+      .map((skill) => [skill.name, skill.source])
+  )
+  return {
+    skills: scanned.map((skill) => {
+      const source = sourceByName.get(skill.name)
+      return source ? { ...skill, source } : skill
+    }),
   }
 }

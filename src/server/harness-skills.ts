@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
-import type { HarnessSkill, HarnessSkillSource } from "../shared/types"
+import type { AgentProvider, GlobalSkillSummary, HarnessSkill, HarnessSkillSource } from "../shared/types"
 
 /**
  * Harness-agnostic skill plumbing for the composer's "/" menu.
@@ -281,6 +281,59 @@ export function scanCursorSkills(args: ScanArgs): HarnessSkill[] {
 /** Resolve a typed `/name` against a skill list (exact match on the namespaced name). */
 export function findSkillByName(skills: HarnessSkill[], name: string): HarnessSkill | null {
   return skills.find((skill) => skill.name === name) ?? null
+}
+
+const PROVIDER_ORDER: readonly AgentProvider[] = ["claude", "codex", "cursor", "pi"]
+
+/**
+ * User-level skill roots and the harnesses that read each of them. This is the
+ * settings "Installed" view: what's globally available, attributed per harness.
+ * Adding a harness that reads a new global dir = one entry here.
+ */
+export function globalSkillRoots(home: string): { dir: string; providers: AgentProvider[] }[] {
+  return [
+    // The cross-harness standard dir: codex, cursor, and pi all read it natively.
+    { dir: path.join(home, ".agents", "skills"), providers: ["codex", "cursor", "pi"] },
+    { dir: path.join(home, ".claude", "skills"), providers: ["claude"] },
+    { dir: path.join(home, ".cursor", "skills"), providers: ["cursor"] },
+    // Deprecated codex location, but current codex builds still scan it.
+    { dir: path.join(home, ".codex", "skills"), providers: ["codex"] },
+  ]
+}
+
+/**
+ * Scan every global root and merge by skill name: a skill present in multiple
+ * roots (e.g. the marketplace installs to both ~/.agents and ~/.claude) shows
+ * once with the union of supporting harnesses.
+ */
+export function listGlobalSkills(args: { home?: string } = {}): GlobalSkillSummary[] {
+  const home = args.home ?? homedir()
+  const byName = new Map<string, { name: string; description: string; providers: Set<AgentProvider>; paths: string[] }>()
+  for (const root of globalSkillRoots(home)) {
+    for (const skill of scanSkillsRoot(root.dir)) {
+      const existing = byName.get(skill.name)
+      if (existing) {
+        for (const provider of root.providers) existing.providers.add(provider)
+        if (skill.path && !existing.paths.includes(skill.path)) existing.paths.push(skill.path)
+        if (!existing.description && skill.description) existing.description = skill.description
+        continue
+      }
+      byName.set(skill.name, {
+        name: skill.name,
+        description: skill.description,
+        providers: new Set(root.providers),
+        paths: skill.path ? [skill.path] : [],
+      })
+    }
+  }
+  return [...byName.values()]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((entry) => ({
+      name: entry.name,
+      description: entry.description,
+      providers: PROVIDER_ORDER.filter((provider) => entry.providers.has(provider)),
+      paths: entry.paths,
+    }))
 }
 
 export function toHarnessSkillSource(value: string): HarnessSkillSource {

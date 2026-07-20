@@ -28,6 +28,7 @@ import type { ClaudeContextWindow } from "../../../shared/types"
 import { REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
 import type { KannaState } from "../../app/useKannaState"
 import { useComposer } from "../../hooks/useComposer"
+import { formatSidebarAgeLabel } from "../../lib/formatters"
 import { actionMatchesEvent, getBindingsForAction } from "../../lib/keybindings"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
@@ -43,7 +44,6 @@ import {
   CommandItem,
   CommandList,
 } from "../ui/command"
-import { Kbd, KbdGroup } from "../ui/kbd"
 import {
   flattenPaletteProjects,
   flattenSidebarThreads,
@@ -75,11 +75,9 @@ interface PaletteAction {
 
 function ShortcutHint({ binding }: { binding: string }) {
   return (
-    <KbdGroup className="ml-auto">
-      {binding.split("+").map((key, index) => (
-        <Kbd key={`${key}-${index}`}>{key.toUpperCase()}</Kbd>
-      ))}
-    </KbdGroup>
+    <span className="ml-auto shrink-0 pl-3 text-xs text-muted-foreground">
+      {binding.toUpperCase()}
+    </span>
   )
 }
 
@@ -89,15 +87,25 @@ function statusDotClass(archived: boolean) {
 
 function ThreadItem({
   thread,
+  nowMs,
   onSelect,
 }: {
   thread: PaletteThread
+  nowMs: number
   onSelect: (thread: PaletteThread) => void
 }) {
+  // Same relative-age formatting and timestamp source as the sidebar rows.
+  const ageLabel = formatSidebarAgeLabel(thread.lastActivityAt, nowMs)
   return (
     <CommandItem value={`thread-${thread.chatId}`} onSelect={() => onSelect(thread)}>
       <MessageSquarePlus className={`h-4 w-4 ${statusDotClass(thread.archived)}`} />
       <span className="min-w-0 truncate">{thread.title}</span>
+      {ageLabel ? (
+        // Counteract part of the CommandItem flex gap so the age hugs the title.
+        <span className="-ml-1 shrink-0 text-xs text-muted-foreground">
+          {ageLabel === "now" ? ageLabel : `${ageLabel} ago`}
+        </span>
+      ) : null}
       <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-3 text-xs text-muted-foreground">
         {thread.archived ? (
           <span className="rounded border border-border px-1 py-px text-[10px] uppercase tracking-wide">Archived</span>
@@ -141,6 +149,8 @@ export function CommandPalette({ state }: { state: KannaState }) {
     return null
   }, [state.activeChatId, state.sidebarData])
 
+  // Anchor for relative thread ages; refreshed each time the palette opens.
+  const nowMs = useMemo(() => Date.now(), [open])
   const threads = useMemo(() => flattenSidebarThreads(state.sidebarData), [state.sidebarData])
   const paletteProjects = useMemo(
     () => flattenPaletteProjects(state.sidebarData, state.localProjects?.projects ?? []),
@@ -686,7 +696,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
             const threadsGroup = threadResults.length > 0 ? (
               <CommandGroup key="threads" heading={trimmedQuery ? "Threads" : "Recent Threads"}>
                 {threadResults.map((thread) => (
-                  <ThreadItem key={thread.chatId} thread={thread} onSelect={openThread} />
+                  <ThreadItem key={thread.chatId} thread={thread} nowMs={nowMs} onSelect={openThread} />
                 ))}
               </CommandGroup>
             ) : null

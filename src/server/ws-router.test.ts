@@ -10,6 +10,7 @@ import {
   assertSafeSkillSource,
   buildInstallSkillCommand,
   buildUninstallSkillCommand,
+  listGlobalSkillsWithSources,
   listInstalledSkills,
   parseInstalledSkillsLock,
 } from "./skills"
@@ -181,6 +182,41 @@ describe("skills helpers", () => {
       })
     } finally {
       await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("listGlobalSkillsWithSources scans global roots and annotates lock-file sources", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "kanna-global-skills-"))
+    try {
+      const { mkdir } = await import("node:fs/promises")
+      const universalDir = path.join(home, ".agents", "skills", "installed-skill")
+      const handDroppedDir = path.join(home, ".claude", "skills", "hand-dropped")
+      await mkdir(universalDir, { recursive: true })
+      await mkdir(handDroppedDir, { recursive: true })
+      await writeFile(path.join(universalDir, "SKILL.md"), "---\nname: installed-skill\ndescription: From the marketplace\n---\n")
+      await writeFile(path.join(handDroppedDir, "SKILL.md"), "---\nname: hand-dropped\ndescription: Made by hand\n---\n")
+
+      const lockPath = path.join(home, ".agents", ".skill-lock.json")
+      await writeFile(lockPath, JSON.stringify({
+        version: 3,
+        skills: {
+          "installed-skill": { source: "owner/repo", sourceType: "github" },
+        },
+      }))
+
+      const snapshot = await listGlobalSkillsWithSources({ home, lockFilePath: lockPath })
+      const byName = new Map(snapshot.skills.map((skill) => [skill.name, skill]))
+
+      // Lock-tracked skill carries its marketplace source; ~/.agents attributes codex/cursor/pi.
+      expect(byName.get("installed-skill")).toMatchObject({
+        source: "owner/repo",
+        providers: ["codex", "cursor", "pi"],
+      })
+      // Hand-dropped skill still listed, claude-attributed, with no source.
+      expect(byName.get("hand-dropped")?.providers).toEqual(["claude"])
+      expect(byName.get("hand-dropped")?.source).toBeUndefined()
+    } finally {
+      await rm(home, { recursive: true, force: true })
     }
   })
 

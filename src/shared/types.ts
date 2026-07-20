@@ -65,6 +65,30 @@ export interface InstalledSkillsSnapshot {
 }
 
 /**
+ * A skill found in one of the user-level ("global") skill roots, attributed to
+ * the harnesses that read that root:
+ *   ~/.agents/skills — codex, cursor, pi
+ *   ~/.claude/skills — claude
+ *   ~/.cursor/skills — cursor
+ *   ~/.codex/skills  — codex (deprecated root, still scanned by codex)
+ * The same name in multiple roots merges into one entry with the provider union.
+ */
+export interface GlobalSkillSummary {
+  name: string
+  description: string
+  /** Harnesses that can invoke this skill (ordered claude, codex, cursor, pi). */
+  providers: AgentProvider[]
+  /** Absolute SKILL.md paths where the skill was found (one per root). */
+  paths: string[]
+  /** skills-CLI lock file source (owner/repo) when the skill was installed via the marketplace. */
+  source?: string
+}
+
+export interface GlobalSkillsSnapshot {
+  skills: GlobalSkillSummary[]
+}
+
+/**
  * A user-invocable skill/command surfaced by a harness, normalized across
  * providers for the composer's "/" menu:
  *   - claude: built-in commands, .claude/commands, .claude/skills, plugins
