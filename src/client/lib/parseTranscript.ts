@@ -147,6 +147,14 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           kind: "context_cleared",
         })
         break
+      case "handoff_boundary":
+        messages.push({
+          ...createBaseMessage(entry),
+          kind: "handoff_boundary",
+          fromProvider: entry.fromProvider,
+          toProvider: entry.toProvider,
+        })
+        break
       case "interrupted":
         messages.push({
           ...createBaseMessage(entry),

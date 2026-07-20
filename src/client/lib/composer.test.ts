@@ -32,14 +32,14 @@ describe("deriveComposerView", () => {
     })
 
     expect(view.composerChatId).toBe("__new__")
-    expect(view.providerLocked).toBe(false)
+    expect(view.providerSwitchPending).toBe(false)
     expect(view.canChangeProvider).toBe(true)
     expect(view.selectedProvider).toBe("claude")
     expect(view.models.length).toBeGreaterThan(0)
     expect(view.supportsPlanMode).toBe(true)
   })
 
-  test("locked chat: provider comes from the session, not the stored composer state", () => {
+  test("started chat: a passively-seeded composer state defers to the session's provider", () => {
     const view = deriveComposerView({
       chatId: "chat-1",
       activeProvider: "codex",
@@ -49,18 +49,52 @@ describe("deriveComposerView", () => {
     })
 
     expect(view.composerChatId).toBe("chat-1")
-    expect(view.providerLocked).toBe(true)
-    expect(view.canChangeProvider).toBe(false)
+    expect(view.providerSwitchPending).toBe(false)
+    // The harness can still change — an explicit switch applies on next send.
+    expect(view.canChangeProvider).toBe(true)
     expect(view.selectedProvider).toBe("codex")
     // Effective state falls back to codex defaults but keeps plan mode.
     expect(view.effectiveState.provider).toBe("codex")
     expect(view.effectiveState.model).toBe(providerDefaults.codex.model)
     expect(view.effectiveState.planMode).toBe(true)
-    // Models are the locked provider's catalog.
+    // Models are the session provider's catalog.
     expect(view.models).toBe(PROVIDERS.find((provider) => provider.id === "codex")!.models)
   })
 
-  test("stored state matching the locked provider is used as-is", () => {
+  test("started chat: an explicit switch keeps the staged provider until the next send", () => {
+    const staged = claudeState({ planMode: true })
+    const view = deriveComposerView({
+      chatId: "chat-1",
+      activeProvider: "codex",
+      availableProviders: PROVIDERS,
+      composerState: staged,
+      providerDefaults,
+      providerSwitchRequested: true,
+    })
+
+    expect(view.providerSwitchPending).toBe(true)
+    expect(view.selectedProvider).toBe("claude")
+    expect(view.effectiveState).toBe(staged)
+    expect(view.models).toBe(PROVIDERS.find((provider) => provider.id === "claude")!.models)
+  })
+
+  test("a stale switch request matching the session provider is not pending", () => {
+    const stored = claudeState()
+    const view = deriveComposerView({
+      chatId: "chat-1",
+      activeProvider: "claude",
+      availableProviders: PROVIDERS,
+      composerState: stored,
+      providerDefaults,
+      providerSwitchRequested: true,
+    })
+
+    expect(view.providerSwitchPending).toBe(false)
+    expect(view.selectedProvider).toBe("claude")
+    expect(view.effectiveState).toBe(stored)
+  })
+
+  test("stored state matching the session provider is used as-is", () => {
     const stored = claudeState({ model: "claude-sonnet-4-6" })
     const view = deriveComposerView({
       chatId: "chat-1",

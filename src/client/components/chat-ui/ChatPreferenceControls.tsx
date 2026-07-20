@@ -255,6 +255,8 @@ interface ChatPreferenceControlsProps {
   selectedProvider: AgentProvider
   showProviderPicker?: boolean
   providerLocked?: boolean
+  /** A harness switch is staged for this chat and applies on the next send. */
+  providerSwitchPending?: boolean
   model: string
   modelOptions: ClaudeModelOptions | CodexModelOptions | CursorModelOptions | PiModelOptions
   onProviderChange?: (provider: AgentProvider) => void
@@ -273,6 +275,7 @@ export function ChatPreferenceControls({
   selectedProvider,
   showProviderPicker = true,
   providerLocked = false,
+  providerSwitchPending = false,
   model,
   modelOptions,
   onProviderChange,
@@ -315,6 +318,8 @@ export function ChatPreferenceControls({
               <span>{providerConfig?.label ?? selectedProvider}</span>
             </>
           )}
+          // Amber = staged harness switch (applies on the next message).
+          triggerClassName={providerSwitchPending ? "text-amber-500 dark:text-amber-400" : undefined}
         >
           {(close) => availableProviders.map((provider) => {
             const Icon = PROVIDER_ICONS[provider.id]

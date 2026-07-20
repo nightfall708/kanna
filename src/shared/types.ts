@@ -1363,6 +1363,24 @@ export interface InterruptedEntry extends TranscriptEntryBase {
   kind: "interrupted"
 }
 
+/**
+ * Marks a mid-conversation harness switch. The old provider session is gone
+ * (session token cleared); the next turn starts a fresh session on
+ * `toProvider` with a handoff context block prepended on the wire.
+ */
+export interface HandoffBoundaryEntry extends TranscriptEntryBase {
+  kind: "handoff_boundary"
+  fromProvider: AgentProvider
+  toProvider: AgentProvider
+  /** Debug metadata about the handoff context built for the new harness. */
+  stats?: {
+    totalEntries: number
+    includedEntries: number
+    elidedToolResults: number
+    approxTokens: number
+  }
+}
+
 export type TranscriptEntry =
   | UserPromptEntry
   | SystemInitEntry
@@ -1377,6 +1395,7 @@ export type TranscriptEntry =
   | CompactSummaryEntry
   | ContextClearedEntry
   | InterruptedEntry
+  | HandoffBoundaryEntry
 
 export interface HydratedToolCallBase<TKind extends string, TInput, TResult> {
   id: string
@@ -1468,6 +1487,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "compact_boundary"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "compact_summary"; summary: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "context_cleared"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "handoff_boundary"; fromProvider: AgentProvider; toProvider: AgentProvider; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "interrupted"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "unknown"; json: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ id: string; messageId?: string; hidden?: boolean } & HydratedToolCall)

@@ -50,6 +50,7 @@ import {
 import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import { asNumber, asRecord } from "../shared/json"
+import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
 import { timestamped } from "./transcript"
 
 const CLAUDE_TOOLSET = [
@@ -854,9 +855,13 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
   }
 
+  /**
+   * An explicit provider on the message wins — sending with a different
+   * provider than the chat's current one performs a mid-conversation harness
+   * switch (fresh session + handoff context, see prepareProviderHandoff).
+   */
   private resolveProvider(options: SendMessageOptions, currentProvider: AgentProvider | null) {
-    if (currentProvider) return currentProvider
-    return options.provider ?? "claude"
+    return options.provider ?? currentProvider ?? "claude"
   }
 
   private getProviderSettings(provider: AgentProvider, options: SendMessageOptions) {
@@ -963,6 +968,48 @@ export class AgentCoordinator {
     return chats
   }
 
+  /**
+   * Mid-conversation harness switch. Closes the outgoing provider's session
+   * plumbing, clears the chat's session tokens (fresh native session on the
+   * new harness — stale old sessions are never resumed, even when switching
+   * back), and appends a handoff_boundary entry. Returns the wire-only
+   * handoff context to prepend to this turn's prompt, or null when the
+   * transcript has nothing worth handing off (the switch still happens).
+   */
+  private async prepareProviderHandoff(
+    chatId: string,
+    fromProvider: AgentProvider,
+    toProvider: AgentProvider,
+    entries: TranscriptEntry[],
+  ): Promise<HandoffContext | null> {
+    const claudeSession = this.claudeSessions.get(chatId)
+    if (claudeSession) {
+      claudeSession.session.close()
+      this.claudeSessions.delete(chatId)
+    }
+    // Codex keeps a warm per-chat app-server session that would silently
+    // resume the old thread on switch-back; kill it so the cleared session
+    // token actually takes effect. Cursor spawns per turn — nothing to close.
+    this.codexManager.stopSession(chatId)
+    this.piManager.closeChat(chatId)
+    await this.store.setSessionToken(chatId, null)
+    await this.store.setPendingForkSessionToken(chatId, null)
+
+    const handoff = buildHandoffContext({
+      entries,
+      fromProvider,
+      toProvider,
+      transcriptPath: this.store.getTranscriptPath(chatId),
+    })
+    await this.store.appendMessage(chatId, timestamped({
+      kind: "handoff_boundary",
+      fromProvider,
+      toProvider,
+      ...(handoff ? { stats: handoff.stats } : {}),
+    }))
+    return handoff
+  }
+
   private async startTurnForChat(args: {
     chatId: string
     provider: AgentProvider
@@ -988,7 +1035,8 @@ export class AgentCoordinator {
       throw new Error("Chat is already running")
     }
 
-    if (!chat.provider) {
+    const previousProvider = chat.provider
+    if (chat.provider !== args.provider) {
       await this.store.setChatProvider(args.chatId, args.provider)
     }
     await this.store.setPlanMode(args.chatId, args.planMode)
@@ -1005,6 +1053,15 @@ export class AgentCoordinator {
     if (!project) {
       throw new Error("Project not found")
     }
+
+    // Mid-conversation harness switch: drop the old provider's session (its
+    // native context is stale the moment another harness takes a turn — we
+    // never resume it, even when switching back), mark the boundary in the
+    // transcript, and build the wire-only handoff context from the entries
+    // that precede this turn's prompt.
+    const handoff = previousProvider !== null && previousProvider !== args.provider
+      ? await this.prepareProviderHandoff(args.chatId, previousProvider, args.provider, existingMessages)
+      : null
 
     if (args.appendUserPrompt) {
       const userPromptEntry = timestamped(
@@ -1048,12 +1105,22 @@ export class AgentCoordinator {
     // Concurrent agents: when other chats have active turns in the same
     // project directory, suffix a <system-message> notice listing them (and
     // their transcript paths) so agents don't trample each other's work.
+    //
+    // Handoff: after a harness switch, the rendered transcript context leads
+    // the first prompt sent to the new harness (see handoff.ts).
     let wireContent = args.steered ? buildSteeredMessageContent(args.content) : args.content
     const concurrentAgentsNotice = buildConcurrentAgentsNotice(
       this.collectConcurrentProjectChats(args.chatId, project.localPath)
     )
     if (concurrentAgentsNotice) {
       wireContent = appendSystemMessageBlock(wireContent, concurrentAgentsNotice)
+    }
+
+    // Harness switch: lead with the handoff transcript so the user's actual
+    // prompt is the last thing in context (trails for slash invocations,
+    // which must stay at the very start of the message).
+    if (handoff) {
+      wireContent = buildHandoffMessageContent(handoff.text, wireContent)
     }
 
     // "/name" skill invocation, translated per provider:

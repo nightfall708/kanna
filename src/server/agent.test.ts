@@ -1997,6 +1997,117 @@ describe("concurrent agents notice injection", () => {
   })
 })
 
+describe("mid-conversation provider switch", () => {
+  function createSwitchFixture() {
+    const chat = createFakeChat("chat-1", "project-1", "Fix login bug")
+    chat.provider = "claude"
+    chat.sessionToken = "claude-session-1"
+    chat.pendingForkSessionToken = "claude-fork-1"
+    const store = createFakeStore({ chats: [chat] })
+    store.messages.push(
+      timestamped({ kind: "user_prompt", content: "fix the login bug" }),
+      timestamped({ kind: "assistant_text", text: "Fixed it." }),
+    )
+
+    const sentContents: string[] = []
+    const stoppedCodexSessions: string[] = []
+    const fakeCodexManager = {
+      async startSession() {
+        return "codex-thread-1"
+      },
+      stopSession(chatId: string) {
+        stoppedCodexSessions.push(chatId)
+      },
+      async startTurn(args: { content: string }): Promise<HarnessTurn> {
+        sentContents.push(args.content)
+        async function* stream() {
+          yield {
+            type: "transcript" as const,
+            entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "" }),
+          }
+        }
+        return {
+          provider: "codex",
+          stream: stream(),
+          interrupt: async () => {},
+          close: () => {},
+        }
+      },
+    }
+
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: fakeCodexManager as never,
+    })
+
+    return { store, coordinator, sentContents, stoppedCodexSessions }
+  }
+
+  test("switching clears the session, marks a boundary, and prepends the handoff on the wire only", async () => {
+    const { store, coordinator, sentContents, stoppedCodexSessions } = createSwitchFixture()
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "keep going with codex",
+      model: "gpt-5.4",
+    })
+
+    // Fresh native session on the new harness; the old one is never resumed.
+    expect(store.chat.provider).toBe("codex")
+    expect(store.chat.sessionToken).toBeNull()
+    expect(store.chat.pendingForkSessionToken).toBeNull()
+    expect(stoppedCodexSessions).toEqual(["chat-1"])
+
+    // Boundary entry precedes the new user prompt and records the switch.
+    const boundaryIndex = store.messages.findIndex((entry) => entry.kind === "handoff_boundary")
+    const promptIndex = store.messages.findIndex(
+      (entry) => entry.kind === "user_prompt" && (entry as { content: string }).content === "keep going with codex"
+    )
+    expect(boundaryIndex).toBeGreaterThan(-1)
+    expect(promptIndex).toBeGreaterThan(boundaryIndex)
+    const boundary = store.messages[boundaryIndex] as Extract<TranscriptEntry, { kind: "handoff_boundary" }>
+    expect(boundary.fromProvider).toBe("claude")
+    expect(boundary.toProvider).toBe("codex")
+    expect(boundary.stats?.includedEntries).toBe(2)
+
+    // Wire content leads with the handoff transcript and ends with the
+    // user's prompt; the persisted prompt entry stays verbatim.
+    expect(sentContents).toHaveLength(1)
+    expect(sentContents[0]).toContain("<handoff_transcript>")
+    expect(sentContents[0]).toContain("fix the login bug")
+    expect(sentContents[0]?.endsWith("keep going with codex")).toBe(true)
+    expect((store.messages[promptIndex] as { content: string }).content).toBe("keep going with codex")
+  })
+
+  test("sending with the chat's current provider does not hand off", async () => {
+    const { store, coordinator, sentContents } = createSwitchFixture()
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "keep going with codex",
+      model: "gpt-5.4",
+    })
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "same harness again",
+      model: "gpt-5.4",
+    })
+
+    const boundaries = store.messages.filter((entry) => entry.kind === "handoff_boundary")
+    expect(boundaries).toHaveLength(1)
+    expect(sentContents[1]).toBe("same harness again")
+  })
+})
+
 function createFakeChat(id: string, projectId: string, title = "New Chat") {
   return {
     id,

@@ -1,17 +1,28 @@
 import { useState, useMemo, type ReactNode } from "react"
-import { Asterisk, ChevronRight, Slash, UserRound } from "lucide-react"
+import { ArrowRightLeft, ChevronRight, Flower, Slash, UserRound } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import type { ProcessedSystemMessage } from "./types"
-import { PROVIDERS, resolveModelLabel } from "../../../shared/types"
+import { PROVIDERS, resolveModelLabel, type AgentProvider } from "../../../shared/types"
 import { MetaRow, MetaLabel, MetaText, MetaPill, ExpandableRow, VerticalLineContainer, toolIcons, defaultToolIcon, getToolIcon } from "./shared"
 import { toTitleCase } from "../../lib/formatters"
 import { cn } from "../../lib/utils"
+
+export interface SessionHandoff {
+  fromProvider: AgentProvider
+  toProvider: AgentProvider
+}
 
 interface Props {
   message: ProcessedSystemMessage
   rawJson?: string
   /** Rendered mid-conversation because the model changed (rather than as the first session init). */
   modelChanged?: boolean
+  /** This session init follows a harness switch — label it "From → To". */
+  handoff?: SessionHandoff
+}
+
+function providerLabel(provider: AgentProvider) {
+  return PROVIDERS.find((candidate) => candidate.id === provider)?.label ?? provider
 }
 
 function CollapsibleSection({ title, count, children, badge }: { title: string; count: number; children: ReactNode; badge?: ReactNode }) {
@@ -166,7 +177,7 @@ function RawMessageSection({ rawJson }: { rawJson: string }) {
   )
 }
 
-export function SystemMessage({ message, rawJson, modelChanged }: Props) {
+export function SystemMessage({ message, rawJson, modelChanged, handoff }: Props) {
   const { coreTools, mcpServersWithTools } = useMemo(() => {
     const mcpToolsByServer = new Map<string, string[]>()
     const core: string[] = []
@@ -208,9 +219,15 @@ export function SystemMessage({ message, rawJson, modelChanged }: Props) {
           </VerticalLineContainer>
         }
       >
-        <Asterisk className="h-5 w-5 text-logo" />
+        {handoff
+          ? <ArrowRightLeft className="h-5 w-5 p-0.5 -rotate-45 text-logo" />
+          : modelChanged
+            ? <ArrowRightLeft className="h-5 w-5 p-0.5 text-logo" />
+            : <Flower className="h-5 w-5 p-0.5 text-logo" />}
         <MetaLabel>
-          {modelChanged ? "Session Updated" : "Session Started"}
+          {handoff
+            ? `${providerLabel(handoff.fromProvider)} → ${providerLabel(handoff.toProvider)}`
+            : modelChanged ? "Model Changed" : "Session Started"}
           <span className="ml-1.5 opacity-50 tracking-normal">
             {resolveModelLabel(PROVIDERS.find((provider) => provider.id === message.provider)?.models, message.model)}
           </span>

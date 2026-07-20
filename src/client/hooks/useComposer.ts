@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react"
+import { useCallback, useEffect, useMemo } from "react"
 import type { AgentProvider, ClaudeContextWindow, ProviderCatalogEntry } from "../../shared/types"
 import {
   applyModelToComposerState,
@@ -17,7 +17,11 @@ import {
 export interface ComposerController extends ComposerView {
   /** Availability + current values of the per-model option controls. */
   optionControls: ComposerOptionControls
-  /** Switches harness (new/unstarted chats only). Returns false when the provider is locked. */
+  /**
+   * Switches harness. On a started chat this stages a mid-conversation
+   * switch: the next send carries the new provider and the server performs
+   * the handoff. Picking the chat's current provider un-stages a switch.
+   */
   selectProvider: (provider: AgentProvider) => boolean
   /** Selects a model from the provider catalog, normalizing dependent options. Returns false when unavailable. */
   selectModel: (modelId: string) => boolean
@@ -49,10 +53,21 @@ export function useComposer(args: {
   const composerChatId = chatId ?? NEW_CHAT_COMPOSER_ID
   const storedComposerState = useChatPreferencesStore((store) => store.chatStates[composerChatId])
   const providerDefaults = useChatPreferencesStore((store) => store.providerDefaults)
+  const providerSwitchRequested = useChatPreferencesStore(
+    (store) => Boolean(store.pendingProviderSwitches[composerChatId])
+  )
   const composerState = useMemo(
     () => storedComposerState ?? useChatPreferencesStore.getState().getComposerState(composerChatId),
     [composerChatId, storedComposerState]
   )
+
+  // Housekeeping: once the server confirms the switch (the chat's session
+  // provider now matches the staged one), the staged switch is complete.
+  useEffect(() => {
+    if (providerSwitchRequested && activeProvider && composerState.provider === activeProvider) {
+      useChatPreferencesStore.getState().clearPendingProviderSwitch(composerChatId)
+    }
+  }, [activeProvider, composerChatId, composerState.provider, providerSwitchRequested])
 
   const view = useMemo(
     () => deriveComposerView({
@@ -61,8 +76,9 @@ export function useComposer(args: {
       availableProviders,
       composerState,
       providerDefaults,
+      providerSwitchRequested,
     }),
-    [activeProvider, availableProviders, chatId, composerState, providerDefaults]
+    [activeProvider, availableProviders, chatId, composerState, providerDefaults, providerSwitchRequested]
   )
 
   const updateEffectiveState = useCallback((transform: (state: ComposerState) => ComposerState) => {
@@ -70,23 +86,27 @@ export function useComposer(args: {
   }, [view.composerChatId, view.effectiveState])
 
   const selectProvider = useCallback((provider: AgentProvider) => {
-    if (!view.canChangeProvider) return false
-    useChatPreferencesStore.getState().resetChatComposerFromProvider(view.composerChatId, provider)
+    const store = useChatPreferencesStore.getState()
+    store.resetChatComposerFromProvider(view.composerChatId, provider)
+    if (activeProvider !== null && provider !== activeProvider) {
+      // Explicit switch on a started chat — applied by the server on the
+      // next send (fresh session + handoff).
+      store.markPendingProviderSwitch(view.composerChatId)
+    } else {
+      store.clearPendingProviderSwitch(view.composerChatId)
+    }
     return true
-  }, [view.canChangeProvider, view.composerChatId])
+  }, [activeProvider, view.composerChatId])
 
   const selectModel = useCallback((modelId: string) => {
     if (!isModelSelectable(view, modelId)) return false
-    if (view.providerLocked) {
-      // The stored state may still be for another provider; write the full
-      // effective (locked-provider) state with the new model applied.
-      useChatPreferencesStore.getState().setComposerState(
-        view.composerChatId,
-        applyModelToComposerState(view.effectiveState, modelId)
-      )
-      return true
-    }
-    useChatPreferencesStore.getState().setChatComposerModel(view.composerChatId, modelId)
+    // Write the full effective state with the model applied — the stored
+    // state may still be for another provider (e.g. seeded from defaults on
+    // a chat whose session pinned a different harness).
+    useChatPreferencesStore.getState().setComposerState(
+      view.composerChatId,
+      applyModelToComposerState(view.effectiveState, modelId)
+    )
     return true
   }, [view])
 

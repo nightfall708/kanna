@@ -4,7 +4,6 @@ import { Command as CommandPrimitive } from "cmdk"
 import { Search } from "lucide-react"
 import { cn } from "../../lib/utils"
 import { FOCUS_FALLBACK_IGNORE_ATTRIBUTE, RESTORE_CHAT_INPUT_FOCUS_EVENT } from "../../app/chatFocusPolicy"
-import { DialogOverlay } from "./dialog"
 
 const Command = React.forwardRef<
   React.ComponentRef<typeof CommandPrimitive>,
@@ -43,7 +42,8 @@ function CommandDialog({
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
-        <DialogOverlay />
+        {/* No dimming overlay — the palette floats over the app undimmed.
+            Radix still blocks outside interaction and closes on outside click. */}
         <DialogPrimitive.Content
           {...{ [FOCUS_FALLBACK_IGNORE_ATTRIBUTE]: "" }}
           onCloseAutoFocus={(event) => {

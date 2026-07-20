@@ -23,9 +23,12 @@ import { NEW_CHAT_COMPOSER_ID, type ComposerState } from "../stores/chatPreferen
  * the effective selection is. ChatInput and the command palette both derive
  * from this module so their rules can never drift:
  *
- * - The harness (provider) is locked once a chat has a live session
- *   (`activeProvider` from the server runtime); it can only be changed on a
- *   chat that hasn't started yet.
+ * - The harness (provider) can always be changed. On a chat with a live
+ *   session, picking a different harness stages a mid-conversation switch:
+ *   the next send carries the new provider and the server performs the
+ *   handoff (fresh session + handoff context). The staged switch is only
+ *   honored when it was explicit (`providerSwitchRequested`) — a chat state
+ *   passively seeded from defaults must never switch a running chat.
  * - Models must come from the selected provider's catalog entry (which
  *   includes runtime-discovered models, e.g. Cursor's CLI catalog).
  * - Plan mode is only available when the provider supports it.
@@ -109,12 +112,17 @@ export function getEffectiveComposerState(
 export interface ComposerView {
   /** Chat-preferences store key: the chat id, or the shared new-chat composer. */
   composerChatId: string
-  /** The provider the chat session is locked to, when it has started. */
-  providerLocked: boolean
-  /** True only while the chat has no live session — the harness can still change. */
+  /** The provider of the chat's live/last session, when it has started. */
+  activeProvider: AgentProvider | null
+  /**
+   * True when the user explicitly staged a different harness on a started
+   * chat — the next send switches providers (with a server-side handoff).
+   */
+  providerSwitchPending: boolean
+  /** The harness can always be changed; started chats switch on next send. */
   canChangeProvider: boolean
   selectedProvider: AgentProvider
-  /** Effective preferences respecting the provider lock — render/submit from this. */
+  /** Effective preferences — render/submit from this. */
   effectiveState: ComposerState
   /** Catalog entry for the selected provider (models incl. runtime-discovered). */
   providerConfig: ProviderCatalogEntry | undefined
@@ -129,18 +137,28 @@ export function deriveComposerView(args: {
   availableProviders: ProviderCatalogEntry[]
   composerState: ComposerState
   providerDefaults: ChatProviderPreferences
+  /** The user explicitly picked this chat's composer provider (vs. seeded state). */
+  providerSwitchRequested?: boolean
 }): ComposerView {
   const composerChatId = args.chatId ?? NEW_CHAT_COMPOSER_ID
-  const providerLocked = args.activeProvider !== null
-  const effectiveState = getEffectiveComposerState(args.composerState, args.activeProvider, args.providerDefaults)
-  const selectedProvider = args.activeProvider ?? args.composerState.provider
+  const providerSwitchPending = Boolean(args.providerSwitchRequested)
+    && args.activeProvider !== null
+    && args.composerState.provider !== args.activeProvider
+  // Without an explicit switch, a stored state whose provider disagrees with
+  // the chat's session (e.g. seeded from defaults) defers to the session's
+  // provider — same fallback as before switching existed.
+  const effectiveState = providerSwitchPending
+    ? args.composerState
+    : getEffectiveComposerState(args.composerState, args.activeProvider, args.providerDefaults)
+  const selectedProvider = effectiveState.provider
   const providerConfig = args.availableProviders.find((provider) => provider.id === selectedProvider)
     ?? args.availableProviders[0]
 
   return {
     composerChatId,
-    providerLocked,
-    canChangeProvider: !providerLocked,
+    activeProvider: args.activeProvider,
+    providerSwitchPending,
+    canChangeProvider: true,
     selectedProvider,
     effectiveState,
     providerConfig,

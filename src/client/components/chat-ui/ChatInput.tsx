@@ -172,7 +172,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     activeProvider,
     availableProviders,
   })
-  const { composerChatId, providerLocked, selectedProvider } = composer
+  const { composerChatId, providerSwitchPending, selectedProvider } = composer
   const providerPrefs = composer.effectiveState
   const showPlanMode = composer.supportsPlanMode
   const [value, setValue] = useState(() => (chatId ? getDraft(chatId) : ""))
@@ -897,7 +897,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           <ChatPreferenceControls
             availableProviders={availableProviders}
             selectedProvider={selectedProvider}
-            providerLocked={providerLocked}
+            providerSwitchPending={providerSwitchPending}
             model={providerPrefs.model}
             modelOptions={providerPrefs.modelOptions}
             onProviderChange={(provider) => {

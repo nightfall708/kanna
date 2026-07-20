@@ -392,8 +392,55 @@ Please check the latest error first.`,
     // Model ids resolve to their human-readable catalog labels.
     expect(html).toContain("Session Started")
     expect(html).toContain("Sonnet")
-    expect(html).toContain("Session Updated")
+    expect(html).toContain("Model Changed")
     expect(html).toContain("Opus")
+  })
+
+  test("labels the session init after a handoff with the harness transition instead of a boundary row", () => {
+    const html = renderTranscript([
+      {
+        id: "system-1",
+        kind: "system_init",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        tools: [],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "handoff-1",
+        kind: "handoff_boundary",
+        fromProvider: "claude",
+        toProvider: "codex",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "user-1",
+        kind: "user_prompt",
+        content: "keep going",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "system-2",
+        kind: "system_init",
+        provider: "codex",
+        model: "gpt-5.4",
+        tools: [],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+        timestamp: new Date().toISOString(),
+      },
+    ])
+
+    // The boundary renders no row of its own — the switch surfaces on the
+    // new session init as "Claude → Codex".
+    expect(countRowWrappers(html)).toBe(3)
+    expect(html).toContain("Claude → Codex")
+    expect(html).not.toContain("Handed off")
+    expect(html).not.toContain("Model Changed")
   })
 
   test("suppresses window-first system and account rows while older history is unloaded", () => {
@@ -462,7 +509,7 @@ Please check the latest error first.`,
     ], true)
 
     expect(html).not.toContain("Session Started")
-    expect(html).toContain("Session Updated")
+    expect(html).toContain("Model Changed")
   })
 
   test("renders one wrapper for visible transcript rows", () => {

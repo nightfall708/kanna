@@ -5,6 +5,7 @@ import {
   Box,
   Brain,
   Check,
+  Copy,
   ExternalLink,
   FolderGit2,
   FolderPlus,
@@ -364,6 +365,19 @@ export function CommandPalette({ state }: { state: KannaState }) {
         shortcut: chatShortcuts("openInEditor"),
         run: () => pushPage("open-in"),
       })
+      if (state.navbarLocalPath) {
+        const projectPath = state.navbarLocalPath
+        list.push({
+          id: "copy-project-path",
+          title: "Copy Path",
+          keywords: ["copy project path", "clipboard", "directory", "folder", projectPath],
+          icon: <Copy className={ICON_CLASS} />,
+          run: () => {
+            close()
+            void state.handleCopyPath(projectPath)
+          },
+        })
+      }
     }
 
     if (state.activeChatId) {
@@ -569,10 +583,12 @@ export function CommandPalette({ state }: { state: KannaState }) {
     state.activeChatId,
     state.availableProviders,
     state.handleArchiveChat,
+    state.handleCopyPath,
     state.handleCreateChat,
     state.handleForkChat,
     state.handleShareChat,
     state.keybindings,
+    state.navbarLocalPath,
     state.openAddProjectModal,
     state.sidebarData.projectGroups.length,
   ])
