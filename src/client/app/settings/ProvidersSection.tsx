@@ -23,6 +23,7 @@ import { cn } from "../../lib/utils"
 import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import type { KannaState } from "../useKannaState"
 import { handleSettingsInputKeyDown, SettingsErrorBanner, SettingsRow } from "./shared"
+import { SETTINGS_ROWS } from "./registry"
 
 const QUICK_RESPONSE_PROVIDER_OPTIONS: Array<{ value: LlmProviderKind; label: string }> = [
   { value: "openai", label: "OpenAI" },
@@ -198,11 +199,7 @@ export function ProvidersSection({
     <>
       {providersError ? <SettingsErrorBanner message={providersError} /> : null}
       <div className="border-b border-border">
-        <SettingsRow
-          title="Default Provider"
-          description="The default harness used for new chats before a provider is locked by an existing session."
-          bordered={false}
-        >
+        <SettingsRow def={SETTINGS_ROWS.defaultProvider} bordered={false}>
           <Select
             value={defaultProvider}
             onValueChange={(value) => handleDefaultProviderChange(value as "last_used" | AgentProvider)}
@@ -225,11 +222,7 @@ export function ProvidersSection({
           </Select>
         </SettingsRow>
 
-        <SettingsRow
-          title="Claude Code Defaults"
-          description="Saved defaults when using Claude Code."
-          alignStart
-        >
+        <SettingsRow def={SETTINGS_ROWS.claudeDefaults} alignStart>
           <div className="max-w-[420px]">
             <ChatPreferenceControls
               availableProviders={state.availableProviders}
@@ -258,11 +251,7 @@ export function ProvidersSection({
           </div>
         </SettingsRow>
 
-        <SettingsRow
-          title="Codex Defaults"
-          description="Saved defaults when using Codex."
-          alignStart
-        >
+        <SettingsRow def={SETTINGS_ROWS.codexDefaults} alignStart>
           <div className="max-w-[420px]">
             <ChatPreferenceControls
               availableProviders={state.availableProviders}
@@ -289,11 +278,7 @@ export function ProvidersSection({
           </div>
         </SettingsRow>
 
-        <SettingsRow
-          title="Cursor Defaults"
-          description="Saved defaults when using Cursor."
-          alignStart
-        >
+        <SettingsRow def={SETTINGS_ROWS.cursorDefaults} alignStart>
           <div className="max-w-[420px]">
             <ChatPreferenceControls
               availableProviders={state.availableProviders}
@@ -316,11 +301,7 @@ export function ProvidersSection({
           </div>
         </SettingsRow>
 
-        <SettingsRow
-          title="Pi Defaults"
-          description="Saved defaults when using Pi (connects through the Model Registry)."
-          alignStart
-        >
+        <SettingsRow def={SETTINGS_ROWS.piDefaults} alignStart>
           <div className="max-w-[420px]">
             <ChatPreferenceControls
               availableProviders={state.availableProviders}
@@ -344,11 +325,7 @@ export function ProvidersSection({
           </div>
         </SettingsRow>
 
-        <SettingsRow
-          title="Model Registry"
-          description={llmValidationDescription}
-          alignStart
-        >
+        <SettingsRow def={SETTINGS_ROWS.modelRegistry} description={llmValidationDescription} alignStart>
           <div className="flex w-full max-w-[420px] flex-col gap-3">
             {llmProviderError ? (
               <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
@@ -401,10 +378,7 @@ export function ProvidersSection({
           </div>
         </SettingsRow>
 
-        <SettingsRow
-          title="Default Models"
-          description="Models shown in Pi's model picker, with a display label and the model id sent to the Model Registry endpoint."
-        >
+        <SettingsRow def={SETTINGS_ROWS.defaultModels}>
           <Button
             variant="outline"
             size="sm"

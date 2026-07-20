@@ -65,6 +65,7 @@ const DEFAULT_KEYBINDINGS_SNAPSHOT: KeybindingsSnapshot = {
     jumpToSidebarChat: ["cmd+alt"],
     createChatInCurrentProject: ["cmd+alt+n"],
     openAddProject: ["cmd+alt+o"],
+    openCommandPalette: ["cmd+k", "ctrl+k"],
   },
   warning: null,
   filePathDisplay: "~/.kanna/keybindings.json",
@@ -1681,6 +1682,7 @@ describe("ws-router", () => {
             jumpToSidebarChat: ["cmd+alt"],
             createChatInCurrentProject: ["cmd+alt+n"],
             openAddProject: ["cmd+alt+o"],
+            openCommandPalette: ["cmd+p"],
           },
         },
       })
@@ -1701,6 +1703,7 @@ describe("ws-router", () => {
           jumpToSidebarChat: ["cmd+alt"],
           createChatInCurrentProject: ["cmd+alt+n"],
           openAddProject: ["cmd+alt+o"],
+          openCommandPalette: ["cmd+p"],
         },
         warning: null,
         filePathDisplay: "~/.kanna/keybindings.json",

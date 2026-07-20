@@ -22,7 +22,7 @@ import { cn } from "../../lib/utils"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
 import { useChatInputStore } from "../../stores/chatInputStore"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
-import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPolicy"
+import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput, REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 import { ContextWindowMeter } from "./ContextWindowMeter"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
@@ -249,6 +249,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const uploadQueueRef = useRef<File[]>([])
   const activeUploadsRef = useRef(0)
   const attachmentsRef = useRef<ComposerAttachment[]>([])
+  const paletteFileInputRef = useRef<HTMLInputElement | null>(null)
   const uploadGenerationRef = useRef(0)
   const removedAttachmentIdsRef = useRef<Set<string>>(new Set())
   const previousProjectIdRef = useRef<string | null>(projectId ?? null)
@@ -548,6 +549,16 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     enqueueFiles,
   }), [enqueueFiles])
 
+  // The command palette's "Attach Files" action opens the hidden picker.
+  useEffect(() => {
+    function handleAttachRequest() {
+      paletteFileInputRef.current?.click()
+    }
+
+    window.addEventListener(REQUEST_ATTACH_FILES_EVENT, handleAttachRequest)
+    return () => window.removeEventListener(REQUEST_ATTACH_FILES_EVENT, handleAttachRequest)
+  }, [])
+
   async function handleSubmit() {
     if (!canSubmit || hasPendingUploads) return
 
@@ -777,6 +788,24 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           </div>
         ) : null}
       </div>
+
+      {/* Hidden picker for the command palette's "Attach Files" action. */}
+      <input
+        ref={paletteFileInputRef}
+        type="file"
+        multiple
+        disabled={disabled}
+        aria-hidden="true"
+        tabIndex={-1}
+        className="hidden"
+        onChange={(event) => {
+          const files = [...(event.target.files ?? [])]
+          if (files.length > 0) {
+            enqueueFiles(files)
+          }
+          event.target.value = ""
+        }}
+      />
 
       <div className={cn("relative py-3 max-w-[840px] mx-auto", isStandalone && "p-5 pt-3")}>
         <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden flex flex-row">

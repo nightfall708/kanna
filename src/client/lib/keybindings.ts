@@ -9,6 +9,7 @@ export const KEYBINDING_ACTION_LABELS: Record<KeybindingAction, string> = {
   jumpToSidebarChat: "Jump To Sidebar Chat",
   createChatInCurrentProject: "New Chat In Current Project",
   openAddProject: "Open Add Project",
+  openCommandPalette: "Open Command Palette",
 }
 
 export function formatKeybindingInput(bindings: string[] | undefined) {
@@ -89,6 +90,7 @@ export function getResolvedKeybindings(snapshot: KeybindingsSnapshot | null): Ke
       jumpToSidebarChat: snapshot?.bindings.jumpToSidebarChat ?? DEFAULT_KEYBINDINGS.jumpToSidebarChat,
       createChatInCurrentProject: snapshot?.bindings.createChatInCurrentProject ?? DEFAULT_KEYBINDINGS.createChatInCurrentProject,
       openAddProject: snapshot?.bindings.openAddProject ?? DEFAULT_KEYBINDINGS.openAddProject,
+      openCommandPalette: snapshot?.bindings.openCommandPalette ?? DEFAULT_KEYBINDINGS.openCommandPalette,
     },
     warning: snapshot?.warning ?? null,
     filePathDisplay: snapshot?.filePathDisplay ?? "",

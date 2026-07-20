@@ -17,6 +17,7 @@ const KEYBINDINGS: KeybindingsSnapshot = {
     jumpToSidebarChat: ["cmd+alt"],
     createChatInCurrentProject: ["cmd+alt+n"],
     openAddProject: ["cmd+alt+o"],
+    openCommandPalette: ["cmd+k", "ctrl+k"],
   },
   warning: null,
   filePathDisplay: "~/.kanna/keybindings.json",

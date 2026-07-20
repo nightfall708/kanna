@@ -902,6 +902,7 @@ export type KeybindingAction =
   | "jumpToSidebarChat"
   | "createChatInCurrentProject"
   | "openAddProject"
+  | "openCommandPalette"
 
 export const DEFAULT_KEYBINDINGS: Record<KeybindingAction, string[]> = {
   toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"],
@@ -912,6 +913,7 @@ export const DEFAULT_KEYBINDINGS: Record<KeybindingAction, string[]> = {
   jumpToSidebarChat: ["cmd+alt"],
   createChatInCurrentProject: ["cmd+alt+n"],
   openAddProject: ["cmd+alt+o"],
+  openCommandPalette: ["cmd+k", "ctrl+k"],
 }
 
 export interface KeybindingsSnapshot {

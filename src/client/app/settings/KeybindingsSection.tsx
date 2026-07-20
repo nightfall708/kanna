@@ -17,6 +17,7 @@ function buildKeybindingPayload(source: Record<string, string>): Record<Keybindi
     jumpToSidebarChat: parseKeybindingInput(source.jumpToSidebarChat ?? ""),
     createChatInCurrentProject: parseKeybindingInput(source.createChatInCurrentProject ?? ""),
     openAddProject: parseKeybindingInput(source.openAddProject ?? ""),
+    openCommandPalette: parseKeybindingInput(source.openCommandPalette ?? ""),
   }
 }
 
