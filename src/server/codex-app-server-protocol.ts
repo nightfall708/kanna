@@ -62,7 +62,19 @@ export interface TextUserInput {
   text_elements: []
 }
 
-export type CodexUserInput = TextUserInput
+/**
+ * Structured skill invocation: the server resolves `path` by exact match
+ * against its own discovered+enabled skills and injects the SKILL.md contents
+ * into the turn. Unmatched paths are silently skipped by codex, which is why
+ * Kanna also appends a `<system-message>` failsafe to the text item.
+ */
+export interface SkillUserInput {
+  type: "skill"
+  name: string
+  path: string
+}
+
+export type CodexUserInput = TextUserInput | SkillUserInput
 
 export interface CollaborationMode {
   mode: "default" | "plan"
@@ -88,6 +100,37 @@ export interface TurnStartParams {
 export interface TurnInterruptParams {
   threadId: string
   turnId: string
+}
+
+/** `skills/list` (codex >= 0.73). Older servers answer with "method not found". */
+export interface SkillsListParams {
+  cwds: string[]
+  forceReload?: boolean
+}
+
+export interface CodexSkillInterfaceMetadata {
+  displayName?: string
+  shortDescription?: string
+  defaultPrompt?: string
+}
+
+export interface CodexSkillMetadata {
+  name: string
+  description: string
+  shortDescription?: string
+  interface?: CodexSkillInterfaceMetadata | null
+  /** Absolute path to the SKILL.md file itself — the resolution key for SkillUserInput. */
+  path: string
+  scope: "user" | "repo" | "system" | "admin"
+  enabled: boolean
+}
+
+export interface SkillsListResponse {
+  data: {
+    cwd: string
+    skills: CodexSkillMetadata[]
+    errors?: { path: string; message: string }[]
+  }[]
 }
 
 export interface ThreadSummary {

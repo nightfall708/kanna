@@ -132,6 +132,19 @@ describe("EventStore", () => {
     expect(existsSync(join(dataDir, "transcripts", `${chat.id}.jsonl`))).toBe(true)
   })
 
+  test("getTranscriptPath points at the per-chat transcript file", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    await store.appendMessage(chat.id, entry("user_prompt", 200, { content: "hello" }))
+
+    expect(store.getTranscriptPath(chat.id)).toBe(join(dataDir, "transcripts", `${chat.id}.jsonl`))
+    expect(existsSync(store.getTranscriptPath(chat.id))).toBe(true)
+  })
+
   test("pages recent transcript history and older entries by cursor", async () => {
     const dataDir = await createTempDataDir()
     const store = new EventStore(dataDir)

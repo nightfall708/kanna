@@ -2,6 +2,7 @@ import { useState, useMemo, type ReactNode } from "react"
 import { Asterisk, ChevronRight, Slash, UserRound } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import type { ProcessedSystemMessage } from "./types"
+import { PROVIDERS, resolveModelLabel } from "../../../shared/types"
 import { MetaRow, MetaLabel, MetaText, MetaPill, ExpandableRow, VerticalLineContainer, toolIcons, defaultToolIcon, getToolIcon } from "./shared"
 import { toTitleCase } from "../../lib/formatters"
 import { cn } from "../../lib/utils"
@@ -208,7 +209,12 @@ export function SystemMessage({ message, rawJson, modelChanged }: Props) {
         }
       >
         <Asterisk className="h-5 w-5 text-logo" />
-        <MetaLabel>{modelChanged ? `Model changed to ${message.model}` : `Session started with ${message.model}`}</MetaLabel>
+        <MetaLabel>
+          {modelChanged ? "Session Updated" : "Session Started"}
+          <span className="ml-1.5 opacity-50 tracking-normal">
+            {resolveModelLabel(PROVIDERS.find((provider) => provider.id === message.provider)?.models, message.model)}
+          </span>
+        </MetaLabel>
       </ExpandableRow>
     </MetaRow>
   )

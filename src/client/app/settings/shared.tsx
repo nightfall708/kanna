@@ -65,7 +65,7 @@ export function SettingsRow({
     <div
       id={def?.id}
       data-settings-row={def ? "" : undefined}
-      className={cn("scroll-mt-4 rounded-lg", bordered && "border-t border-border")}
+      className={cn("scroll-mt-4", bordered && "border-t border-border")}
     >
       <div
         className={cn(

@@ -748,6 +748,11 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
+        case "chat.listSkills": {
+          const snapshot = await agent.listSkills(command)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          return
+        }
         case "skills.search": {
           const snapshot = await searchSkills(command.query, command.limit)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })

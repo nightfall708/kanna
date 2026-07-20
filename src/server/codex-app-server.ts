@@ -11,6 +11,7 @@ import type {
   TranscriptEntry,
 } from "../shared/types"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
+import { appendSystemMessageBlock, buildSkillSystemMessage } from "./harness-skills"
 import { AsyncQueue } from "./async-queue"
 import { asNumber, asRecord } from "../shared/json"
 import { timestamped } from "./transcript"
@@ -18,6 +19,8 @@ import {
   type CollabAgentToolCallItem,
   type ContextCompactedNotification,
   type CodexRequestId,
+  type CodexSkillMetadata,
+  type CodexUserInput,
   type CommandExecutionApprovalDecision,
   type CommandExecutionRequestApprovalParams,
   type CommandExecutionRequestApprovalResponse,
@@ -34,6 +37,8 @@ import {
   type PlanDeltaNotification,
   type ServerNotification,
   type ServerRequest,
+  type SkillsListParams,
+  type SkillsListResponse,
   type ThreadItem,
   type ThreadResumeParams,
   type ThreadResumeResponse,
@@ -132,6 +137,14 @@ export interface StartCodexTurnArgs {
   effort?: CodexReasoningEffort
   serviceTier?: ServiceTier
   content: string
+  /**
+   * Resolved `/skill` invocation for this turn. When set, the turn input adds
+   * a structured `{type:"skill", name, path}` item (deterministic server-side
+   * injection) and appends a `<system-message>` failsafe to the text item —
+   * codex silently skips skill items whose path no longer matches a discovered
+   * skill, so the failsafe keeps the intent visible to the model regardless.
+   */
+  skill?: { name: string; path: string }
   planMode: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   onApprovalRequest?: PendingTurn["onApprovalRequest"]
@@ -805,15 +818,21 @@ export class CodexAppServerManager {
     context.pendingTurn = pendingTurn
 
     try {
+      const input: CodexUserInput[] = [
+        {
+          type: "text",
+          text: args.skill
+            ? appendSystemMessageBlock(args.content, buildSkillSystemMessage(args.skill.path))
+            : args.content,
+          text_elements: [],
+        },
+      ]
+      if (args.skill) {
+        input.push({ type: "skill", name: args.skill.name, path: args.skill.path })
+      }
       const response = await this.sendRequest<TurnStartResponse>(context, "turn/start", {
         threadId: context.sessionToken ?? "",
-        input: [
-          {
-            type: "text",
-            text: args.content,
-            text_elements: [],
-          },
-        ],
+        input,
         approvalPolicy: "never",
         model: args.model,
         effort: args.effort,
@@ -857,6 +876,28 @@ export class CodexAppServerManager {
         } satisfies TurnInterruptParams)
       },
       close: () => {},
+    }
+  }
+
+  /**
+   * Enumerate agent skills via `skills/list` on the chat's live app-server
+   * process. Returns null when there is no running process for the chat or the
+   * codex binary predates skills/list (< 0.73, "method not found") — callers
+   * fall back to Kanna's filesystem scan of the same discovery roots.
+   */
+  async listSkills(args: { chatId: string; cwd: string }): Promise<CodexSkillMetadata[] | null> {
+    const context = this.sessions.get(args.chatId)
+    if (!context || context.closed) return null
+    try {
+      const response = await this.sendRequest<SkillsListResponse>(context, "skills/list", {
+        cwds: [args.cwd],
+      } satisfies SkillsListParams)
+      const skills = (response.data ?? []).flatMap((entry) => entry.skills ?? [])
+      // Disabled skills fail structured resolution server-side (silently), so
+      // they never belong in the invocation menu.
+      return skills.filter((skill) => skill.enabled)
+    } catch {
+      return null
     }
   }
 

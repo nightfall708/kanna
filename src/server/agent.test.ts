@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test"
 import {
   AgentCoordinator,
   buildAttachmentHintText,
+  buildConcurrentAgentsNotice,
   buildPromptText,
+  buildSteeredMessageContent,
   maxClaudeContextWindowFromModelUsage,
   normalizeClaudeContextUsage,
   normalizeClaudeStreamMessage,
@@ -283,6 +285,27 @@ describe("attachment prompt helpers", () => {
     }])
 
     expect(hint).toContain("&quot;report&quot; &lt;draft&gt;.txt")
+  })
+})
+
+describe("buildSteeredMessageContent", () => {
+  test("prepends the steer block for plain messages", () => {
+    const content = buildSteeredMessageContent("please also fix the tests")
+    expect(content.startsWith("<system-message>")).toBe(true)
+    expect(content.endsWith("please also fix the tests")).toBe(true)
+  })
+
+  test("appends the steer block for slash invocations so harness expansion still fires", () => {
+    // claude gates slash dispatch on trim().startsWith("/") and pi on
+    // startsWith("/") — a leading steer block would turn the command into
+    // literal text.
+    const content = buildSteeredMessageContent("/code-review src/server")
+    expect(content.startsWith("/code-review src/server")).toBe(true)
+    expect(content.endsWith("</system-message>")).toBe(true)
+  })
+
+  test("returns just the steer block for empty content", () => {
+    expect(buildSteeredMessageContent("  ").startsWith("<system-message>")).toBe(true)
   })
 })
 
@@ -1649,6 +1672,12 @@ describe("AgentCoordinator claude integration", () => {
     expect(prompts[1]).toContain("queued follow up")
     expect(prompts[1]).toContain("<system-message>")
     expect(prompts[1]).toContain("</system-message>")
+    // The steer block is wire-only: the transcript keeps the user's typed
+    // text verbatim, with the steered flag driving the UI affordance.
+    const steeredEntry = store.messages.find(
+      (entry) => entry.kind === "user_prompt" && entry.steered
+    ) as Extract<TranscriptEntry, { kind: "user_prompt" }> | undefined
+    expect(steeredEntry?.content).toBe("queued follow up")
     expect(store.messages.some((entry) => entry.kind === "interrupted")).toBe(true)
 
     events.push({
@@ -1869,48 +1898,157 @@ describe("AgentCoordinator claude integration", () => {
   })
 })
 
-function createFakeStore() {
-  const chat = {
-    id: "chat-1",
-    projectId: "project-1",
-    title: "New Chat",
+describe("buildConcurrentAgentsNotice", () => {
+  test("returns null when no other chats are running", () => {
+    expect(buildConcurrentAgentsNotice([])).toBeNull()
+  })
+
+  test("lists each chat title with its transcript path inside one system-message block", () => {
+    const notice = buildConcurrentAgentsNotice([
+      { title: "Chat One", transcriptPath: "/tmp/transcripts/one.jsonl" },
+      { title: "Chat Two", transcriptPath: "/tmp/transcripts/two.jsonl" },
+    ])
+    expect(notice?.startsWith("<system-message>")).toBe(true)
+    expect(notice?.endsWith("</system-message>")).toBe(true)
+    expect(notice).toContain("there are other agents working in the current directory")
+    expect(notice).toContain("Chat One: /tmp/transcripts/one.jsonl")
+    expect(notice).toContain("Chat Two: /tmp/transcripts/two.jsonl")
+  })
+})
+
+describe("concurrent agents notice injection", () => {
+  function createTwoChatCoordinator(store: ReturnType<typeof createFakeStore>) {
+    const queues: AsyncEventQueue<any>[] = []
+    const prompts: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => {
+        const events = new AsyncEventQueue<any>()
+        queues.push(events)
+        return {
+          provider: "claude" as const,
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => {},
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          sendPrompt: async (content: string) => {
+            prompts.push(content)
+          },
+        }
+      },
+    })
+    return { coordinator, prompts, close: () => queues.forEach((queue) => queue.close()) }
+  }
+
+  test("appends the notice to the wire prompt when another chat runs in the same directory", async () => {
+    const store = createFakeStore({
+      chats: [
+        createFakeChat("chat-1", "project-1", "Fix login bug"),
+        createFakeChat("chat-2", "project-1", "Chat Two"),
+      ],
+      projects: [{ id: "project-1", localPath: "/tmp/project" }],
+    })
+    const { coordinator, prompts, close } = createTwoChatCoordinator(store)
+
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "first prompt", model: "claude-opus-4-1" })
+    await coordinator.send({ type: "chat.send", chatId: "chat-2", provider: "claude", content: "second prompt", model: "claude-opus-4-1" })
+
+    expect(prompts).toHaveLength(2)
+    // chat-1 started alone — no notice.
+    expect(prompts[0]).toBe("first prompt")
+    // chat-2 started while chat-1 was running in the same directory.
+    expect(prompts[1]?.startsWith("second prompt")).toBe(true)
+    expect(prompts[1]).toContain("there are other agents working in the current directory")
+    expect(prompts[1]).toContain("Fix login bug: /tmp/transcripts/chat-1.jsonl")
+    expect(prompts[1]).not.toContain("Chat Two:")
+
+    // The transcript keeps the user's typed text verbatim — wire-only injection.
+    const userPrompts = store.messages.filter((entry) => entry.kind === "user_prompt")
+    expect(userPrompts.map((entry) => (entry as { content: string }).content)).toEqual([
+      "first prompt",
+      "second prompt",
+    ])
+
+    close()
+  })
+
+  test("does not append the notice when the other running chat is in a different directory", async () => {
+    const store = createFakeStore({
+      chats: [
+        createFakeChat("chat-1", "project-1", "Chat One"),
+        createFakeChat("chat-2", "project-2", "Chat Two"),
+      ],
+      projects: [
+        { id: "project-1", localPath: "/tmp/project-a" },
+        { id: "project-2", localPath: "/tmp/project-b" },
+      ],
+    })
+    const { coordinator, prompts, close } = createTwoChatCoordinator(store)
+
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "first prompt", model: "claude-opus-4-1" })
+    await coordinator.send({ type: "chat.send", chatId: "chat-2", provider: "claude", content: "second prompt", model: "claude-opus-4-1" })
+
+    expect(prompts).toEqual(["first prompt", "second prompt"])
+
+    close()
+  })
+})
+
+function createFakeChat(id: string, projectId: string, title = "New Chat") {
+  return {
+    id,
+    projectId,
+    title,
     provider: null as "claude" | "codex" | null,
     planMode: false,
     sessionToken: null as string | null,
     pendingForkSessionToken: null as string | null,
   }
-  const project = {
-    id: "project-1",
-    localPath: "/tmp/project",
+}
+
+function createFakeStore(options?: {
+  chats?: ReturnType<typeof createFakeChat>[]
+  projects?: { id: string; localPath: string }[]
+}) {
+  const chats = options?.chats ?? [createFakeChat("chat-1", "project-1")]
+  const projects = options?.projects ?? [{ id: "project-1", localPath: "/tmp/project" }]
+  const chatsById = new Map(chats.map((entry) => [entry.id, entry]))
+  const projectsById = new Map(projects.map((entry) => [entry.id, entry]))
+  const chat = chats[0]!
+  function requireChat(chatId: string) {
+    const found = chatsById.get(chatId)
+    if (!found) throw new Error(`Chat not found: ${chatId}`)
+    return found
   }
   return {
     chat,
     turnFinishedCount: 0,
     messages: [] as TranscriptEntry[],
     queuedMessages: [] as any[],
-    requireChat(chatId: string) {
-      expect(chatId).toBe("chat-1")
-      return chat
-    },
+    requireChat,
     getChat(chatId: string) {
-      expect(chatId).toBe("chat-1")
-      return chat
+      return chatsById.get(chatId) ?? null
     },
     getProject(projectId: string) {
-      expect(projectId).toBe("project-1")
-      return project
+      return projectsById.get(projectId) ?? null
+    },
+    getTranscriptPath(chatId: string) {
+      return `/tmp/transcripts/${chatId}.jsonl`
     },
     getMessages() {
       return this.messages
     },
-    async setChatProvider(_chatId: string, provider: "claude" | "codex") {
-      chat.provider = provider
+    async setChatProvider(chatId: string, provider: "claude" | "codex") {
+      requireChat(chatId).provider = provider
     },
-    async setPlanMode(_chatId: string, planMode: boolean) {
-      chat.planMode = planMode
+    async setPlanMode(chatId: string, planMode: boolean) {
+      requireChat(chatId).planMode = planMode
     },
-    async renameChat(_chatId: string, title: string) {
-      chat.title = title
+    async renameChat(chatId: string, title: string) {
+      requireChat(chatId).title = title
     },
     async appendMessage(_chatId: string, entry: TranscriptEntry) {
       this.messages.push(entry)
@@ -1923,11 +2061,11 @@ function createFakeStore() {
       throw new Error("Did not expect turn failure")
     },
     async recordTurnCancelled() {},
-    async setSessionToken(_chatId: string, sessionToken: string | null) {
-      chat.sessionToken = sessionToken
+    async setSessionToken(chatId: string, sessionToken: string | null) {
+      requireChat(chatId).sessionToken = sessionToken
     },
-    async setPendingForkSessionToken(_chatId: string, pendingForkSessionToken: string | null) {
-      chat.pendingForkSessionToken = pendingForkSessionToken
+    async setPendingForkSessionToken(chatId: string, pendingForkSessionToken: string | null) {
+      requireChat(chatId).pendingForkSessionToken = pendingForkSessionToken
     },
     async createChat() {
       return chat

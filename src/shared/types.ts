@@ -64,6 +64,33 @@ export interface InstalledSkillsSnapshot {
   skills: InstalledSkillSummary[]
 }
 
+/**
+ * A user-invocable skill/command surfaced by a harness, normalized across
+ * providers for the composer's "/" menu:
+ *   - claude: built-in commands, .claude/commands, .claude/skills, plugins
+ *   - codex:  agent skills (skills/list)
+ *   - cursor: SKILL.md dirs scanned from disk (no enumeration protocol)
+ *   - pi:     prompt templates + skills from the resource loader
+ */
+export type HarnessSkillSource = "builtin" | "command" | "skill" | "plugin" | "extension"
+
+export interface HarnessSkill {
+  /** Invoked as `/name` (already namespaced, e.g. "skill:foo" for pi skills, "plugin:cmd" for claude plugins). */
+  name: string
+  description: string
+  argumentHint?: string
+  source: HarnessSkillSource
+  /** Absolute path to the backing SKILL.md / command markdown, when one exists. */
+  path?: string
+}
+
+export interface ChatSkillsSnapshot {
+  provider: AgentProvider
+  skills: HarnessSkill[]
+  /** "live" = enumerated from the running harness; "filesystem" = Kanna's own disk scan (cold start / fallback). */
+  origin: "live" | "filesystem"
+}
+
 export interface ChatAttachment {
   id: string
   kind: AttachmentKind
@@ -329,6 +356,19 @@ export function deriveModelLabel(modelId: string): string {
   return words
     .map((word) => (MODEL_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : titleCaseWord(word)))
     .join(" ")
+}
+
+/**
+ * Human-readable label for a model id: prefer the catalog entry's label
+ * (matching by id or alias), otherwise derive one from the id. This is the
+ * single naming transform shared by the chat input's model picker trigger and
+ * the transcript's session rows.
+ */
+export function resolveModelLabel(models: ReadonlyArray<ProviderModelOption> | undefined, modelId: string): string {
+  const catalogEntry = models?.find(
+    (candidate) => candidate.id === modelId || candidate.aliases?.includes(modelId)
+  )
+  return catalogEntry?.label ?? deriveModelLabel(modelId)
 }
 
 export interface ProviderCatalogEntry {

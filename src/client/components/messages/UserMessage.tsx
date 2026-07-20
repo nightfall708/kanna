@@ -13,6 +13,13 @@ interface Props {
   steered?: boolean
 }
 
+/**
+ * Legacy compatibility: steered prompts used to persist the injected
+ * <system-message> block inside the transcript content, hidden here at render
+ * time. Injections are now wire-only (applied at the harness boundary in
+ * startTurnForChat and never stored), so this strip only matters for
+ * transcripts written before that change.
+ */
 function parseSystemMessage(content: string) {
   const match = content.match(/^<system-message>\s*([\s\S]*?)\s*<\/system-message>\s*([\s\S]*)$/)
   if (!match) {

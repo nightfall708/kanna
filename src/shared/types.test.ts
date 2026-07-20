@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import {
+  PROVIDERS,
   deriveClaudeModelLabel,
   deriveModelLabel,
   getCodexReasoningOptions,
+  resolveModelLabel,
   normalizeClaudeModelId,
   normalizeCodexModelId,
   normalizeCursorModelId,
@@ -100,5 +102,13 @@ describe("shared model normalization", () => {
     expect(deriveModelLabel("anthropic/claude-sonnet-5")).toBe("Claude Sonnet 5")
     expect(deriveModelLabel("deepseek/deepseek-v4-pro")).toBe("Deepseek V4 Pro")
     expect(deriveModelLabel("z-ai/glm-5.2")).toBe("GLM 5.2")
+  })
+
+  test("resolves model labels via catalog id, alias, or derived fallback", () => {
+    const claudeModels = PROVIDERS.find((provider) => provider.id === "claude")?.models
+    expect(resolveModelLabel(claudeModels, "claude-opus-4-8")).toBe("Opus")
+    expect(resolveModelLabel(claudeModels, "opus")).toBe("Opus")
+    expect(resolveModelLabel(claudeModels, "some-new-model")).toBe("Some New Model")
+    expect(resolveModelLabel(undefined, "gpt-5.6-sol")).toBe("GPT 5.6 Sol")
   })
 })

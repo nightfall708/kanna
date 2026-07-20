@@ -3,25 +3,20 @@ import { ArrowUp, Paperclip } from "lucide-react"
 import {
   type AgentProvider,
   type ChatAttachment,
-  type ClaudeContextWindow,
-  type ClaudeReasoningEffort,
-  type CodexReasoningEffort,
+  type ChatSkillsSnapshot,
+  type HarnessSkill,
   type ModelOptions,
   type ProviderCatalogEntry,
-  normalizeClaudeContextWindow,
-  normalizeClaudeFastMode,
-  normalizeCodexModelId,
-  normalizeCodexReasoningEffort,
   resolveClaudeContextWindowMaxTokens,
 } from "../../../shared/types"
-import { assertNever } from "../../../shared/assert"
 import { Button } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
 import { cn } from "../../lib/utils"
+import { useComposer } from "../../hooks/useComposer"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
 import { useChatInputStore } from "../../stores/chatInputStore"
-import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
+import { type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput, REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 import { ContextWindowMeter } from "./ContextWindowMeter"
@@ -29,6 +24,13 @@ import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentC
 import { AttachmentPreviewModal } from "../messages/AttachmentPreviewModal"
 import { classifyAttachmentPreview } from "../messages/attachmentPreview"
 import { overrideContextWindowMaxTokens, type ContextWindowSnapshot } from "../../lib/contextWindow"
+import {
+  applySkillCompletion,
+  CODEX_SKILL_MENU_TRIGGERS,
+  DEFAULT_SKILL_MENU_TRIGGERS,
+  filterSkillMenuItems,
+  getActiveSlashQuery,
+} from "../../lib/skill-menu"
 
 const MAX_FILES_PER_DROP = 50
 const MAX_CONCURRENT_UPLOADS = 3
@@ -130,80 +132,12 @@ interface Props {
   contextWindowSnapshot?: ContextWindowSnapshot | null
   previousPrompt?: string | null
   onEditModels?: () => void
+  /** Enumerates the selected harness's invocable skills for the "/" menu. */
+  onListSkills?: (provider: AgentProvider) => Promise<ChatSkillsSnapshot>
 }
 
 export interface ChatInputHandle {
   enqueueFiles: (files: File[]) => void
-}
-
-function withNormalizedContextWindow(
-  state: ComposerState,
-  model: string
-): ComposerState {
-  if (state.provider === "codex") {
-    const normalizedModel = normalizeCodexModelId(model)
-    return {
-      ...state,
-      model: normalizedModel,
-      modelOptions: {
-        ...state.modelOptions,
-        reasoningEffort: normalizeCodexReasoningEffort(normalizedModel, state.modelOptions.reasoningEffort),
-      },
-    }
-  }
-  if (state.provider !== "claude") return { ...state, model }
-  return {
-    ...state,
-    model,
-    modelOptions: {
-      ...state.modelOptions,
-      contextWindow: normalizeClaudeContextWindow(model, state.modelOptions.contextWindow),
-      fastMode: normalizeClaudeFastMode(model, state.modelOptions.fastMode),
-    },
-  }
-}
-
-function getEffectiveComposerState(
-  composerState: ComposerState,
-  activeProvider: AgentProvider | null,
-  providerDefaults: ReturnType<typeof useChatPreferencesStore.getState>["providerDefaults"]
-): ComposerState {
-  if (!activeProvider || composerState.provider === activeProvider) {
-    return composerState
-  }
-
-  switch (activeProvider) {
-    case "claude":
-      return {
-        provider: "claude",
-        model: providerDefaults.claude.model,
-        modelOptions: { ...providerDefaults.claude.modelOptions },
-        planMode: composerState.planMode,
-      }
-    case "codex":
-      return {
-        provider: "codex",
-        model: providerDefaults.codex.model,
-        modelOptions: { ...providerDefaults.codex.modelOptions },
-        planMode: composerState.planMode,
-      }
-    case "cursor":
-      return {
-        provider: "cursor",
-        model: providerDefaults.cursor.model,
-        modelOptions: { ...providerDefaults.cursor.modelOptions },
-        planMode: composerState.planMode,
-      }
-    case "pi":
-      return {
-        provider: "pi",
-        model: providerDefaults.pi.model,
-        modelOptions: { ...providerDefaults.pi.modelOptions },
-        planMode: composerState.planMode,
-      }
-    default:
-      return assertNever(activeProvider)
-  }
 }
 
 const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
@@ -220,6 +154,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   contextWindowSnapshot = null,
   previousPrompt = null,
   onEditModels,
+  onListSkills,
 }, forwardedRef) {
   const {
     getDraft,
@@ -229,17 +164,17 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setAttachmentDrafts,
     clearAttachmentDrafts,
   } = useChatInputStore()
-  const {
-    providerDefaults,
-    getComposerState,
-    initializeComposerForChat,
-    setChatComposerModel,
-    setChatComposerPlanMode,
-    resetChatComposerFromProvider,
-  } = useChatPreferencesStore()
-  const composerChatId = chatId ?? NEW_CHAT_COMPOSER_ID
-  const storedComposerState = useChatPreferencesStore((state) => state.chatStates[composerChatId])
-  const composerState = storedComposerState ?? getComposerState(composerChatId)
+  const initializeComposerForChat = useChatPreferencesStore((state) => state.initializeComposerForChat)
+  // Canonical composer semantics (provider lock, model catalog, plan-mode
+  // support) shared with the command palette — see lib/composer.ts.
+  const composer = useComposer({
+    chatId: chatId ?? null,
+    activeProvider,
+    availableProviders,
+  })
+  const { composerChatId, providerLocked, selectedProvider } = composer
+  const providerPrefs = composer.effectiveState
+  const showPlanMode = composer.supportsPlanMode
   const [value, setValue] = useState(() => (chatId ? getDraft(chatId) : ""))
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
@@ -254,12 +189,16 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const removedAttachmentIdsRef = useRef<Set<string>>(new Set())
   const previousProjectIdRef = useRef<string | null>(projectId ?? null)
   const latestChatIdRef = useRef<string | null>(chatId ?? null)
+  // "/" skill menu state. caretPosition mirrors the textarea selectionStart so
+  // the menu can tell whether the caret is still inside the leading "/token".
+  const [caretPosition, setCaretPosition] = useState(0)
+  const [availableSkills, setAvailableSkills] = useState<HarnessSkill[] | null>(null)
+  const [skillMenuDismissed, setSkillMenuDismissed] = useState(false)
+  // Offset from the BOTTOM of the rendered list (0 = best match, adjacent to the input).
+  const [skillMenuOffset, setSkillMenuOffset] = useState(0)
+  const skillsFetchRef = useRef<{ provider: AgentProvider | null; pending: boolean }>({ provider: null, pending: false })
+  const selectedSkillItemRef = useRef<HTMLButtonElement | null>(null)
 
-  const providerLocked = activeProvider !== null
-  const providerPrefs = getEffectiveComposerState(composerState, activeProvider, providerDefaults)
-  const selectedProvider = providerLocked ? activeProvider : composerState.provider
-  const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
-  const showPlanMode = providerConfig?.supportsPlanMode ?? false
   const activeContextWindow = useMemo(() => {
     if (providerPrefs.provider !== "claude") {
       return contextWindowSnapshot
@@ -272,6 +211,81 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     )
     return overrideContextWindowMaxTokens(contextWindowSnapshot, stagedMaxTokens)
   }, [contextWindowSnapshot, providerPrefs.model, providerPrefs.modelOptions, providerPrefs.provider])
+  // "/" skill menu derivations. The query is non-null only while the caret is
+  // inside a leading "/token" ("$token" also opens it on codex, whose native
+  // sigil is "$" — accepting still completes to the canonical "/" form); menu
+  // items render in ascending match quality so the best match sits at the
+  // bottom, next to the input.
+  const skillMenuTriggers = selectedProvider === "codex" ? CODEX_SKILL_MENU_TRIGGERS : DEFAULT_SKILL_MENU_TRIGGERS
+  const slashQuery = onListSkills && !disabled ? getActiveSlashQuery(value, caretPosition, skillMenuTriggers) : null
+  const slashActive = slashQuery !== null
+  const skillMenuItems = useMemo(
+    () => (slashQuery !== null && availableSkills ? filterSkillMenuItems(availableSkills, slashQuery) : []),
+    [slashQuery, availableSkills]
+  )
+  const skillMenuOpen = slashActive && !skillMenuDismissed && skillMenuItems.length > 0
+  const selectedSkillIndex = skillMenuItems.length > 0
+    ? skillMenuItems.length - 1 - Math.min(skillMenuOffset, skillMenuItems.length - 1)
+    : -1
+
+  useEffect(() => {
+    if (!slashActive) {
+      setSkillMenuDismissed(false)
+      setSkillMenuOffset(0)
+      return
+    }
+    if (!onListSkills || !selectedProvider) return
+    if (skillsFetchRef.current.pending) return
+    // Refetch on every menu-open transition (skills change on disk and via
+    // harness pushes); the stale list stays rendered while the fetch runs.
+    if (skillsFetchRef.current.provider === selectedProvider && availableSkills !== null) return
+    skillsFetchRef.current = { provider: selectedProvider, pending: true }
+    onListSkills(selectedProvider)
+      .then((snapshot) => {
+        if (skillsFetchRef.current.provider === snapshot.provider) {
+          setAvailableSkills(snapshot.skills)
+        }
+      })
+      .catch(() => {
+        setAvailableSkills((current) => current ?? [])
+      })
+      .finally(() => {
+        skillsFetchRef.current.pending = false
+      })
+  }, [slashActive, selectedProvider, onListSkills, availableSkills])
+
+  // A provider switch invalidates the cached list (each harness has its own skills).
+  useEffect(() => {
+    if (skillsFetchRef.current.provider !== null && skillsFetchRef.current.provider !== selectedProvider) {
+      skillsFetchRef.current = { provider: null, pending: false }
+      setAvailableSkills(null)
+    }
+  }, [selectedProvider])
+
+  // Keep the highlighted row pinned to the best match whenever the query changes.
+  useEffect(() => {
+    setSkillMenuOffset(0)
+  }, [slashQuery])
+
+  useEffect(() => {
+    selectedSkillItemRef.current?.scrollIntoView({ block: "nearest" })
+  }, [selectedSkillIndex, skillMenuOpen])
+
+  const acceptSkill = useCallback((skill: HarnessSkill) => {
+    const nextValue = applySkillCompletion(value, skill.name)
+    setValue(nextValue)
+    if (chatId) setDraft(chatId, nextValue)
+    const nextCaret = skill.name.length + 2
+    setCaretPosition(nextCaret)
+    requestAnimationFrame(() => {
+      const element = textareaRef.current
+      if (!element) return
+      element.focus()
+      element.selectionStart = nextCaret
+      element.selectionEnd = nextCaret
+    })
+  }, [value, chatId, setDraft])
+
   const uploadedAttachments = attachments.filter((attachment) => attachment.status === "uploaded")
   const hasPendingUploads = attachments.some((attachment) => attachment.status === "uploading")
   const hasTextToSend = value.trim().length > 0
@@ -408,30 +422,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     attachmentsRef.current.forEach(cleanupAttachmentPreview)
   }, [cleanupAttachmentPreview])
 
-  function updateComposerState(transform: (state: ComposerState) => ComposerState) {
-    useChatPreferencesStore.getState().setComposerState(composerChatId, transform(providerPrefs))
-  }
-
-  function setReasoningEffort(reasoningEffort: string) {
-    updateComposerState((state) => ({
-      ...state,
-      modelOptions: { ...state.modelOptions, reasoningEffort: reasoningEffort as ClaudeReasoningEffort & CodexReasoningEffort },
-    } as ComposerState))
-  }
-
-  function setClaudeContextWindow(contextWindow: ClaudeContextWindow) {
-    updateComposerState(
-      (state) => state.provider !== "claude"
-        ? state
-        : withNormalizedContextWindow(
-            { ...state, modelOptions: { ...state.modelOptions, contextWindow } },
-            state.model
-          )
-    )
-  }
-
   function setEffectivePlanMode(planMode: boolean) {
-    setChatComposerPlanMode(composerChatId, planMode)
+    composer.setPlanMode(planMode)
   }
 
   function toggleEffectivePlanMode() {
@@ -606,6 +598,34 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }
 
   function handleKeyDown(event: React.KeyboardEvent) {
+    if (skillMenuOpen) {
+      // Best match renders at the bottom: ArrowUp walks toward worse matches,
+      // ArrowDown back toward the input.
+      if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault()
+        setSkillMenuOffset((offset) => Math.min(offset + 1, skillMenuItems.length - 1))
+        return
+      }
+      if (event.key === "ArrowDown" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault()
+        setSkillMenuOffset((offset) => Math.max(offset - 1, 0))
+        return
+      }
+      if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey) {
+        const selected = skillMenuItems[selectedSkillIndex]
+        if (selected) {
+          event.preventDefault()
+          acceptSkill(selected)
+          return
+        }
+      }
+      if (event.key === "Escape") {
+        event.preventDefault()
+        setSkillMenuDismissed(true)
+        return
+      }
+    }
+
     if (event.key === "Tab" && !event.shiftKey) {
       event.preventDefault()
       focusNextChatInput(textareaRef.current, document)
@@ -707,7 +727,42 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   return (
     <div>
       <div className={cn("px-3 pt-0", isStandalone && "px-5")}>
-        <div className="max-w-[840px] mx-auto rounded-[32px]">
+        <div className="relative max-w-[840px] mx-auto rounded-[32px]">
+          {skillMenuOpen ? (
+            <div
+              className="absolute bottom-full left-0 right-0 mb-2 z-30 max-h-64 overflow-y-auto rounded-2xl border border-border bg-popover/95 backdrop-blur-lg shadow-lg py-1"
+              role="listbox"
+              aria-label="Skills"
+            >
+              {skillMenuItems.map((skill, index) => (
+                <button
+                  key={`${skill.source}:${skill.name}`}
+                  ref={index === selectedSkillIndex ? selectedSkillItemRef : undefined}
+                  type="button"
+                  role="option"
+                  aria-selected={index === selectedSkillIndex}
+                  className={cn(
+                    "flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-sm",
+                    index === selectedSkillIndex ? "bg-accent text-accent-foreground" : "text-foreground"
+                  )}
+                  onMouseEnter={() => setSkillMenuOffset(skillMenuItems.length - 1 - index)}
+                  onMouseDown={(event) => {
+                    // mousedown (not click) so the textarea never loses focus.
+                    event.preventDefault()
+                    acceptSkill(skill)
+                  }}
+                >
+                  <span className="shrink-0 font-mono text-[13px]">/{skill.name}</span>
+                  {skill.argumentHint ? (
+                    <span className="shrink-0 font-mono text-[12px] text-muted-foreground">{skill.argumentHint}</span>
+                  ) : null}
+                  {skill.description ? (
+                    <span className="min-w-0 truncate text-xs text-muted-foreground">{skill.description}</span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {attachments.length > 0 ? (
             <ScrollArea className="overflow-x-auto overflow-y-hidden whitespace-nowrap px-2 pb-2">
               <div className="flex items-end gap-2 pt-2">
@@ -747,8 +802,12 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               rows={1}
               onChange={(event) => {
                 setValue(event.target.value)
+                setCaretPosition(event.target.selectionStart ?? event.target.value.length)
                 if (chatId) setDraft(chatId, event.target.value)
                 autoResize()
+              }}
+              onSelect={(event) => {
+                setCaretPosition(event.currentTarget.selectionStart ?? 0)
               }}
               onPaste={handlePaste}
               onKeyDown={handleKeyDown}
@@ -842,34 +901,23 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             model={providerPrefs.model}
             modelOptions={providerPrefs.modelOptions}
             onProviderChange={(provider) => {
-              if (providerLocked) return
-              resetChatComposerFromProvider(composerChatId, provider)
+              composer.selectProvider(provider)
             }}
             onModelChange={(_, model) => {
-              if (providerLocked) {
-                updateComposerState((state) => withNormalizedContextWindow(state, model))
-                return
-              }
-              setChatComposerModel(composerChatId, model)
+              composer.selectModel(model)
             }}
             onModelOptionChange={(change) => {
               switch (change.type) {
                 case "claudeReasoningEffort":
-                  setReasoningEffort(change.effort)
-                  break
                 case "codexReasoningEffort":
-                  setReasoningEffort(change.effort)
-                  break
                 case "piReasoningEffort":
-                  setReasoningEffort(change.effort)
+                  composer.setReasoningEffort(change.effort)
                   break
                 case "contextWindow":
-                  setClaudeContextWindow(change.contextWindow)
+                  composer.setContextWindow(change.contextWindow)
                   break
                 case "fastMode":
-                  updateComposerState(
-                    (state) => ({ ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } } as ComposerState)
-                  )
+                  composer.setFastMode(change.fastMode)
                   break
               }
             }}

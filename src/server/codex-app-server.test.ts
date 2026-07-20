@@ -213,6 +213,124 @@ describe("CodexAppServerManager", () => {
     expect(turnStart?.params.collaborationMode?.settings?.reasoning_effort).toBe("xhigh")
   })
 
+  test("attaches a structured skill item plus system-message failsafe when invoking a skill", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "turn/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { turn: { id: "turn-1", status: "completed", error: null } },
+        })
+        child.writeServerMessage({
+          method: "turn/completed",
+          params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed", error: null } },
+        })
+      }
+    })
+
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+
+    const turn = await manager.startTurn({
+      chatId: "chat-1",
+      model: "gpt-5.4",
+      content: "/deploy-helper ship to prod",
+      skill: { name: "deploy-helper", path: "/tmp/project/.agents/skills/deploy-helper/SKILL.md" },
+      planMode: false,
+      onToolRequest: async () => ({}),
+    })
+    await collectStream(turn.stream)
+
+    const turnStart = process.messages.find((message: any) => message.method === "turn/start") as any
+    expect(turnStart.params.input).toHaveLength(2)
+    expect(turnStart.params.input[0].type).toBe("text")
+    expect(turnStart.params.input[0].text.startsWith("/deploy-helper ship to prod")).toBe(true)
+    expect(turnStart.params.input[0].text).toContain(
+      "<system-message>the user would like to use the skill available at /tmp/project/.agents/skills/deploy-helper/SKILL.md</system-message>"
+    )
+    expect(turnStart.params.input[1]).toEqual({
+      type: "skill",
+      name: "deploy-helper",
+      path: "/tmp/project/.agents/skills/deploy-helper/SKILL.md",
+    })
+  })
+
+  test("listSkills maps skills/list and filters disabled skills", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "skills/list") {
+        child.writeServerMessage({
+          id: message.id,
+          result: {
+            data: [
+              {
+                cwd: "/tmp/project",
+                skills: [
+                  {
+                    name: "deploy-helper",
+                    description: "Deploys things",
+                    path: "/tmp/project/.agents/skills/deploy-helper/SKILL.md",
+                    scope: "repo",
+                    enabled: true,
+                  },
+                  {
+                    name: "disabled-skill",
+                    description: "Off",
+                    path: "/tmp/project/.agents/skills/disabled-skill/SKILL.md",
+                    scope: "repo",
+                    enabled: false,
+                  },
+                ],
+              },
+            ],
+          },
+        })
+      }
+    })
+
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+
+    const skills = await manager.listSkills({ chatId: "chat-1", cwd: "/tmp/project" })
+    expect(skills?.map((skill) => skill.name)).toEqual(["deploy-helper"])
+
+    const request = process.messages.find((message: any) => message.method === "skills/list") as any
+    expect(request.params.cwds).toEqual(["/tmp/project"])
+  })
+
+  test("listSkills degrades to null when the server lacks skills/list", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "skills/list") {
+        child.writeServerMessage({ id: message.id, error: { code: -32601, message: "method not found" } })
+      }
+    })
+
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null })
+
+    expect(await manager.listSkills({ chatId: "chat-1", cwd: "/tmp/project" })).toBeNull()
+    expect(await manager.listSkills({ chatId: "chat-unknown", cwd: "/tmp/project" })).toBeNull()
+  })
+
   test("forwards every supported GPT-5.6 model and reasoning combination", async () => {
     const combinations = [
       ...(["low", "medium", "high", "xhigh", "max", "ultra"] as const)

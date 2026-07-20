@@ -12,7 +12,7 @@ import {
   type AgentSessionEvent,
 } from "@mariozechner/pi-coding-agent"
 import type { Model } from "@mariozechner/pi-ai"
-import type { ContextWindowUsageSnapshot, LlmProviderKind, PiReasoningEffort } from "../shared/types"
+import type { ContextWindowUsageSnapshot, HarnessSkill, LlmProviderKind, PiReasoningEffort } from "../shared/types"
 import { getDataRootDir } from "../shared/branding"
 import { normalizeToolCall } from "../shared/tools"
 import type { HarnessEvent, HarnessTurn } from "./harness-types"
@@ -37,8 +37,12 @@ import { timestamped } from "./transcript"
  *     native reasoning parameter (`reasoning: { effort }` on OpenRouter,
  *     `reasoning_effort` on OpenAI-style APIs).
  *   - The user's local pi installation (~/.pi) is never read: state lives under
- *     Kanna's data root, credentials stay in memory, and extension/skill/theme
- *     discovery is disabled. Project AGENTS.md context files still apply.
+ *     Kanna's data root and credentials stay in memory. Markdown resources
+ *     (skills + prompt templates) ARE discovered — from Kanna's agentDir,
+ *     project `.pi/{skills,prompts}`, repo `.agents/skills`, and the shared
+ *     `~/.agents/skills` — so `/name` invocation and the composer's "/" menu
+ *     work. Extension and theme discovery stays disabled (extensions are
+ *     arbitrary in-process code). Project AGENTS.md context files still apply.
  *
  * Pi's built-in tool set (read, bash, edit, write, grep, find, ls) is mapped
  * one-to-one onto Kanna's existing normalized tools via Claude-style names
@@ -258,11 +262,40 @@ interface PiChatSession {
   session: AgentSession
   authStorage: AuthStorage
   modelRegistry: ModelRegistry
+  resourceLoader: DefaultResourceLoader
   cwd: string
   model: string
   effort: PiReasoningEffort
   connectionProvider: LlmProviderKind
   connectionBaseUrl: string
+}
+
+/**
+ * Map pi's loaded resources (prompt templates + skills) into Kanna's
+ * normalized skill list. Skills are invoked as `/skill:<name>` in pi (the
+ * session expands `text.startsWith("/skill:")`), so the namespaced name is
+ * what the composer must insert.
+ */
+export function collectPiSkills(loader: DefaultResourceLoader): HarnessSkill[] {
+  const skills: HarnessSkill[] = []
+  for (const template of loader.getPrompts().prompts) {
+    skills.push({
+      name: template.name,
+      description: template.description ?? "",
+      ...(template.argumentHint ? { argumentHint: template.argumentHint } : {}),
+      source: "command",
+      path: template.filePath,
+    })
+  }
+  for (const skill of loader.getSkills().skills) {
+    skills.push({
+      name: `skill:${skill.name}`,
+      description: skill.description ?? "",
+      source: "skill",
+      path: skill.filePath,
+    })
+  }
+  return skills
 }
 
 /** A turn that failed before the agent could start (missing key, bad session file). */
@@ -296,6 +329,29 @@ export class PiAgentManager {
     const dataDir = args.dataDir ?? path.join(getDataRootDir(homedir()), "pi")
     this.agentDir = path.join(dataDir, "agent")
     this.sessionsDir = path.join(dataDir, "sessions")
+  }
+
+  /**
+   * Enumerate prompt templates + skills for the "/" menu. Reuses the live
+   * session's resource loader when one exists (exactly what that session will
+   * expand); otherwise runs a transient loader over the same roots. A live
+   * session snapshots resources at creation, so a skill added mid-session
+   * appears here (fresh menu) but only expands after the next session boot.
+   */
+  async listSkills(args: { chatId?: string; cwd: string }): Promise<HarnessSkill[]> {
+    const existing = args.chatId ? this.sessions.get(args.chatId) : undefined
+    if (existing && existing.cwd === args.cwd) {
+      return collectPiSkills(existing.resourceLoader)
+    }
+    const loader = new DefaultResourceLoader({
+      cwd: args.cwd,
+      agentDir: this.agentDir,
+      settingsManager: SettingsManager.inMemory(),
+      noExtensions: true,
+      noThemes: true,
+    })
+    await loader.reload()
+    return collectPiSkills(loader)
   }
 
   closeChat(chatId: string) {
@@ -352,13 +408,17 @@ export class PiAgentManager {
     const modelRegistry = ModelRegistry.inMemory(authStorage)
     const settingsManager = SettingsManager.inMemory()
 
+    // Skills and prompt templates (markdown-only resources) are discovered so
+    // the "/" menu and `/name` invocation work: pi reads Kanna's agentDir plus
+    // `<cwd>/.pi/{skills,prompts}`, repo `.agents/skills`, and `~/.agents/skills`
+    // (the shared cross-harness dir — hardcoded to $HOME, not agentDir).
+    // Extensions stay disabled: they are arbitrary TypeScript executed
+    // in-process, and Kanna deliberately never runs code from ~/.pi or repos.
     const resourceLoader = new DefaultResourceLoader({
       cwd: args.cwd,
       agentDir: this.agentDir,
       settingsManager,
       noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
       noThemes: true,
     })
     await resourceLoader.reload()
@@ -386,6 +446,7 @@ export class PiAgentManager {
       session,
       authStorage,
       modelRegistry,
+      resourceLoader,
       cwd: args.cwd,
       model: args.model,
       effort: args.effort,
