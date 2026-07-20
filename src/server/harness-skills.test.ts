@@ -10,6 +10,7 @@ import {
   findNestedSkillRoots,
   findSkillByName,
   listGlobalSkills,
+  normalizeSkillDescription,
   parseFrontmatter,
   parseSkillInvocation,
   scanClaudeSkills,
@@ -97,6 +98,23 @@ describe("filesystem scanners", () => {
     writeFileSync(path.join(dir, "SKILL.md"), `---\n${header}\n---\n# ${name}\n`)
     return path.join(dir, "SKILL.md")
   }
+
+  test("replaces codex chronicle's block-scalar '|' description, and only that", () => {
+    const root = path.join(base, "codex-skills")
+    // YAML block scalar: our single-line frontmatter reader captures the "|".
+    const blockScalar = "---\nname: chronicle\ndescription: |\n  Multi-line text the naive parser misses.\n---\n"
+    mkdirSync(path.join(root, "chronicle"), { recursive: true })
+    writeFileSync(path.join(root, "chronicle", "SKILL.md"), blockScalar)
+    mkdirSync(path.join(root, "other-skill"), { recursive: true })
+    writeFileSync(path.join(root, "other-skill", "SKILL.md"), "---\nname: other-skill\ndescription: |\n  Also block scalar.\n---\n")
+
+    const byName = new Map(scanSkillsRoot(root).map((skill) => [skill.name, skill]))
+    expect(byName.get("chronicle")?.description).toContain("Chronicle is Codex’s local screen-context feature")
+    // Only chronicle gets the hardcoded subtitle; other skills keep the raw artifact.
+    expect(byName.get("other-skill")?.description).toBe("|")
+    // A real single-line description is never overridden.
+    expect(normalizeSkillDescription("chronicle", "Real description")).toBe("Real description")
+  })
 
   test("scanSkillsRoot reads SKILL.md dirs and skips non-skills", () => {
     const root = path.join(base, "skills")

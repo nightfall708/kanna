@@ -86,6 +86,22 @@ export function parseFrontmatter(markdown: string): Record<string, string> {
 // Filesystem scanners
 // ---------------------------------------------------------------------------
 
+/**
+ * Codex preinstalls a "chronicle" skill whose SKILL.md declares its
+ * description as a YAML block scalar (`description: |` + indented lines).
+ * Kanna's single-line frontmatter reader captures the literal "|", so this
+ * one known skill gets a hardcoded subtitle — guarded tightly to the exact
+ * name + the "|" artifact so a real description would win if it ever appears.
+ */
+const CHRONICLE_DESCRIPTION = "Chronicle is Codex’s local screen-context feature. When it’s running, it keeps a short rolling record of your screen so I can answer ambiguous requests like “what is this?” by looking at your current screen or recent screen history."
+
+export function normalizeSkillDescription(name: string, description: string): string {
+  if (name === "chronicle" && description.trim() === "|") {
+    return CHRONICLE_DESCRIPTION
+  }
+  return description
+}
+
 function readSkillFile(skillFilePath: string, fallbackName: string): HarnessSkill | null {
   let markdown: string
   try {
@@ -98,7 +114,7 @@ function readSkillFile(skillFilePath: string, fallbackName: string): HarnessSkil
   if (!name || name.startsWith("._")) return null
   return {
     name,
-    description: frontmatter.description ?? "",
+    description: normalizeSkillDescription(name, frontmatter.description ?? ""),
     source: "skill",
     path: skillFilePath,
   }
