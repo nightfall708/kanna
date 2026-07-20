@@ -13,13 +13,14 @@ import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
 import { playChatNotificationSound, shouldPlayChatSound } from "../lib/chatSounds"
 import { getBrowserWindowTitle, getChatSoundBurstCount } from "./chatNotifications"
 import { KannaSidebar } from "./KannaSidebar"
+import { BoardPage } from "./BoardPage"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
 import { SettingsPage } from "./SettingsPage"
 import { useKannaState } from "./useKannaState"
 import type { AppSettingsSnapshot } from "../../shared/types"
+import { VERSION_SEEN_STORAGE_KEY } from "../lib/storageKeys"
 
-const VERSION_SEEN_STORAGE_KEY = "kanna:last-seen-version"
 const AUTH_STATUS_RETRY_DELAY_MS = 500
 
 interface AuthStatusResponse {
@@ -229,12 +230,15 @@ function KannaLayout() {
   const handleSidebarArchiveChat = useCallback((chat: Parameters<typeof state.handleArchiveChat>[0]) => {
     void state.handleArchiveChat(chat)
   }, [state.handleArchiveChat])
+  const handleSidebarMarkChatDone = useCallback((chat: Parameters<typeof state.handleMarkChatDone>[0]) => {
+    void state.handleMarkChatDone(chat)
+  }, [state.handleMarkChatDone])
   const handleOpenArchivedChat = useCallback((chatId: string) => {
     void state.handleOpenArchivedChat(chatId)
   }, [state.handleOpenArchivedChat])
   const handleOpenAddProjectModal = useCallback(() => {
     state.openAddProjectModal()
-  }, [state])
+  }, [state.openAddProjectModal])
   const handleSidebarDeleteChat = useCallback((chat: Parameters<typeof state.handleDeleteChat>[0]) => {
     void state.handleDeleteChat(chat)
   }, [state.handleDeleteChat])
@@ -272,6 +276,7 @@ function KannaLayout() {
       keybindings={state.keybindings}
       onRenameChat={handleSidebarRenameChat}
       onShareChat={handleSidebarShareChat}
+      onMarkChatDone={handleSidebarMarkChatDone}
       onArchiveChat={handleSidebarArchiveChat}
       onOpenArchivedChat={handleOpenArchivedChat}
       onDeleteChat={handleSidebarDeleteChat}
@@ -291,6 +296,7 @@ function KannaLayout() {
     handleSidebarCopyPath,
     handleSidebarCreateChat,
     handleSidebarArchiveChat,
+    handleSidebarMarkChatDone,
     handleSidebarDeleteChat,
     handleOpenArchivedChat,
     handleSidebarForkChat,
@@ -396,6 +402,7 @@ export function App() {
         <Routes>
           <Route element={<KannaLayout />}>
             <Route path="/" element={<LocalProjectsPage />} />
+            <Route path="/board" element={<BoardPage />} />
             <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
             <Route path="/settings/:sectionId" element={<SettingsPage />} />
             <Route path="/chat/:chatId" element={<ChatPage />} />

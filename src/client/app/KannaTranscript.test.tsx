@@ -1,27 +1,46 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
+import { OpenLocalLinkProvider } from "../components/messages/shared"
 import type { HydratedTranscriptMessage } from "../../shared/types"
 import {
   buildResolvedTranscriptRows,
   computeStableResolvedTranscriptRows,
-  KannaTranscript,
+  KannaTranscriptRow,
   type StableResolvedTranscriptRowsState,
 } from "./KannaTranscript"
 
 const ROW_WRAPPER_CLASS = "mx-auto max-w-[800px] pb-5"
 
-function renderTranscript(messages: HydratedTranscriptMessage[]) {
-  return renderToStaticMarkup(
-    <KannaTranscript
-      messages={messages}
-      isLoading={false}
-      latestToolIds={{ AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null }}
-      onOpenLocalLink={() => undefined}
-      onAskUserQuestionSubmit={() => undefined}
-      onExitPlanModeConfirm={() => undefined}
-    />
+// Minimal test harness mirroring how ChatTranscriptViewport renders resolved rows.
+function TestTranscript({ messages }: { messages: HydratedTranscriptMessage[] }) {
+  const rows = buildResolvedTranscriptRows(messages, {
+    isLoading: false,
+    latestToolIds: { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null },
+  })
+
+  return (
+    <OpenLocalLinkProvider onOpenLocalLink={() => undefined}>
+      {rows.map((row) => (
+        <div
+          key={row.id}
+          className={ROW_WRAPPER_CLASS}
+        >
+          <KannaTranscriptRow
+            row={row}
+            toolGroupExpanded={row.kind === "tool-group" ? false : undefined}
+            onToolGroupExpandedChange={() => undefined}
+            onAskUserQuestionSubmit={() => undefined}
+            onExitPlanModeConfirm={() => undefined}
+          />
+        </div>
+      ))}
+    </OpenLocalLinkProvider>
   )
+}
+
+function renderTranscript(messages: HydratedTranscriptMessage[]) {
+  return renderToStaticMarkup(<TestTranscript messages={messages} />)
 }
 
 function countRowWrappers(html: string) {
@@ -209,7 +228,7 @@ Please check the latest error first.`,
     expect(html).not.toContain("Completed")
   })
 
-  test("does not render wrappers for short successful result rows", () => {
+  test("renders wrappers for short successful result rows", () => {
     const html = renderTranscript([
       {
         id: "result-short-1",
@@ -222,7 +241,8 @@ Please check the latest error first.`,
       },
     ])
 
-    expect(countRowWrappers(html)).toBe(0)
+    expect(countRowWrappers(html)).toBe(1)
+    expect(html).toContain("Worked for 2s")
   })
 
   test("renders wrappers for long successful result rows", () => {
@@ -239,6 +259,54 @@ Please check the latest error first.`,
     ])
 
     expect(countRowWrappers(html)).toBe(1)
+    expect(html).toContain("Worked for 1m 1s")
+  })
+
+  test("shows the follow-up prompt time on earlier results and worked-for on the last", () => {
+    const promptTimestamp = new Date("2026-07-19T08:32:00").toISOString()
+    const html = renderTranscript([
+      {
+        id: "user-1",
+        kind: "user_prompt",
+        content: "First ask",
+        timestamp: new Date("2026-07-19T08:20:00").toISOString(),
+      },
+      {
+        id: "result-1",
+        kind: "result",
+        success: true,
+        cancelled: false,
+        result: "Done",
+        durationMs: 480000,
+        timestamp: new Date("2026-07-19T08:28:00").toISOString(),
+      },
+      {
+        id: "user-2",
+        kind: "user_prompt",
+        content: "Second ask",
+        timestamp: promptTimestamp,
+      },
+      {
+        id: "result-2",
+        kind: "result",
+        success: true,
+        cancelled: false,
+        result: "Done again",
+        durationMs: 720000,
+        timestamp: new Date("2026-07-19T08:44:00").toISOString(),
+      },
+    ])
+
+    const expectedPromptLabel = new Date(promptTimestamp).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    })
+
+    expect(html).not.toContain("Worked for 8m")
+    expect(html).toContain(expectedPromptLabel)
+    expect(html).toContain("Worked for 12m")
   })
 
   test("does not render wrappers for duplicate system and account rows", () => {
@@ -280,6 +348,48 @@ Please check the latest error first.`,
     ])
 
     expect(countRowWrappers(html)).toBe(2)
+  })
+
+  test("renders a model-changed row when a later session uses a different model", () => {
+    const html = renderTranscript([
+      {
+        id: "system-1",
+        kind: "system_init",
+        provider: "claude",
+        model: "claude-sonnet-4-5",
+        tools: [],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "system-2",
+        kind: "system_init",
+        provider: "claude",
+        model: "claude-opus-4-6",
+        tools: [],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "system-3",
+        kind: "system_init",
+        provider: "claude",
+        model: "claude-opus-4-6",
+        tools: [],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+        timestamp: new Date().toISOString(),
+      },
+    ])
+
+    expect(countRowWrappers(html)).toBe(2)
+    expect(html).toContain("Session started with claude-sonnet-4-5")
+    expect(html).toContain("Model changed to claude-opus-4-6")
   })
 
   test("renders one wrapper for visible transcript rows", () => {
@@ -371,7 +481,7 @@ Please check the latest error first.`,
     expect(rows[1]?.kind).toBe("single")
   })
 
-  test("groups collapsible tools across hidden short result rows", () => {
+  test("does not group collapsible tools across visible result rows", () => {
     const rows = buildResolvedTranscriptRows([
       createToolMessage("tool-1"),
       {
@@ -389,10 +499,8 @@ Please check the latest error first.`,
       latestToolIds: { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null },
     })
 
-    expect(rows).toHaveLength(1)
-    expect(rows[0]?.kind).toBe("tool-group")
-    if (rows[0]?.kind !== "tool-group") throw new Error("unexpected row kind")
-    expect(rows[0].messages.map((message) => message.id)).toEqual(["tool-1", "tool-2"])
+    expect(rows).toHaveLength(3)
+    expect(rows.every((row) => row.kind === "single")).toBe(true)
   })
 
   test("does not group collapsible tools across visible transcript rows", () => {

@@ -21,6 +21,18 @@ import { resolveLocalPath } from "./paths"
 const COMPACTION_THRESHOLD_BYTES = 2 * 1024 * 1024
 const STALE_EMPTY_CHAT_MAX_AGE_MS = 30 * 60 * 1000
 const SIDEBAR_PROJECT_ORDER_FILE = "sidebar-order.json"
+const CHAT_MESSAGE_PREVIEW_MAX_LENGTH = 160
+// How much of each transcript tail is scanned at boot to rebuild chat metadata
+// (lastMessageAt, previews) that only lives in snapshots between compactions.
+const TRANSCRIPT_METADATA_TAIL_BYTES = 256 * 1024
+
+function buildChatMessagePreview(text: string) {
+  const collapsed = text.replace(/\s+/g, " ").trim()
+  if (!collapsed) return undefined
+  return collapsed.length > CHAT_MESSAGE_PREVIEW_MAX_LENGTH
+    ? `${collapsed.slice(0, CHAT_MESSAGE_PREVIEW_MAX_LENGTH)}…`
+    : collapsed
+}
 
 function normalizeSidebarProjectOrder(value: unknown) {
   if (!Array.isArray(value)) {
@@ -40,20 +52,7 @@ function normalizeSidebarProjectOrder(value: unknown) {
   return projectIds
 }
 
-function isSendToStartingProfilingEnabled() {
-  return process.env.KANNA_PROFILE_SEND_TO_STARTING === "1"
-}
 
-function logSendToStartingProfile(stage: string, details?: Record<string, unknown>) {
-  if (!isSendToStartingProfilingEnabled()) {
-    return
-  }
-
-  console.log("[kanna/send->starting][server]", JSON.stringify({
-    stage,
-    ...details,
-  }))
-}
 
 interface LegacyTranscriptStats {
   hasLegacyData: boolean
@@ -103,6 +102,7 @@ function getReplayEventPriority(event: StoreEvent) {
     case "turn_failed":
       return 8
     case "chat_read_state_set":
+    case "chat_done_state_set":
       return 9
     case "chat_deleted":
     case "chat_archived":
@@ -158,7 +158,11 @@ export class EventStore {
   private legacySidebarProjectOrder: string[] = []
   private sidebarProjectOrder: string[] = []
   private snapshotHasLegacyMessages = false
-  private cachedTranscript: { chatId: string; entries: TranscriptEntry[] } | null = null
+  // Small LRU of hot transcripts. One slot used to thrash badly: any read of
+  // another chat (board view, prune sweep) evicted the actively streaming
+  // chat, forcing a synchronous full-file re-read on its next event.
+  private readonly transcriptCache = new Map<string, TranscriptEntry[]>()
+  private static readonly TRANSCRIPT_CACHE_LIMIT = 8
 
   constructor(dataDir = getDataDir(homedir())) {
     this.dataDir = dataDir
@@ -172,9 +176,17 @@ export class EventStore {
     this.sidebarProjectOrderPath = path.join(this.dataDir, SIDEBAR_PROJECT_ORDER_FILE)
   }
 
+  private transcriptsDirReady = false
+
+  private async ensureTranscriptsDir() {
+    if (this.transcriptsDirReady) return
+    await mkdir(this.transcriptsDir, { recursive: true })
+    this.transcriptsDirReady = true
+  }
+
   async initialize() {
     await mkdir(this.dataDir, { recursive: true })
-    await mkdir(this.transcriptsDir, { recursive: true })
+    await this.ensureTranscriptsDir()
     await this.ensureFile(this.projectsLogPath)
     await this.ensureFile(this.chatsLogPath)
     await this.ensureFile(this.messagesLogPath)
@@ -182,10 +194,44 @@ export class EventStore {
     await this.ensureFile(this.turnsLogPath)
     await this.loadSnapshot()
     await this.replayLogs()
+    await this.hydrateChatMetadataFromTranscripts()
     await this.loadSidebarProjectOrder()
     if (!(await this.hasLegacyTranscriptData()) && await this.shouldCompact()) {
       await this.compact()
     }
+  }
+
+  /**
+   * Chat metadata derived from transcript entries (lastMessageAt, hasMessages,
+   * message previews) is applied in memory on append and only persisted when a
+   * snapshot compaction runs. Rebuild it from the transcript files on boot so
+   * restarts between compactions don't regress it.
+   */
+  private async hydrateChatMetadataFromTranscripts() {
+    const chats = [...this.state.chatsById.values()].filter((chat) => !chat.deletedAt)
+    await Promise.all(chats.map(async (chat) => {
+      try {
+        const file = Bun.file(this.transcriptPath(chat.id))
+        if (!(await file.exists())) return
+        const start = Math.max(0, file.size - TRANSCRIPT_METADATA_TAIL_BYTES)
+        const text = await file.slice(start).text()
+        const lines = text.split("\n")
+        if (start > 0) {
+          // The slice may begin mid-line; drop the partial first line.
+          lines.shift()
+        }
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            this.applyMessageMetadata(chat.id, JSON.parse(line) as TranscriptEntry)
+          } catch {
+            // Skip partial or corrupt lines (e.g. an append cut off by a crash).
+          }
+        }
+      } catch {
+        // Metadata hydration is best-effort; the transcript itself is untouched.
+      }
+    }))
   }
 
   private async ensureFile(filePath: string) {
@@ -262,7 +308,7 @@ export class EventStore {
     this.state.queuedMessagesByChatId.clear()
     this.sidebarProjectOrder = []
     this.legacySidebarProjectOrder = []
-    this.cachedTranscript = null
+    this.transcriptCache.clear()
   }
 
   private clearLegacyTranscriptState() {
@@ -523,6 +569,17 @@ export class EventStore {
         chat.updatedAt = event.timestamp
         break
       }
+      case "chat_done_state_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        if (event.done) {
+          chat.doneAt = event.timestamp
+        } else {
+          delete chat.doneAt
+        }
+        chat.updatedAt = event.timestamp
+        break
+      }
       case "message_appended": {
         this.applyMessageMetadata(event.chatId, event.entry)
         const existing = this.legacyMessagesByChatId.get(event.chatId) ?? []
@@ -561,6 +618,8 @@ export class EventStore {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.updatedAt = event.timestamp
+        // A new turn means the user re-engaged, so the chat is no longer "done".
+        delete chat.doneAt
         break
       }
       case "turn_finished": {
@@ -609,6 +668,13 @@ export class EventStore {
     chat.hasMessages = true
     if (entry.kind === "user_prompt") {
       chat.lastMessageAt = entry.createdAt
+      if (!entry.hidden) {
+        const preview = buildChatMessagePreview(entry.content)
+        if (preview) chat.lastUserMessagePreview = preview
+      }
+    } else if (entry.kind === "assistant_text" && !entry.hidden) {
+      const preview = buildChatMessagePreview(entry.text)
+      if (preview) chat.lastAgentMessagePreview = preview
     }
     chat.updatedAt = Math.max(chat.updatedAt, entry.createdAt)
   }
@@ -624,6 +690,32 @@ export class EventStore {
 
   private transcriptPath(chatId: string) {
     return path.join(this.transcriptsDir, `${chatId}.jsonl`)
+  }
+
+  /** Cached entries for a chat, loading from disk on miss. Callers must not mutate. */
+  private getTranscriptEntries(chatId: string): TranscriptEntry[] {
+    const cached = this.transcriptCache.get(chatId)
+    if (cached) {
+      // Refresh LRU recency.
+      this.transcriptCache.delete(chatId)
+      this.transcriptCache.set(chatId, cached)
+      return cached
+    }
+
+    const legacyEntries = this.legacyMessagesByChatId.get(chatId)
+    const entries = legacyEntries ? cloneTranscriptEntries(legacyEntries) : this.loadTranscriptFromDisk(chatId)
+    this.setCachedTranscript(chatId, entries)
+    return entries
+  }
+
+  private setCachedTranscript(chatId: string, entries: TranscriptEntry[]) {
+    this.transcriptCache.delete(chatId)
+    while (this.transcriptCache.size >= EventStore.TRANSCRIPT_CACHE_LIMIT) {
+      const oldest = this.transcriptCache.keys().next().value
+      if (oldest === undefined) break
+      this.transcriptCache.delete(oldest)
+    }
+    this.transcriptCache.set(chatId, entries)
   }
 
   private loadTranscriptFromDisk(chatId: string) {
@@ -770,16 +862,14 @@ export class EventStore {
       const transcriptPath = this.transcriptPath(chatId)
       const payload = sourceEntries.map((entry) => JSON.stringify(entry)).join("\n")
       this.writeChain = this.writeChain.then(async () => {
-        await mkdir(this.transcriptsDir, { recursive: true })
+        await this.ensureTranscriptsDir()
         await writeFile(transcriptPath, `${payload}\n`, "utf8")
         const chat = this.state.chatsById.get(chatId)
         if (chat) {
           chat.hasMessages = true
           chat.updatedAt = Math.max(chat.updatedAt, createdAt)
         }
-        if (this.cachedTranscript?.chatId === chatId) {
-          this.cachedTranscript = { chatId, entries: cloneTranscriptEntries(sourceEntries) }
-        }
+        this.setCachedTranscript(chatId, cloneTranscriptEntries(sourceEntries))
       })
       await this.writeChain
     }
@@ -853,7 +943,12 @@ export class EventStore {
       if (chat.deletedAt || chat.archivedAt || protectedChatIds.has(chat.id)) continue
       if (now - chat.createdAt < maxAgeMs) continue
       if (chat.hasMessages) continue
-      if (this.getMessages(chat.id).length > 0) {
+      // Peek without inserting into the transcript cache — the prune sweep
+      // must not evict actively streaming chats.
+      const entries = this.transcriptCache.get(chat.id)
+        ?? this.legacyMessagesByChatId.get(chat.id)
+        ?? this.loadTranscriptFromDisk(chat.id)
+      if (entries.length > 0) {
         chat.hasMessages = true
         continue
       }
@@ -868,9 +963,7 @@ export class EventStore {
 
       const transcriptPath = this.transcriptPath(chat.id)
       await rm(transcriptPath, { force: true })
-      if (this.cachedTranscript?.chatId === chat.id) {
-        this.cachedTranscript = null
-      }
+      this.transcriptCache.delete(chat.id)
 
       prunedChatIds.push(chat.id)
     }
@@ -917,31 +1010,31 @@ export class EventStore {
     await this.append(this.chatsLogPath, event)
   }
 
+  async setChatDoneState(chatId: string, done: boolean) {
+    const chat = this.requireChat(chatId)
+    if (Boolean(chat.doneAt) === done) return
+    const event: ChatEvent = {
+      v: STORE_VERSION,
+      type: "chat_done_state_set",
+      timestamp: Date.now(),
+      chatId,
+      done,
+    }
+    await this.append(this.chatsLogPath, event)
+  }
+
   async appendMessage(chatId: string, entry: TranscriptEntry) {
     this.requireChat(chatId)
     const payload = `${JSON.stringify(entry)}\n`
     const transcriptPath = this.transcriptPath(chatId)
-    const queuedAt = performance.now()
     this.writeChain = this.writeChain.then(async () => {
-      const startedAt = performance.now()
-      const queueDelayMs = Number((startedAt - queuedAt).toFixed(1))
-      await mkdir(this.transcriptsDir, { recursive: true })
-      const beforeAppendAt = performance.now()
+      await this.ensureTranscriptsDir()
       await appendFile(transcriptPath, payload, "utf8")
-      const afterAppendAt = performance.now()
       this.applyMessageMetadata(chatId, entry)
-      if (this.cachedTranscript?.chatId === chatId) {
-        this.cachedTranscript.entries.push({ ...entry })
-      }
-      logSendToStartingProfile("event_store.append_message", {
-        chatId,
-        entryId: entry._id,
-        kind: entry.kind,
-        payloadBytes: payload.length,
-        queueDelayMs,
-        appendMs: Number((afterAppendAt - beforeAppendAt).toFixed(1)),
-        totalMs: Number((afterAppendAt - queuedAt).toFixed(1)),
-      })
+      // Deep clone via the already-serialized payload: the cached entry is
+      // byte-identical to what a cold disk read would produce, and callers
+      // that keep mutating their entry can't alias into the cache.
+      this.transcriptCache.get(chatId)?.push(JSON.parse(payload) as TranscriptEntry)
     })
     return this.writeChain
   }
@@ -1095,19 +1188,7 @@ export class EventStore {
   }
 
   getMessages(chatId: string) {
-    if (this.cachedTranscript?.chatId === chatId) {
-      return cloneTranscriptEntries(this.cachedTranscript.entries)
-    }
-
-    const legacyEntries = this.legacyMessagesByChatId.get(chatId)
-    if (legacyEntries) {
-      this.cachedTranscript = { chatId, entries: cloneTranscriptEntries(legacyEntries) }
-      return cloneTranscriptEntries(this.cachedTranscript.entries)
-    }
-
-    const entries = this.loadTranscriptFromDisk(chatId)
-    this.cachedTranscript = { chatId, entries }
-    return cloneTranscriptEntries(entries)
+    return cloneTranscriptEntries(this.getTranscriptEntries(chatId))
   }
 
   getQueuedMessages(chatId: string) {
@@ -1127,8 +1208,7 @@ export class EventStore {
       return { messages: [], hasOlder: false, olderCursor: null }
     }
 
-    const entries = this.getMessages(chatId)
-    const page = this.getMessagesPageFromEntries(entries, limit)
+    const page = this.getMessagesPageFromEntries(this.getTranscriptEntries(chatId), limit)
 
     return {
       messages: page.entries,
@@ -1143,8 +1223,7 @@ export class EventStore {
     }
 
     const beforeIndex = decodeCursor(beforeCursor)
-    const entries = this.getMessages(chatId)
-    const page = this.getMessagesPageFromEntries(entries, limit, beforeIndex)
+    const page = this.getMessagesPageFromEntries(this.getTranscriptEntries(chatId), limit, beforeIndex)
 
     return {
       messages: page.entries,
@@ -1173,10 +1252,6 @@ export class EventStore {
     return [...this.state.chatsById.values()]
       .filter((chat) => chat.projectId === projectId && !chat.deletedAt && !chat.archivedAt)
       .sort((a, b) => (b.lastMessageAt ?? b.updatedAt) - (a.lastMessageAt ?? a.updatedAt))
-  }
-
-  getChatCount(projectId: string) {
-    return this.listChatsByProject(projectId).length
   }
 
   async getLegacyTranscriptStats(): Promise<LegacyTranscriptStats> {
@@ -1247,7 +1322,7 @@ export class EventStore {
     const messageSets = [...this.legacyMessagesByChatId.entries()]
     onProgress?.(`${LOG_PREFIX} transcript migration: writing ${messageSets.length} per-chat transcript files`)
 
-    await mkdir(this.transcriptsDir, { recursive: true })
+    await this.ensureTranscriptsDir()
     const logEveryChat = messageSets.length <= 10
     for (let index = 0; index < messageSets.length; index += 1) {
       const [chatId, entries] = messageSets[index]
@@ -1263,7 +1338,7 @@ export class EventStore {
 
     this.clearLegacyTranscriptState()
     await this.compact()
-    this.cachedTranscript = null
+    this.transcriptCache.clear()
     onProgress?.(`${LOG_PREFIX} transcript migration complete`)
     return true
   }

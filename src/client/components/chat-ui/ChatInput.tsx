@@ -9,12 +9,13 @@ import {
   type ModelOptions,
   type ProviderCatalogEntry,
   normalizeClaudeContextWindow,
+  normalizeClaudeFastMode,
   normalizeCodexModelId,
   normalizeCodexReasoningEffort,
-  resolveClaudeContextWindowTokens,
+  resolveClaudeContextWindowMaxTokens,
 } from "../../../shared/types"
 import { assertNever } from "../../../shared/assert"
-import { Button, buttonVariants } from "../ui/button"
+import { Button } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
 import { cn } from "../../lib/utils"
@@ -128,6 +129,7 @@ interface Props {
   availableProviders: ProviderCatalogEntry[]
   contextWindowSnapshot?: ContextWindowSnapshot | null
   previousPrompt?: string | null
+  onEditModels?: () => void
 }
 
 export interface ChatInputHandle {
@@ -156,6 +158,7 @@ function withNormalizedContextWindow(
     modelOptions: {
       ...state.modelOptions,
       contextWindow: normalizeClaudeContextWindow(model, state.modelOptions.contextWindow),
+      fastMode: normalizeClaudeFastMode(model, state.modelOptions.fastMode),
     },
   }
 }
@@ -191,6 +194,13 @@ function getEffectiveComposerState(
         modelOptions: { ...providerDefaults.cursor.modelOptions },
         planMode: composerState.planMode,
       }
+    case "pi":
+      return {
+        provider: "pi",
+        model: providerDefaults.pi.model,
+        modelOptions: { ...providerDefaults.pi.modelOptions },
+        planMode: composerState.planMode,
+      }
     default:
       return assertNever(activeProvider)
   }
@@ -209,6 +219,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   availableProviders,
   contextWindowSnapshot = null,
   previousPrompt = null,
+  onEditModels,
 }, forwardedRef) {
   const {
     getDraft,
@@ -254,8 +265,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
 
     const claudeModelOptions = providerPrefs.modelOptions as Extract<ComposerState, { provider: "claude" }>["modelOptions"]
-    const stagedMaxTokens = resolveClaudeContextWindowTokens(
-      normalizeClaudeContextWindow(providerPrefs.model, claudeModelOptions.contextWindow),
+    const stagedMaxTokens = resolveClaudeContextWindowMaxTokens(
+      providerPrefs.model,
+      claudeModelOptions.contextWindow,
     )
     return overrideContextWindowMaxTokens(contextWindowSnapshot, stagedMaxTokens)
   }, [contextWindowSnapshot, providerPrefs.model, providerPrefs.modelOptions, providerPrefs.provider])
@@ -549,6 +561,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       modelOptions = { claude: { ...providerPrefs.modelOptions } }
     } else if (providerPrefs.provider === "cursor") {
       modelOptions = { cursor: { ...providerPrefs.modelOptions } }
+    } else if (providerPrefs.provider === "pi") {
+      modelOptions = { pi: { ...providerPrefs.modelOptions } }
     } else {
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }
@@ -730,30 +744,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               disabled={disabled}
               className="min-w-0 flex-1 text-base p-3 md:p-4 !pr-2 md:pl-6 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
             />
-            <label
-              aria-label="Add attachment"
-              className={cn(
-                buttonVariants({ variant: "ghost", size: "icon" }),
-                "relative md:hidden flex-shrink-0 mb-1 h-10 w-10 rounded-full text-muted-foreground hover:text-foreground",
-                disabled && "pointer-events-none opacity-50",
-              )}
-            >
-              <Paperclip className="h-5 w-5" />
-              <input
-                type="file"
-                multiple
-                disabled={disabled}
-                aria-label="Add attachment"
-                className="absolute inset-0 cursor-pointer opacity-0"
-                onChange={(event) => {
-                  const files = [...(event.target.files ?? [])]
-                  if (files.length > 0) {
-                    enqueueFiles(files)
-                  }
-                  event.target.value = ""
-                }}
-              />
-            </label>
             <Button
               type="button"
               onPointerDown={(event) => {
@@ -791,6 +781,31 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       <div className={cn("relative py-3 max-w-[840px] mx-auto", isStandalone && "p-5 pt-3")}>
         <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden flex flex-row">
           <div className="min-w-3" />
+          <label
+            aria-label="Add attachment"
+            className={cn(
+              "relative md:hidden shrink-0 self-center overflow-hidden mr-0.5 cursor-pointer",
+              "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md transition-colors text-muted-foreground [&>svg]:shrink-0 [&>span]:whitespace-nowrap hover:bg-muted/50",
+              disabled && "pointer-events-none opacity-70",
+            )}
+          >
+            <Paperclip className="h-3.5 w-3.5" />
+            <span>Attach</span>
+            <input
+              type="file"
+              multiple
+              disabled={disabled}
+              aria-label="Add attachment"
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])]
+                if (files.length > 0) {
+                  enqueueFiles(files)
+                }
+                event.target.value = ""
+              }}
+            />
+          </label>
           <ChatPreferenceControls
             availableProviders={availableProviders}
             selectedProvider={selectedProvider}
@@ -816,18 +831,20 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 case "codexReasoningEffort":
                   setReasoningEffort(change.effort)
                   break
+                case "piReasoningEffort":
+                  setReasoningEffort(change.effort)
+                  break
                 case "contextWindow":
                   setClaudeContextWindow(change.contextWindow)
                   break
                 case "fastMode":
                   updateComposerState(
-                    (state) => state.provider === "claude"
-                      ? state
-                      : ({ ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } } as ComposerState)
+                    (state) => ({ ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } } as ComposerState)
                   )
                   break
               }
             }}
+            onEditModels={onEditModels}
             planMode={providerPrefs.planMode}
             onPlanModeChange={setEffectivePlanMode}
             includePlanMode={showPlanMode}

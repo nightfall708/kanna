@@ -18,7 +18,7 @@ describe("migrateChatPreferencesState", () => {
       providerDefaults: {
         claude: {
           model: "claude-opus-4-8",
-          modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+          modelOptions: { reasoningEffort: "max", contextWindow: "1m", fastMode: false },
           planMode: false,
         },
       },
@@ -26,7 +26,7 @@ describe("migrateChatPreferencesState", () => {
 
     expect(migrated.providerDefaults.claude).toEqual({
       model: "claude-opus-4-8",
-      modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+      modelOptions: { reasoningEffort: "max", contextWindow: "1m", fastMode: false },
       planMode: false,
     })
   })
@@ -37,7 +37,7 @@ describe("migrateChatPreferencesState", () => {
       providerDefaults: {
         claude: {
           model: "opus",
-          modelOptions: { reasoningEffort: "low", contextWindow: "1m" },
+          modelOptions: { reasoningEffort: "low", contextWindow: "1m", fastMode: false },
           planMode: true,
         },
         codex: {
@@ -49,7 +49,7 @@ describe("migrateChatPreferencesState", () => {
       composerState: {
         provider: "claude",
         model: "sonnet",
-        modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+        modelOptions: { reasoningEffort: "max", contextWindow: "1m", fastMode: false },
         planMode: false,
       },
     })
@@ -59,7 +59,7 @@ describe("migrateChatPreferencesState", () => {
       providerDefaults: {
         claude: {
           model: "claude-opus-4-8",
-          modelOptions: { reasoningEffort: "low", contextWindow: "1m" },
+          modelOptions: { reasoningEffort: "low", contextWindow: "1m", fastMode: false },
           planMode: true,
         },
         codex: {
@@ -72,24 +72,32 @@ describe("migrateChatPreferencesState", () => {
           modelOptions: { fastMode: false },
           planMode: false,
         },
+        pi: {
+          model: "~anthropic/claude-fable-latest",
+          modelOptions: { reasoningEffort: "medium" },
+          planMode: false,
+        },
       },
       chatStates: {},
       legacyComposerState: {
         provider: "claude",
         model: "claude-sonnet-4-6",
-        modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
+        modelOptions: { reasoningEffort: "high", contextWindow: "1m", fastMode: false },
         planMode: false,
       },
     })
   })
 
-  test("drops unsupported Claude context window selections during migration", () => {
+  // Models without a context window selector store the default *preference*
+  // (the effective window is clamped at usage time via resolveClaudeContextWindow),
+  // so a stale clamp never carries over when switching to a supporting model.
+  test("resets Claude context window to the default preference for unsupported models during migration", () => {
     const migrated = migrateChatPreferencesState({
       defaultProvider: "last_used",
       providerDefaults: {
         claude: {
           model: "haiku",
-          modelOptions: { reasoningEffort: "low", contextWindow: "1m" as never },
+          modelOptions: { reasoningEffort: "low", contextWindow: "1m" as never, fastMode: false },
           planMode: false,
         },
       },
@@ -97,17 +105,17 @@ describe("migrateChatPreferencesState", () => {
         chatA: {
           provider: "claude",
           model: "haiku",
-          modelOptions: { reasoningEffort: "high", contextWindow: "1m" as never },
+          modelOptions: { reasoningEffort: "high", contextWindow: "1m" as never, fastMode: false },
           planMode: false,
         },
       },
     })
 
-    expect(migrated.providerDefaults.claude.modelOptions).toEqual({ reasoningEffort: "low", contextWindow: "200k" })
+    expect(migrated.providerDefaults.claude.modelOptions).toEqual({ reasoningEffort: "low", contextWindow: "1m", fastMode: false })
     expect(migrated.chatStates.chatA).toEqual({
       provider: "claude",
       model: "claude-haiku-4-5-20251001",
-      modelOptions: { reasoningEffort: "high", contextWindow: "200k" },
+      modelOptions: { reasoningEffort: "high", contextWindow: "1m", fastMode: false },
       planMode: false,
     })
   })
@@ -271,7 +279,7 @@ describe("chat preference store", () => {
     store.setComposerState("chat-a", {
       provider: "claude",
       model: "claude-sonnet-4-6",
-      modelOptions: { reasoningEffort: "low", contextWindow: "1m" },
+      modelOptions: { reasoningEffort: "low", contextWindow: "1m", fastMode: false },
       planMode: false,
     })
     store.setComposerState("chat-b", {
@@ -285,7 +293,7 @@ describe("chat preference store", () => {
     expect(store.getComposerState("chat-a")).toEqual({
       provider: "claude",
       model: "claude-sonnet-4-6",
-      modelOptions: { reasoningEffort: "low", contextWindow: "1m" },
+      modelOptions: { reasoningEffort: "low", contextWindow: "1m", fastMode: false },
       planMode: true,
     })
     expect(store.getComposerState("chat-b")).toEqual({
@@ -296,21 +304,23 @@ describe("chat preference store", () => {
     })
   })
 
-  test("switching Claude chat model clears unsupported context window values", () => {
+  test("switching Claude chat model keeps the context window preference without clamping", () => {
     const store = useChatPreferencesStore.getState()
 
     store.setComposerState("chat-a", {
       provider: "claude",
       model: "claude-opus-4-8",
-      modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
+      modelOptions: { reasoningEffort: "high", contextWindow: "1m", fastMode: false },
       planMode: false,
     })
     store.setChatComposerModel("chat-a", "haiku")
 
+    // Stored preference stays "1m" — haiku is clamped to the standard window
+    // at usage time, and switching back to Opus resumes the 1m preference.
     expect(store.getComposerState("chat-a")).toEqual({
       provider: "claude",
       model: "claude-haiku-4-5-20251001",
-      modelOptions: { reasoningEffort: "high", contextWindow: "200k" },
+      modelOptions: { reasoningEffort: "high", contextWindow: "1m", fastMode: false },
       planMode: false,
     })
   })
@@ -398,7 +408,7 @@ describe("chat preference store", () => {
         ...INITIAL_STATE.providerDefaults,
         claude: {
           model: "claude-opus-4-8",
-          modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+          modelOptions: { reasoningEffort: "max", contextWindow: "1m", fastMode: false },
           planMode: true,
         },
       },
@@ -410,7 +420,7 @@ describe("chat preference store", () => {
     expect(useChatPreferencesStore.getState().getComposerState("chat-a")).toEqual({
       provider: "claude",
       model: "claude-opus-4-8",
-      modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+      modelOptions: { reasoningEffort: "max", contextWindow: "1m", fastMode: false },
       planMode: true,
     })
   })
@@ -423,7 +433,7 @@ describe("chat preference store", () => {
       ...INITIAL_STATE.providerDefaults,
       claude: {
         model: "claude-opus-4-8",
-        modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+        modelOptions: { reasoningEffort: "max", contextWindow: "1m", fastMode: false },
         planMode: true,
       },
     })
@@ -431,7 +441,7 @@ describe("chat preference store", () => {
     expect(useChatPreferencesStore.getState().getComposerState(NEW_CHAT_COMPOSER_ID)).toEqual({
       provider: "claude",
       model: "claude-opus-4-8",
-      modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+      modelOptions: { reasoningEffort: "max", contextWindow: "1m", fastMode: false },
       planMode: true,
     })
   })
@@ -444,7 +454,7 @@ describe("chat preference store", () => {
       ...INITIAL_STATE.providerDefaults,
       claude: {
         model: "claude-opus-4-8",
-        modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+        modelOptions: { reasoningEffort: "max", contextWindow: "1m", fastMode: false },
         planMode: true,
       },
     })
@@ -452,7 +462,7 @@ describe("chat preference store", () => {
     expect(useChatPreferencesStore.getState().getComposerState("chat-a")).toEqual({
       provider: "claude",
       model: "claude-opus-4-8",
-      modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+      modelOptions: { reasoningEffort: "max", contextWindow: "1m", fastMode: false },
       planMode: true,
     })
   })
@@ -470,7 +480,7 @@ describe("chat preference store", () => {
       ...INITIAL_STATE.providerDefaults,
       claude: {
         model: "claude-opus-4-8",
-        modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+        modelOptions: { reasoningEffort: "max", contextWindow: "1m", fastMode: false },
         planMode: true,
       },
     })

@@ -90,6 +90,19 @@ export function parseLocalFileLink(target: string | undefined | null): ParsedLoc
   return parseAbsoluteFileTarget(trimmed)
 }
 
+/**
+ * Contract the home directory prefix to "~" for display.
+ * e.g., "/Users/jake/Projects/my-app" → "~/Projects/my-app"
+ * e.g., "/home/jake" → "~"
+ */
+export function formatPathWithTilde(path: string) {
+  const homeMatch = path.match(/^\/(?:Users|home)\/[^/]+(?=\/|$)/)
+  const homePrefix = homeMatch?.[0]
+  if (homePrefix && path === homePrefix) return "~"
+  if (homePrefix && path.startsWith(`${homePrefix}/`)) return `~/${path.slice(homePrefix.length + 1)}`
+  return path
+}
+
 export function shouldOpenLocalFileLinkInEditor(filePath: string) {
   const fileName = filePath.split(/[\\/]/).pop() ?? filePath
   if (EDITOR_OPEN_FILENAMES.has(fileName)) return true
@@ -114,17 +127,4 @@ export function stripWorkspacePath(path: string | undefined, localPath: string |
   }
   // Fallback to sandbox path
   return path.replace(/^\/home\/user\/workspace\//, "")
-}
-
-/**
- * Strip outputs prefix for API paths.
- * e.g., "/home/user/workspace/outputs/foo/bar.csv" → "/foo/bar.csv"
- */
-export function stripOutputsPath(path: string | undefined, localPath: string | undefined | null): string | undefined {
-  if (!path) return undefined
-  if (localPath) {
-    const outputsPrefix = `${localPath}/outputs`
-    if (path.startsWith(outputsPrefix)) return path.slice(outputsPrefix.length)
-  }
-  return path.replace(/^\/home\/user\/workspace\/outputs/, "") || undefined
 }

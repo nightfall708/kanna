@@ -4,30 +4,20 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getSettingsFilePath, LOG_PREFIX } from "../shared/branding"
+import { formatDisplayPath } from "./paths"
 import {
-  DEFAULT_CLAUDE_MODEL_OPTIONS,
-  DEFAULT_CODEX_MODEL_OPTIONS,
-  DEFAULT_CURSOR_MODEL_OPTIONS,
-  isClaudeReasoningEffort,
-  isCodexReasoningEffort,
-  normalizeClaudeContextWindow,
-  normalizeClaudeModelId,
-  normalizeCodexModelId,
-  normalizeCodexReasoningEffort,
-  normalizeCursorModelId,
-  supportsClaudeMaxReasoningEffort,
+  mergeProviderDefaultsPatch,
+  normalizeProviderDefaults,
+  type ProviderPreferenceInput,
+} from "../shared/provider-preferences"
+import {
   type AppSettingsPatch,
   type AppSettingsSnapshot,
   type AppThemePreference,
-  type ChatProviderPreferences,
   type ChatSoundId,
   type ChatSoundPreference,
-  type ClaudeModelOptions,
-  type CodexModelOptions,
-  type CursorModelOptions,
   type DefaultProviderPreference,
   type EditorPreset,
-  type ProviderPreference,
 } from "../shared/types"
 
 interface AppSettingsFile {
@@ -47,11 +37,13 @@ interface AppSettingsFile {
   }
   defaultProvider?: unknown
   providerDefaults?: {
-    claude?: Partial<ProviderPreference<Partial<ClaudeModelOptions>>> & { effort?: unknown }
-    codex?: Partial<ProviderPreference<Partial<CodexModelOptions>>> & { effort?: unknown }
-    cursor?: Partial<ProviderPreference<Partial<CursorModelOptions>>>
+    claude?: ProviderPreferenceInput
+    codex?: ProviderPreferenceInput
+    cursor?: ProviderPreferenceInput
+    pi?: ProviderPreferenceInput
   }
   transcriptAutoScroll?: unknown
+  boardAutoReturn?: unknown
 }
 
 interface AppSettingsState extends AppSettingsSnapshot {
@@ -74,15 +66,6 @@ const DEFAULT_EDITOR_PRESET: EditorPreset = "cursor"
 const DEFAULT_CHAT_SOUND_PREFERENCE: ChatSoundPreference = "always"
 const DEFAULT_CHAT_SOUND_ID: ChatSoundId = "funk"
 
-function formatDisplayPath(filePath: string) {
-  const homePath = homedir()
-  if (filePath === homePath) return "~"
-  if (filePath.startsWith(`${homePath}${path.sep}`)) {
-    return `~${filePath.slice(homePath.length)}`
-  }
-  return filePath
-}
-
 function createAnalyticsUserId() {
   return `anon_${randomUUID()}`
 }
@@ -99,26 +82,6 @@ function getDefaultEditorCommandTemplate(preset: EditorPreset) {
     case "cursor":
     default:
       return "cursor {path}"
-  }
-}
-
-function createDefaultProviderDefaults(): ChatProviderPreferences {
-  return {
-    claude: {
-      model: "claude-opus-4-8",
-      modelOptions: { ...DEFAULT_CLAUDE_MODEL_OPTIONS },
-      planMode: false,
-    },
-    codex: {
-      model: "gpt-5.6-sol",
-      modelOptions: { ...DEFAULT_CODEX_MODEL_OPTIONS },
-      planMode: false,
-    },
-    cursor: {
-      model: "composer-2.5",
-      modelOptions: { ...DEFAULT_CURSOR_MODEL_OPTIONS },
-      planMode: false,
-    },
   }
 }
 
@@ -154,7 +117,9 @@ function normalizeChatSoundId(value: unknown): ChatSoundId {
 }
 
 function normalizeDefaultProvider(value: unknown): DefaultProviderPreference {
-  return value === "claude" || value === "codex" || value === "cursor" || value === "last_used" ? value : "last_used"
+  return value === "claude" || value === "codex" || value === "cursor" || value === "pi" || value === "last_used"
+    ? value
+    : "last_used"
 }
 
 function normalizeEditorPreset(value: unknown): EditorPreset {
@@ -166,78 +131,6 @@ function normalizeEditorPreset(value: unknown): EditorPreset {
 function normalizeEditorCommandTemplate(value: unknown, preset: EditorPreset) {
   const trimmed = typeof value === "string" ? value.trim() : ""
   return trimmed || getDefaultEditorCommandTemplate(preset)
-}
-
-function normalizeClaudePreference(value?: {
-  model?: unknown
-  effort?: unknown
-  modelOptions?: Partial<Record<keyof ClaudeModelOptions, unknown>>
-  planMode?: unknown
-}): ProviderPreference<ClaudeModelOptions> {
-  const model = normalizeClaudeModelId(typeof value?.model === "string" ? value.model : undefined)
-  const reasoningEffort = value?.modelOptions?.reasoningEffort
-  const normalizedEffort = isClaudeReasoningEffort(reasoningEffort)
-    ? reasoningEffort
-    : isClaudeReasoningEffort(value?.effort)
-      ? value.effort
-      : DEFAULT_CLAUDE_MODEL_OPTIONS.reasoningEffort
-
-  return {
-    model,
-    modelOptions: {
-      reasoningEffort: !supportsClaudeMaxReasoningEffort(model) && normalizedEffort === "max" ? "high" : normalizedEffort,
-      contextWindow: normalizeClaudeContextWindow(model, value?.modelOptions?.contextWindow),
-    },
-    planMode: value?.planMode === true,
-  }
-}
-
-function normalizeCodexPreference(value?: {
-  model?: unknown
-  effort?: unknown
-  modelOptions?: Partial<Record<keyof CodexModelOptions, unknown>>
-  planMode?: unknown
-}): ProviderPreference<CodexModelOptions> {
-  const model = normalizeCodexModelId(typeof value?.model === "string" ? value.model : undefined)
-  const reasoningEffort = value?.modelOptions?.reasoningEffort
-  return {
-    model,
-    modelOptions: {
-      reasoningEffort: normalizeCodexReasoningEffort(
-        model,
-        isCodexReasoningEffort(reasoningEffort) ? reasoningEffort : value?.effort,
-      ),
-      fastMode: typeof value?.modelOptions?.fastMode === "boolean"
-        ? value.modelOptions.fastMode
-        : DEFAULT_CODEX_MODEL_OPTIONS.fastMode,
-    },
-    planMode: value?.planMode === true,
-  }
-}
-
-function normalizeCursorPreference(value?: {
-  model?: unknown
-  modelOptions?: Partial<Record<keyof CursorModelOptions, unknown>>
-  planMode?: unknown
-}): ProviderPreference<CursorModelOptions> {
-  return {
-    model: normalizeCursorModelId(typeof value?.model === "string" ? value.model : undefined),
-    modelOptions: {
-      fastMode: typeof value?.modelOptions?.fastMode === "boolean"
-        ? value.modelOptions.fastMode
-        : DEFAULT_CURSOR_MODEL_OPTIONS.fastMode,
-    },
-    planMode: false,
-  }
-}
-
-function normalizeProviderDefaults(value: AppSettingsFile["providerDefaults"] | undefined): ChatProviderPreferences {
-  const defaults = createDefaultProviderDefaults()
-  return {
-    claude: normalizeClaudePreference(value?.claude ?? defaults.claude),
-    codex: normalizeCodexPreference(value?.codex ?? defaults.codex),
-    cursor: normalizeCursorPreference(value?.cursor ?? defaults.cursor),
-  }
 }
 
 function toFilePayload(state: AppSettingsState) {
@@ -253,6 +146,7 @@ function toFilePayload(state: AppSettingsState) {
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
     transcriptAutoScroll: state.transcriptAutoScroll,
+    boardAutoReturn: state.boardAutoReturn,
   }
 }
 
@@ -268,6 +162,7 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
     transcriptAutoScroll: state.transcriptAutoScroll,
+    boardAutoReturn: state.boardAutoReturn,
     warning: state.warning,
     filePathDisplay: state.filePathDisplay,
   }
@@ -300,6 +195,11 @@ function normalizeAppSettings(
     warnings.push("analyticsUserId must be a non-empty string")
   }
 
+  const boardAutoReturn = source?.boardAutoReturn === true
+  if (source?.boardAutoReturn !== undefined && typeof source.boardAutoReturn !== "boolean") {
+    warnings.push("boardAutoReturn must be a boolean")
+  }
+
   const editorPreset = normalizeEditorPreset(source?.editor?.preset)
   const state: AppSettingsState = {
     analyticsEnabled,
@@ -319,6 +219,7 @@ function normalizeAppSettings(
     defaultProvider: normalizeDefaultProvider(source?.defaultProvider),
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
     transcriptAutoScroll: typeof source?.transcriptAutoScroll === "boolean" ? source.transcriptAutoScroll : true,
+    boardAutoReturn,
     warning: null,
     filePathDisplay: formatDisplayPath(filePath),
   }
@@ -348,6 +249,7 @@ function toComparablePayload(source: AppSettingsFile) {
     defaultProvider: source.defaultProvider,
     providerDefaults: source.providerDefaults,
     transcriptAutoScroll: source.transcriptAutoScroll,
+    boardAutoReturn: source.boardAutoReturn,
   }
 }
 
@@ -363,32 +265,7 @@ function applyPatch(state: AppSettingsState, patch: AppSettingsPatch): AppSettin
       ...state.editor,
       ...patch.editor,
     },
-    providerDefaults: {
-      claude: {
-        ...state.providerDefaults.claude,
-        ...patch.providerDefaults?.claude,
-        modelOptions: {
-          ...state.providerDefaults.claude.modelOptions,
-          ...patch.providerDefaults?.claude?.modelOptions,
-        },
-      },
-      codex: {
-        ...state.providerDefaults.codex,
-        ...patch.providerDefaults?.codex,
-        modelOptions: {
-          ...state.providerDefaults.codex.modelOptions,
-          ...patch.providerDefaults?.codex?.modelOptions,
-        },
-      },
-      cursor: {
-        ...state.providerDefaults.cursor,
-        ...patch.providerDefaults?.cursor,
-        modelOptions: {
-          ...state.providerDefaults.cursor.modelOptions,
-          ...patch.providerDefaults?.cursor?.modelOptions,
-        },
-      },
-    },
+    providerDefaults: mergeProviderDefaultsPatch(state.providerDefaults, patch.providerDefaults),
   }, state.filePathDisplay).payload
 }
 

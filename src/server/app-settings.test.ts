@@ -39,7 +39,8 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
         model: "claude-opus-4-8",
         modelOptions: {
           reasoningEffort: "high",
-          contextWindow: "200k",
+          contextWindow: "1m",
+          fastMode: false,
         },
         planMode: false,
       },
@@ -58,8 +59,16 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
         },
         planMode: false,
       },
+      pi: {
+        model: "~anthropic/claude-fable-latest",
+        modelOptions: {
+          reasoningEffort: "medium",
+        },
+        planMode: false,
+      },
     },
     transcriptAutoScroll: true,
+    boardAutoReturn: false,
     warning: null,
     filePathDisplay: filePath,
     ...overrides,
