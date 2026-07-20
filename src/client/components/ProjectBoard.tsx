@@ -10,6 +10,7 @@ import {
   type ProjectBoardColumnId,
 } from "../lib/projectBoard"
 import { formatSidebarAgeLabel } from "../lib/formatters"
+import { BOARD_PROJECT_FILTERS_STORAGE_KEY } from "../lib/storageKeys"
 import { cn } from "../lib/utils"
 import { groupProjectsByRecency } from "./LocalDev"
 import { PROVIDER_ICONS } from "./chat-ui/ChatPreferenceControls"
@@ -55,6 +56,26 @@ interface ProjectBoardProps {
 
 function getBoardCardViewTransitionName(chatId: string) {
   return `board-card-${chatId.replace(/[^a-zA-Z0-9_-]/g, "-")}`
+}
+
+function readStoredBoardProjectFilters(): ReadonlySet<string> {
+  if (typeof window === "undefined") return new Set()
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(BOARD_PROJECT_FILTERS_STORAGE_KEY) ?? "[]")
+    if (!Array.isArray(parsed)) return new Set()
+    return new Set(parsed.filter((value): value is string => typeof value === "string"))
+  } catch {
+    return new Set()
+  }
+}
+
+function persistBoardProjectFilters(projectIds: ReadonlySet<string>) {
+  if (typeof window === "undefined") return
+  if (projectIds.size === 0) {
+    window.localStorage.removeItem(BOARD_PROJECT_FILTERS_STORAGE_KEY)
+    return
+  }
+  window.localStorage.setItem(BOARD_PROJECT_FILTERS_STORAGE_KEY, JSON.stringify([...projectIds]))
 }
 
 function getBoardFilterPillClass(active: boolean) {
@@ -370,11 +391,19 @@ export function ProjectBoard({
     )
   }, [entries, localProjects])
 
-  // Selected project filters; empty means "All".
-  const [selectedProjectIds, setSelectedProjectIds] = useState<ReadonlySet<string>>(new Set())
+  // Selected project filters; empty means "All". Persisted so returning to
+  // the board keeps the same filters.
+  const [selectedProjectIds, setSelectedProjectIds] = useState<ReadonlySet<string>>(readStoredBoardProjectFilters)
+
+  useEffect(() => {
+    persistBoardProjectFilters(selectedProjectIds)
+  }, [selectedProjectIds])
 
   // Drop selections for projects that no longer have cards on the board.
+  // Skipped while the board is empty (e.g. before the first snapshot lands)
+  // so a page load doesn't wipe the restored selection.
   useEffect(() => {
+    if (boardProjects.length === 0) return
     setSelectedProjectIds((current) => {
       if (current.size === 0) return current
       const stillOnBoard = [...current].filter((projectId) =>
