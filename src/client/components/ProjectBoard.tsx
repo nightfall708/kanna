@@ -283,8 +283,8 @@ export function ProjectBoard({
 
       running.splice(0, running.length, ...keep(running))
       waiting.splice(0, waiting.length, ...keep(waiting))
-      done.push(...moved.map((entry) => ({ ...entry, columnId: "done" as const })))
-      done.sort((left, right) => right.timestamp - left.timestamp)
+      // Done is ordered by when chats entered it, so just-marked chats go on top.
+      done.unshift(...moved.map((entry) => ({ ...entry, columnId: "done" as const })))
     }
 
     const columns = { running, waiting, done }
@@ -350,17 +350,25 @@ export function ProjectBoard({
     done: columns.done.map((entry) => entry.chat.chatId),
   }), [columns])
 
-  function handleMove({ itemId, fromColumn, toColumn }: KanbanMoveEvent) {
-    if (toColumn !== "done" || fromColumn === "done") return
-    const entry = entryByChatId.get(itemId)
-    if (!entry || entry.archived) return
-    setPendingDoneChatIds((current) => new Set([...current, itemId]))
+  function markEntryDone(entry: ProjectBoardChat) {
+    if (entry.columnId === "done" || entry.archived) return
+    setPendingDoneChatIds((current) => new Set([...current, entry.chat.chatId]))
     onMarkChatDone(entry.chat)
   }
 
+  function handleMove({ itemId, fromColumn, toColumn }: KanbanMoveEvent) {
+    if (toColumn !== "done" || fromColumn === "done") return
+    const entry = entryByChatId.get(itemId)
+    if (!entry) return
+    markEntryDone(entry)
+  }
+
   return (
-    <Kanban columns={kanbanColumns} onMove={handleMove} className="overflow-x-auto pb-2">
-      <div className="grid min-w-[48rem] grid-cols-3 gap-2">
+    // The board fills the space under the page header; each column scrolls its
+    // own card list. The horizontal scroller is full-bleed (gutters live inside
+    // the scroll content) so columns run edge to edge on narrow screens.
+    <Kanban columns={kanbanColumns} onMove={handleMove} className="flex-1 min-h-0 overflow-x-auto">
+      <div className="grid h-full min-w-[48rem] grid-cols-3 grid-rows-[minmax(0,1fr)] gap-2 px-4 pb-4 sm:px-6">
         {BOARD_COLUMNS.map((column) => (
           <KanbanColumn
             key={column.id}
@@ -368,19 +376,19 @@ export function ProjectBoard({
             droppable={column.id === "done"}
             aria-labelledby={`project-board-${column.id}`}
             className={cn(
-              "min-w-0 rounded-2xl p-2 transition-colors",
+              "min-w-0 min-h-0 rounded-2xl p-2 transition-colors",
               "data-[drop-target]:bg-muted/40 data-[drop-target]:outline-dashed data-[drop-target]:outline-1 data-[drop-target]:-outline-offset-1 data-[drop-target]:outline-border",
               "data-[over]:bg-muted data-[over]:outline-primary/40"
             )}
           >
-            <div className="mb-2 flex h-8 items-center gap-2 px-2">
+            <div className="mb-2 flex h-8 shrink-0 items-center gap-2 px-2">
               <column.icon className={cn("size-4", column.iconClassName)} />
               <h2 id={`project-board-${column.id}`} className="text-sm font-medium text-foreground">
                 {column.title}
               </h2>
               <span className="text-sm tabular-nums text-muted-foreground">{columns[column.id].length}</span>
             </div>
-            <div className="flex flex-1 flex-col gap-2">
+            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain">
               {columns[column.id].length > 0 ? columns[column.id].map((entry) => (
                 <KanbanItem
                   key={entry.chat.chatId}
@@ -399,6 +407,7 @@ export function ProjectBoard({
                     onShare={() => onShareChat(entry.chat.chatId)}
                     onOpenInFinder={() => onOpenChatInFinder(entry.chat.localPath)}
                     onFork={() => onForkChat(entry.chat)}
+                    onMarkDone={column.id === "done" ? undefined : () => markEntryDone(entry)}
                     onArchive={() => onArchiveChat(entry.chat)}
                     onDelete={() => onDeleteChat(entry.chat)}
                   >

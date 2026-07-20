@@ -27,6 +27,7 @@ describe("ChatRow", () => {
         onShareChat={() => undefined}
         onOpenInFinder={() => undefined}
         onForkChat={() => undefined}
+        onMarkChatDone={() => undefined}
         onArchiveChat={() => undefined}
         onDeleteChat={() => undefined}
       />
@@ -46,6 +47,7 @@ describe("ChatRow", () => {
         onShareChat={() => undefined}
         onOpenInFinder={() => undefined}
         onForkChat={() => undefined}
+        onMarkChatDone={() => undefined}
         onArchiveChat={() => undefined}
         onDeleteChat={() => undefined}
       />
@@ -65,6 +67,7 @@ describe("ChatRow", () => {
         onShareChat={() => undefined}
         onOpenInFinder={() => undefined}
         onForkChat={() => undefined}
+        onMarkChatDone={() => undefined}
         onArchiveChat={() => undefined}
         onDeleteChat={() => undefined}
       />
@@ -87,6 +90,7 @@ describe("ChatRow", () => {
         onShareChat={() => undefined}
         onOpenInFinder={() => undefined}
         onForkChat={() => undefined}
+        onMarkChatDone={() => undefined}
         onArchiveChat={() => undefined}
         onDeleteChat={() => undefined}
       />
@@ -97,7 +101,7 @@ describe("ChatRow", () => {
     expect(html).not.toContain(">1m<")
   })
 
-  test("renders a fork action next to the archive action when the chat can fork", () => {
+  test("renders a fork action next to the mark-done action when the chat can fork", () => {
     const html = renderToStaticMarkup(
       <ChatRow
         chat={{ ...baseChat, canFork: true }}
@@ -108,12 +112,13 @@ describe("ChatRow", () => {
         onShareChat={() => undefined}
         onOpenInFinder={() => undefined}
         onForkChat={() => undefined}
+        onMarkChatDone={() => undefined}
         onArchiveChat={() => undefined}
         onDeleteChat={() => undefined}
       />
     )
 
     expect(html).toContain("Fork chat")
-    expect(html).toContain("Archive chat")
+    expect(html).toContain("Mark done")
   })
 })

@@ -704,6 +704,8 @@ export interface SidebarChatRow {
   unread: boolean
   /** User marked the chat done (board Done column). Cleared when a new turn starts. */
   done?: boolean
+  /** When the chat was marked done. Set iff `done` is true. */
+  doneAt?: number
   localPath: string
   provider: AgentProvider | null
   lastMessageAt?: number

@@ -32,35 +32,33 @@ export function BoardPage() {
 
   return (
     <div className="flex-1 flex flex-col min-w-0 relative">
-      <div className="flex-1 flex flex-col min-w-0 bg-background overflow-y-auto">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 bg-background">
         <PageHeader
           icon={SquareKanban}
           title="Board"
           subtitle="Conversations across your projects from the last 30 days."
         />
-        <div className="w-full px-6 pb-12">
-          <ProjectBoard
-            data={state.sidebarData}
-            socket={state.socket}
-            animateMove={boardMove}
-            onOpenChat={(chatId, archived, columnId) => {
-              if (archived) {
-                void state.handleOpenArchivedChat(chatId)
-                return
-              }
-              navigate(`/chat/${chatId}`, { state: { boardOrigin: columnId } })
-            }}
-            onMarkChatDone={(chat) => {
-              void state.socket.command({ type: "chat.setDone", chatId: chat.chatId, done: true }).catch(() => undefined)
-            }}
-            onRenameChat={(chat) => void state.handleRenameChat(chat)}
-            onShareChat={(chatId) => void state.handleShareChat(chatId)}
-            onForkChat={(chat) => void state.handleForkChat(chat)}
-            onArchiveChat={(chat) => void state.handleArchiveChat(chat)}
-            onDeleteChat={(chat) => void state.handleDeleteChat(chat)}
-            onOpenChatInFinder={(localPath) => void state.handleOpenExternalPath("open_finder", localPath)}
-          />
-        </div>
+        <ProjectBoard
+          data={state.sidebarData}
+          socket={state.socket}
+          animateMove={boardMove}
+          onOpenChat={(chatId, archived, columnId) => {
+            if (archived) {
+              void state.handleOpenArchivedChat(chatId)
+              return
+            }
+            navigate(`/chat/${chatId}`, { state: { boardOrigin: columnId } })
+          }}
+          onMarkChatDone={(chat) => {
+            void state.socket.command({ type: "chat.setDone", chatId: chat.chatId, done: true }).catch(() => undefined)
+          }}
+          onRenameChat={(chat) => void state.handleRenameChat(chat)}
+          onShareChat={(chatId) => void state.handleShareChat(chatId)}
+          onForkChat={(chat) => void state.handleForkChat(chat)}
+          onArchiveChat={(chat) => void state.handleArchiveChat(chat)}
+          onDeleteChat={(chat) => void state.handleDeleteChat(chat)}
+          onOpenChatInFinder={(localPath) => void state.handleOpenExternalPath("open_finder", localPath)}
+        />
       </div>
     </div>
   )

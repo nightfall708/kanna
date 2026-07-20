@@ -230,6 +230,9 @@ function KannaLayout() {
   const handleSidebarArchiveChat = useCallback((chat: Parameters<typeof state.handleArchiveChat>[0]) => {
     void state.handleArchiveChat(chat)
   }, [state.handleArchiveChat])
+  const handleSidebarMarkChatDone = useCallback((chat: Parameters<typeof state.handleMarkChatDone>[0]) => {
+    void state.handleMarkChatDone(chat)
+  }, [state.handleMarkChatDone])
   const handleOpenArchivedChat = useCallback((chatId: string) => {
     void state.handleOpenArchivedChat(chatId)
   }, [state.handleOpenArchivedChat])
@@ -273,6 +276,7 @@ function KannaLayout() {
       keybindings={state.keybindings}
       onRenameChat={handleSidebarRenameChat}
       onShareChat={handleSidebarShareChat}
+      onMarkChatDone={handleSidebarMarkChatDone}
       onArchiveChat={handleSidebarArchiveChat}
       onOpenArchivedChat={handleOpenArchivedChat}
       onDeleteChat={handleSidebarDeleteChat}
@@ -292,6 +296,7 @@ function KannaLayout() {
     handleSidebarCopyPath,
     handleSidebarCreateChat,
     handleSidebarArchiveChat,
+    handleSidebarMarkChatDone,
     handleSidebarDeleteChat,
     handleOpenArchivedChat,
     handleSidebarForkChat,

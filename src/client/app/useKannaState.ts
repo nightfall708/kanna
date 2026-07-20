@@ -159,6 +159,7 @@ export interface KannaState {
   handleRenameProject: (projectId: string, sidebarTitle: string | undefined, realTitle: string) => Promise<void>
   handleShareChat: (chatId?: string | null) => Promise<void>
   handleArchiveChat: (chat: SidebarChatRow) => Promise<void>
+  handleMarkChatDone: (chat: SidebarChatRow) => Promise<void>
   handleOpenArchivedChat: (chatId: string) => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
   handleHideProject: (projectId: string) => Promise<void>
@@ -689,6 +690,15 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [activeChatId, navigate, sidebarProjectGroups, socket])
 
+  const handleMarkChatDone = useCallback(async (chat: SidebarChatRow) => {
+    try {
+      await socket.command({ type: "chat.setDone", chatId: chat.chatId, done: true })
+      setCommandError(null)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+    }
+  }, [socket])
+
   const handleOpenArchivedChat = useCallback(async (chatId: string) => {
     try {
       setPendingChatId(chatId)
@@ -846,6 +856,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleRenameProject,
     handleShareChat,
     handleArchiveChat,
+    handleMarkChatDone,
     handleOpenArchivedChat,
     handleDeleteChat,
     handleHideProject,

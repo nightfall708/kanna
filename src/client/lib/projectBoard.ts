@@ -45,6 +45,10 @@ function isWithinProjectBoardWindow(timestamp: number, nowMs: number) {
   return Math.max(0, nowMs - timestamp) < PROJECT_BOARD_WINDOW_MS
 }
 
+function getDoneColumnTimestamp(entry: ProjectBoardChat) {
+  return entry.chat.doneAt ?? entry.timestamp
+}
+
 export function getProjectBoardColumns(
   data: SidebarData,
   nowMs: number = Date.now()
@@ -88,9 +92,11 @@ export function getProjectBoardColumns(
     }
   }
 
-  for (const column of Object.values(columns)) {
-    column.sort((left, right) => right.timestamp - left.timestamp)
-  }
+  columns.running.sort((left, right) => right.timestamp - left.timestamp)
+  columns.waiting.sort((left, right) => right.timestamp - left.timestamp)
+  // Done is ordered by when the chat entered the column; chats that landed
+  // there implicitly (idle/archived, no explicit mark) fall back to activity.
+  columns.done.sort((left, right) => getDoneColumnTimestamp(right) - getDoneColumnTimestamp(left))
 
   return columns
 }

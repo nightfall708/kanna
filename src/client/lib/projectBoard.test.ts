@@ -12,6 +12,7 @@ function createChat(
     status?: KannaStatus
     unread?: boolean
     done?: boolean
+    doneAt?: number
   } = {}
 ): SidebarChatRow {
   return {
@@ -22,6 +23,7 @@ function createChat(
     status: options.status ?? "idle",
     unread: options.unread ?? false,
     ...(options.done ? { done: true } : {}),
+    ...(options.doneAt !== undefined ? { doneAt: options.doneAt } : {}),
     localPath: "/tmp/project",
     provider: "codex",
     lastMessageAt: nowMs - (options.ageDays ?? 0) * DAY_MS,
@@ -97,6 +99,27 @@ describe("getProjectBoardColumns", () => {
     expect(columns.running).toEqual([])
     expect(columns.waiting).toEqual([])
     expect(columns.done.map((entry) => entry.chat.chatId)).toEqual(["done-unread", "done-waiting"])
+  })
+
+  test("orders the done column by when chats were marked done, not by activity", () => {
+    // Older chat marked done most recently should outrank a fresher chat marked earlier.
+    const doneEarly = createChat("done-early", { ageDays: 1, done: true, doneAt: nowMs - 2 * DAY_MS })
+    const doneLate = createChat("done-late", { ageDays: 10, done: true, doneAt: nowMs - DAY_MS })
+    // Implicitly done (idle, never marked) falls back to its activity timestamp.
+    const implicitDone = createChat("implicit-done", { ageDays: 3 })
+    const data = createSidebarData({
+      chats: [doneEarly, doneLate, implicitDone],
+      previewChats: [],
+      olderChats: [doneEarly, doneLate, implicitDone],
+    })
+
+    const columns = getProjectBoardColumns(data, nowMs)
+
+    expect(columns.done.map((entry) => entry.chat.chatId)).toEqual([
+      "done-late",
+      "done-early",
+      "implicit-done",
+    ])
   })
 
   test("only includes conversations with activity in the last 30 days", () => {

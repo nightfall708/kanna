@@ -1,5 +1,5 @@
 import { memo } from "react"
-import { Archive, Loader2, Split } from "lucide-react"
+import { Check, Loader2, Split } from "lucide-react"
 import type { SidebarChatRow } from "../../../../shared/types"
 import { AnimatedShinyText } from "../../ui/animated-shiny-text"
 import { Button } from "../../ui/button"
@@ -22,6 +22,7 @@ interface Props {
   onShareChat: (chatId: string) => void
   onOpenInFinder: (localPath: string) => void
   onForkChat: (chatId: string) => void
+  onMarkChatDone: (chatId: string) => void
   onArchiveChat: (chatId: string) => void
   onDeleteChat: (chatId: string) => void
 }
@@ -37,6 +38,7 @@ function ChatRowImpl({
   onShareChat,
   onOpenInFinder,
   onForkChat,
+  onMarkChatDone,
   onArchiveChat,
   onDeleteChat,
 }: Props) {
@@ -126,11 +128,11 @@ function ChatRowImpl({
             className="h-6 w-6 cursor-pointer rounded-sm hover:!bg-transparent !border-0"
             onClick={(event) => {
               event.stopPropagation()
-              onArchiveChat(chat.chatId)
+              onMarkChatDone(chat.chatId)
             }}
-            title="Archive chat"
+            title="Mark done"
           >
-            <Archive className="size-3.5" />
+            <Check className="size-3.5" />
           </Button>
         </div>
       </div>
@@ -144,6 +146,7 @@ function ChatRowImpl({
       onShare={() => onShareChat(chat.chatId)}
       onOpenInFinder={() => onOpenInFinder(chat.localPath)}
       onFork={() => onForkChat(chat.chatId)}
+      onMarkDone={chat.done ? undefined : () => onMarkChatDone(chat.chatId)}
       onArchive={() => onArchiveChat(chat.chatId)}
       onDelete={() => onDeleteChat(chat.chatId)}
     >

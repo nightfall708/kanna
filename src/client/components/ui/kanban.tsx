@@ -124,6 +124,9 @@ export function Kanban({ columns, onMove, className, children, ...props }: Kanba
     <KanbanContext.Provider value={contextValue}>
       <DndContext
         sensors={sensors}
+        // Don't restore focus to the dropped item — the browser scrolls the
+        // focused element into view, jumping the board after cross-column drops.
+        accessibility={{ restoreFocus: false }}
         measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
         onDragStart={(event) => setActiveId(String(event.active.id))}
         onDragCancel={() => setActiveId(null)}
