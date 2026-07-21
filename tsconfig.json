@@ -35,6 +35,7 @@
     "src/client/hooks/useTheme.tsx",
     "src/client/hooks/useIsStandalone.ts",
     "src/client/stores/chatInputStore.ts",
+    "src/client/stores/connectionStore.ts",
     "src/client/lib/utils.ts",
     "src/client/lib/formatters.ts",
     "src/client/lib/pathUtils.ts",

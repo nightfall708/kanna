@@ -89,10 +89,37 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
         },
       }
     },
+    // Hermetic default: never read the real ~/.kanna/cloud.json in tests.
+    readCloudIdentityImpl: async () => null,
     ...overrides,
   }
 
   return { calls, deps }
+}
+
+const CLOUD_IDENTITY = {
+  controlUrl: "https://kanna.sh/api/cloud",
+  machineToken: "machine-token",
+  proxySecret: "proxy-secret",
+  subdomain: "jakemor-mbp",
+  appOrigin: "https://jakemor-mbp.kanna.sh",
+  enabled: true,
+}
+
+function createFakeCloudRuntime() {
+  const calls = { starts: [] as Array<{ localUrl: string }>, stops: 0 }
+  const runtime = {
+    identity: CLOUD_IDENTITY,
+    connectTokens: { mint: () => ({ token: "t", expiresInMs: 60_000 }), validate: () => false },
+    getTunnelUrl: () => null,
+    start: (args: { localUrl: string }) => {
+      calls.starts.push({ localUrl: args.localUrl })
+    },
+    stop: async () => {
+      calls.stops += 1
+    },
+  }
+  return { runtime, calls }
 }
 
 describe("parseArgs", () => {
@@ -106,6 +133,7 @@ describe("parseArgs", () => {
         share: false,
         password: null,
         strictPort: false,
+        noCloud: false,
       },
     })
   })
@@ -120,6 +148,7 @@ describe("parseArgs", () => {
         share: false,
         password: null,
         strictPort: true,
+        noCloud: false,
       },
     })
   })
@@ -134,6 +163,7 @@ describe("parseArgs", () => {
         share: false,
         password: null,
         strictPort: false,
+        noCloud: false,
       },
     })
   })
@@ -148,6 +178,7 @@ describe("parseArgs", () => {
         share: "quick",
         password: null,
         strictPort: false,
+        noCloud: false,
       },
     })
   })
@@ -162,6 +193,7 @@ describe("parseArgs", () => {
         share: { kind: "token", token: "secret-token" },
         password: null,
         strictPort: false,
+        noCloud: false,
       },
     })
   })
@@ -176,6 +208,7 @@ describe("parseArgs", () => {
         share: false,
         password: "secret",
         strictPort: false,
+        noCloud: false,
       },
     })
   })
@@ -200,6 +233,7 @@ describe("parseArgs", () => {
         share: false,
         password: null,
         strictPort: false,
+        noCloud: false,
       },
     })
   })
@@ -214,6 +248,7 @@ describe("parseArgs", () => {
         share: false,
         password: null,
         strictPort: false,
+        noCloud: false,
       },
     })
   })
@@ -519,5 +554,133 @@ describe("runCli", () => {
     expect(result.kind).toBe("started")
     expect(calls.installVersion).toEqual([])
     expect(calls.warn).toContain("[kanna] update check failed, continuing current version")
+  })
+})
+
+describe("parseArgs pair subcommand", () => {
+  test("pair with a code", () => {
+    expect(parseArgs(["pair", "ABC123XYZ"])).toEqual({
+      kind: "pair",
+      args: { action: "pair", pairingCode: "ABC123XYZ" },
+    })
+  })
+
+  test("pair management flags", () => {
+    expect(parseArgs(["pair", "--status"])).toEqual({ kind: "pair", args: { action: "status", pairingCode: null } })
+    expect(parseArgs(["pair", "--disable"])).toEqual({ kind: "pair", args: { action: "disable", pairingCode: null } })
+    expect(parseArgs(["pair", "--enable"])).toEqual({ kind: "pair", args: { action: "enable", pairingCode: null } })
+    expect(parseArgs(["pair", "--remove"])).toEqual({ kind: "pair", args: { action: "remove", pairingCode: null } })
+  })
+
+  test("pair without a code throws with pointer to kanna.sh", () => {
+    expect(() => parseArgs(["pair"])).toThrow("kanna.sh/machines")
+  })
+
+  test("pair rejects extra arguments", () => {
+    expect(() => parseArgs(["pair", "CODE1", "CODE2"])).toThrow("Unexpected argument")
+    expect(() => parseArgs(["pair", "--bogus"])).toThrow("Unexpected argument")
+  })
+
+  test("--no-cloud sets the one-shot flag", () => {
+    const parsed = parseArgs(["--no-cloud"])
+    expect(parsed.kind).toBe("run")
+    if (parsed.kind === "run") {
+      expect(parsed.options.noCloud).toBe(true)
+    }
+  })
+})
+
+describe("runCli cloud", () => {
+  test("pair subcommand delegates and exits with its code", async () => {
+    const pairCalls: unknown[] = []
+    const { calls, deps } = createDeps({
+      runPairCommandImpl: async (args) => {
+        pairCalls.push(args)
+        return 0
+      },
+    })
+
+    const result = await runCli(["pair", "ABC123"], deps)
+
+    expect(result).toEqual({ kind: "exited", code: 0 })
+    expect(pairCalls).toEqual([{ action: "pair", pairingCode: "ABC123" }])
+    // No server, no update check.
+    expect(calls.startServer).toEqual([])
+    expect(calls.fetchLatestVersion).toEqual([])
+  })
+
+  test("paired + enabled identity auto-starts cloud", async () => {
+    const fake = createFakeCloudRuntime()
+    const { calls, deps } = createDeps({
+      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY }),
+      createCloudRuntimeImpl: () => fake.runtime,
+    })
+
+    const result = await runCli(["--no-open"], deps)
+
+    expect(result.kind).toBe("started")
+    const serverOptions = calls.startServer[0] as typeof calls.startServer[0] & { cloud?: unknown }
+    expect(serverOptions.trustProxy).toBe(true)
+    expect(serverOptions.cloud).toBe(fake.runtime)
+    expect(fake.calls.starts).toEqual([{ localUrl: "http://localhost:3210" }])
+    expect(calls.log.some((line) => line.includes("cloud: https://jakemor-mbp.kanna.sh"))).toBe(true)
+
+    if (result.kind === "started") {
+      await result.stop()
+    }
+    expect(fake.calls.stops).toBe(1)
+  })
+
+  test("--no-cloud skips cloud for this run", async () => {
+    let readCalls = 0
+    const { calls, deps } = createDeps({
+      readCloudIdentityImpl: async () => {
+        readCalls += 1
+        return { ...CLOUD_IDENTITY }
+      },
+      createCloudRuntimeImpl: () => {
+        throw new Error("should not create a cloud runtime with --no-cloud")
+      },
+    })
+
+    const result = await runCli(["--no-open", "--no-cloud"], deps)
+
+    expect(result.kind).toBe("started")
+    expect(readCalls).toBe(0)
+    const serverOptions = calls.startServer[0] as typeof calls.startServer[0] & { cloud?: unknown }
+    expect(serverOptions.cloud ?? null).toBeNull()
+    expect(serverOptions.trustProxy).toBe(false)
+  })
+
+  test("--share wins over cloud auto-enable", async () => {
+    const { calls, deps } = createDeps({
+      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY }),
+      createCloudRuntimeImpl: () => {
+        throw new Error("should not create a cloud runtime with --share")
+      },
+    })
+
+    const result = await runCli(["--no-open", "--share"], deps)
+
+    expect(result.kind).toBe("started")
+    expect(calls.shareTunnel.length).toBe(1)
+    const serverOptions = calls.startServer[0] as typeof calls.startServer[0] & { cloud?: unknown }
+    expect(serverOptions.cloud ?? null).toBeNull()
+  })
+
+  test("disabled identity stays local", async () => {
+    const { calls, deps } = createDeps({
+      readCloudIdentityImpl: async () => ({ ...CLOUD_IDENTITY, enabled: false }),
+      createCloudRuntimeImpl: () => {
+        throw new Error("should not create a cloud runtime when disabled")
+      },
+    })
+
+    const result = await runCli(["--no-open"], deps)
+
+    expect(result.kind).toBe("started")
+    const serverOptions = calls.startServer[0] as typeof calls.startServer[0] & { cloud?: unknown }
+    expect(serverOptions.cloud ?? null).toBeNull()
+    expect(calls.log.some((line) => line.includes("cloud:"))).toBe(false)
   })
 })

@@ -24,8 +24,17 @@ interface SubscriptionEntry<TSnapshot, TEvent = never> {
   eventListener?: EventListener<TEvent>
 }
 
+/**
+ * Where to connect: a fixed URL, or an async provider resolved before every
+ * connection attempt. Cloud mode uses a provider that fetches
+ * /api/cloud/ws-endpoint so each (re)connect picks up the current tunnel URL
+ * and a fresh connect token.
+ */
+export type WsUrlSource = string | (() => Promise<string>)
+
 export class KannaSocket {
-  private readonly url: string
+  private readonly urlSource: WsUrlSource
+  private connectSeq = 0
   private ws: WebSocket | null = null
   private started = false
   private reconnectTimer: number | null = null
@@ -55,8 +64,8 @@ export class KannaSocket {
     void this.ensureHealthyConnection()
   }
 
-  constructor(url: string) {
-    this.url = url
+  constructor(url: WsUrlSource) {
+    this.urlSource = url
   }
 
   start() {
@@ -167,7 +176,36 @@ export class KannaSocket {
       return
     }
     this.emitStatus("connecting")
-    this.ws = new WebSocket(this.url)
+
+    // Fixed URL: connect synchronously (unchanged local behavior).
+    if (typeof this.urlSource === "string") {
+      this.openSocket(this.urlSource)
+      return
+    }
+
+    // Async provider (cloud mode): resolve the URL before each attempt so
+    // reconnects pick up rotated tunnel URLs and fresh connect tokens. The
+    // sequence counter drops stale resolves when a newer connect attempt (or
+    // dispose) started meanwhile.
+    const seq = ++this.connectSeq
+    this.urlSource()
+      .then((url) => {
+        if (!this.started || seq !== this.connectSeq) {
+          return
+        }
+        this.openSocket(url)
+      })
+      .catch(() => {
+        if (!this.started || seq !== this.connectSeq) {
+          return
+        }
+        this.emitStatus("disconnected")
+        this.scheduleReconnect()
+      })
+  }
+
+  private openSocket(url: string) {
+    this.ws = new WebSocket(url)
 
     this.ws.addEventListener("open", () => {
       this.reconnectDelayMs = 750

@@ -18,6 +18,7 @@ export interface LaunchAnalyticsOptions {
   share: ShareMode
   password: string | null
   strictPort: boolean
+  cloud?: boolean
 }
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
@@ -122,6 +123,7 @@ export function getLaunchAnalyticsProperties(options: LaunchAnalyticsOptions) {
     host_enabled: options.host !== "0.0.0.0" && options.host !== "127.0.0.1" && options.host !== "localhost",
     share_quick_enabled: options.share === "quick",
     share_token_enabled: isTokenShareMode(options.share),
+    cloud_enabled: options.cloud ?? false,
   }
 }
 

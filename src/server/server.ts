@@ -3,7 +3,14 @@ import { stat } from "node:fs/promises"
 import { APP_NAME, getRuntimeProfile } from "../shared/branding"
 import type { ChatAttachment } from "../shared/types"
 import type { ShareMode } from "../shared/share"
+import {
+  CLOUD_BROWSER_PATH_PREFIX,
+  CLOUD_WS_ENDPOINT_PATH,
+  type CloudWsEndpointResponse,
+} from "../shared/cloud-api"
 import { createAuthManager } from "./auth"
+import { classifyCloudRequest, isAllowedCloudWsUpgrade, type CloudRequestClass } from "./cloud/guard"
+import type { CloudRuntime } from "./cloud"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
 import { KannaAnalyticsReporter } from "./analytics"
@@ -74,6 +81,14 @@ export interface StartKannaServerOptions {
    * reachable solely through a trusted reverse proxy such as cloudflared.
    */
   trustProxy?: boolean
+  /**
+   * Cloud runtime shell (kanna.sh pairing). When set, requests are classified
+   * (proxied / local / untrusted raw-tunnel) before any other handling:
+   * proxied requests count as authenticated (the kanna.sh proxy gates them by
+   * account session), untrusted ones only see /health and the token-gated
+   * /ws upgrade.
+   */
+  cloud?: CloudRuntime | null
   onMigrationProgress?: (message: string) => void
   update?: {
     version: string
@@ -191,6 +206,52 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
         hostname,
         async fetch(req, serverInstance) {
           const url = new URL(req.url)
+          const cloud = options.cloud ?? null
+          const requestClass: CloudRequestClass = cloud
+            ? classifyCloudRequest(req, cloud.identity.proxySecret)
+            : "local"
+
+          // The proxy answers /__cloud/* itself and never forwards it; the
+          // machine 404s the prefix explicitly so the client can
+          // feature-detect cloud mode (the SPA fallback would otherwise
+          // return index.html with a 200).
+          if (url.pathname === CLOUD_BROWSER_PATH_PREFIX || url.pathname.startsWith(`${CLOUD_BROWSER_PATH_PREFIX}/`)) {
+            return Response.json({ error: "Not found" }, { status: 404 })
+          }
+
+          const upgradeWebSocket = () => {
+            const upgraded = serverInstance.upgrade(req, {
+              data: {
+                subscriptions: new Map(),
+                snapshotSignatures: new Map(),
+              },
+            })
+            return upgraded ? undefined : new Response("WebSocket upgrade failed", { status: 400 })
+          }
+
+          const allowCloudWsUpgrade = () =>
+            cloud !== null &&
+            isAllowedCloudWsUpgrade(req, {
+              appOrigin: cloud.identity.appOrigin,
+              validateToken: cloud.connectTokens.validate,
+            })
+
+          // Raw tunnel traffic (not through the kanna.sh proxy, not local):
+          // expose only the public health check and the token-gated WS
+          // upgrade. Everything else 404s so the rotating tunnel URL leaks no
+          // surface.
+          if (requestClass === "untrusted") {
+            if (url.pathname === "/health") {
+              return Response.json({ ok: true, port: actualPort })
+            }
+            if (url.pathname === "/ws") {
+              if (allowCloudWsUpgrade()) {
+                return upgradeWebSocket()
+              }
+              return new Response("Unauthorized", { status: 401 })
+            }
+            return new Response("Not found", { status: 404 })
+          }
 
           if (url.pathname === "/auth/status") {
             return auth
@@ -208,7 +269,9 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
               : Response.json({ ok: true })
           }
 
-          if (auth) {
+          // Proxied requests skip password auth: the kanna.sh proxy already
+          // gated them by account session before forwarding.
+          if (auth && requestClass !== "proxied") {
             if (url.pathname === "/auth/login") {
               if (req.method === "GET") {
                 return auth.redirectToApp(req)
@@ -220,11 +283,15 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             }
 
             if (url.pathname === "/ws") {
-              if (!auth.validateOrigin(req)) {
-                return new Response("Forbidden", { status: 403 })
-              }
-              if (!auth.isAuthenticated(req)) {
-                return new Response("Unauthorized", { status: 401 })
+              // A valid cloud connect token is an alternative WS credential
+              // (minted through the proxied /api/cloud/ws-endpoint call).
+              if (!allowCloudWsUpgrade()) {
+                if (!auth.validateOrigin(req)) {
+                  return new Response("Forbidden", { status: 403 })
+                }
+                if (!auth.isAuthenticated(req)) {
+                  return new Response("Unauthorized", { status: 401 })
+                }
               }
             } else if (url.pathname.startsWith("/api/") && !auth.isAuthenticated(req)) {
               return Response.json({ error: "Unauthorized" }, { status: 401 })
@@ -232,17 +299,34 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
           }
 
           if (url.pathname === "/ws") {
-            const upgraded = serverInstance.upgrade(req, {
-              data: {
-                subscriptions: new Map(),
-                snapshotSignatures: new Map(),
-              },
-            })
-            return upgraded ? undefined : new Response("WebSocket upgrade failed", { status: 400 })
+            return upgradeWebSocket()
           }
 
           if (url.pathname === "/health") {
             return Response.json({ ok: true, port: actualPort })
+          }
+
+          if (url.pathname === CLOUD_WS_ENDPOINT_PATH) {
+            if (req.method !== "GET") {
+              return new Response(null, { status: 405, headers: { Allow: "GET" } })
+            }
+            // Proxied requests get the direct tunnel URL + a short-lived
+            // token so the browser's WebSocket bypasses the proxy entirely.
+            // Local requests get null → the client connects same-origin.
+            if (cloud && requestClass === "proxied") {
+              const tunnelUrl = cloud.getTunnelUrl()
+              if (tunnelUrl) {
+                const minted = cloud.connectTokens.mint()
+                const payload: CloudWsEndpointResponse = {
+                  wsUrl: `${tunnelUrl.replace(/^http/, "ws")}/ws`,
+                  connectToken: minted.token,
+                  expiresInMs: minted.expiresInMs,
+                }
+                return Response.json(payload, { headers: { "Cache-Control": "no-store" } })
+              }
+            }
+            const payload: CloudWsEndpointResponse = { wsUrl: null }
+            return Response.json(payload, { headers: { "Cache-Control": "no-store" } })
           }
 
           const uploadResponse = await handleProjectUpload(req, url, store)
@@ -298,6 +382,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     share: options.share ?? false,
     password: options.password ?? null,
     strictPort,
+    cloud: Boolean(options.cloud),
   })
 
   const shutdown = async () => {
@@ -318,6 +403,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     store,
     diffStore,
     updateManager,
+    analytics,
     stop: shutdown,
   }
 }

@@ -64,6 +64,14 @@ export function getLlmProviderFilePath(homeDir: string, env: RuntimeEnv = getRun
   return `${getDataRootDir(homeDir, env)}/llm-provider.json`
 }
 
+export function getCloudFilePath(homeDir: string, env: RuntimeEnv = getRuntimeEnv()) {
+  return `${getDataRootDir(homeDir, env)}/cloud.json`
+}
+
+export function getCloudFilePathDisplay(env: RuntimeEnv = getRuntimeEnv()) {
+  return `${getDataRootDirDisplay(env)}/cloud.json`
+}
+
 export function getCliInvocation(arg?: string) {
   return arg ? `${CLI_COMMAND} ${arg}` : CLI_COMMAND
 }

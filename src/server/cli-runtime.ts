@@ -8,6 +8,10 @@ import type { UpdateInstallErrorCode } from "../shared/types"
 import { PROD_SERVER_PORT } from "../shared/ports"
 import { CLI_SUPPRESS_OPEN_ONCE_ENV_VAR } from "./restart"
 import { logShareDetails, renderTerminalQr, startShareTunnel, type StartedShareTunnel } from "./share"
+import type { AnalyticsReporter } from "./analytics"
+import { createCloudRuntime, type CloudRuntime } from "./cloud"
+import { readCloudIdentity, type CloudIdentity } from "./cloud/identity"
+import { runPairCommand, type PairCommandArgs, type PairAction } from "./cloud/pair-command"
 
 export interface CliOptions {
   port: number
@@ -16,6 +20,8 @@ export interface CliOptions {
   share: ShareMode
   password: string | null
   strictPort: boolean
+  /** One-shot: skip bringing a paired machine online for this run. */
+  noCloud: boolean
 }
 
 export interface CliUpdateOptions {
@@ -50,7 +56,8 @@ export interface CliRuntimeDeps {
     update: CliUpdateOptions
     onMigrationProgress?: (message: string) => void
     trustProxy?: boolean
-  }) => Promise<{ port: number; stop: () => Promise<void> }>
+    cloud?: CloudRuntime | null
+  }) => Promise<{ port: number; stop: () => Promise<void>; analytics?: AnalyticsReporter }>
   fetchLatestVersion: (packageName: string) => Promise<string>
   installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
   openUrl: (url: string) => void
@@ -58,6 +65,9 @@ export interface CliRuntimeDeps {
   warn: (message: string) => void
   renderShareQr?: (url: string) => Promise<string>
   startShareTunnel?: (localUrl: string, shareMode: Exclude<ShareMode, false>) => Promise<StartedShareTunnel>
+  runPairCommandImpl?: typeof runPairCommand
+  readCloudIdentityImpl?: (warn: (message: string) => void) => Promise<CloudIdentity | null>
+  createCloudRuntimeImpl?: (identity: CloudIdentity) => CloudRuntime
 }
 
 export interface UpdateInstallAttemptResult {
@@ -69,6 +79,7 @@ export interface UpdateInstallAttemptResult {
 
 type ParsedArgs =
   | { kind: "run"; options: CliOptions }
+  | { kind: "pair"; args: PairCommandArgs }
   | { kind: "help" }
   | { kind: "version" }
 
@@ -83,6 +94,8 @@ function printHelp() {
 
 Usage:
   ${CLI_COMMAND} [options]
+  ${CLI_COMMAND} pair <code>   Pair this machine with kanna.sh (get a code at https://kanna.sh/machines)
+  ${CLI_COMMAND} pair --status|--disable|--enable|--remove
 
 Options:
   --port <number>      Port to listen on (default: ${PROD_SERVER_PORT})
@@ -94,11 +107,43 @@ Options:
   --password <secret>  Require a password before loading the app
   --strict-port        Fail instead of trying another port
   --no-open            Don't open browser automatically
+  --no-cloud           Skip bringing a paired machine online for this run
   --version            Print version and exit
   --help               Show this help message`)
 }
 
+function parsePairArgs(argv: string[]): ParsedArgs {
+  let action: PairAction = "pair"
+  let pairingCode: string | null = null
+
+  for (const arg of argv) {
+    if (arg === "--status") {
+      action = "status"
+    } else if (arg === "--disable") {
+      action = "disable"
+    } else if (arg === "--enable") {
+      action = "enable"
+    } else if (arg === "--remove") {
+      action = "remove"
+    } else if (!arg.startsWith("-") && pairingCode === null) {
+      pairingCode = arg
+    } else {
+      throw new Error(`Unexpected argument for ${CLI_COMMAND} pair: ${arg}`)
+    }
+  }
+
+  if (action === "pair" && !pairingCode) {
+    throw new Error(`${CLI_COMMAND} pair needs a pairing code — get one at https://kanna.sh/machines`)
+  }
+
+  return { kind: "pair", args: { action, pairingCode } }
+}
+
 export function parseArgs(argv: string[]): ParsedArgs {
+  if (argv[0] === "pair") {
+    return parsePairArgs(argv.slice(1))
+  }
+
   let port = PROD_SERVER_PORT
   let host = "127.0.0.1"
   let openBrowser = true
@@ -107,6 +152,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let sawHost = false
   let sawRemote = false
   let strictPort = false
+  let noCloud = false
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -159,6 +205,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
       openBrowser = false
       continue
     }
+    if (arg === "--no-cloud") {
+      noCloud = true
+      continue
+    }
     if (arg === "--password") {
       const next = argv[index + 1]
       if (!next || next.startsWith("-")) throw new Error("Missing value for --password")
@@ -182,6 +232,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       share,
       password,
       strictPort,
+      noCloud,
     },
   }
 }
@@ -259,6 +310,14 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     return { kind: "exited", code: 0 }
   }
 
+  if (parsedArgs.kind === "pair") {
+    const code = await (deps.runPairCommandImpl ?? runPairCommand)(parsedArgs.args, {
+      log: deps.log,
+      warn: deps.warn,
+    })
+    return { kind: "exited", code }
+  }
+
   if (compareVersions(deps.bunVersion, MINIMUM_BUN_VERSION) < 0) {
     deps.warn(`${LOG_PREFIX} Bun ${MINIMUM_BUN_VERSION}+ is required for the embedded terminal. Current Bun: ${deps.bunVersion}`)
     return { kind: "exited", code: 1 }
@@ -269,9 +328,27 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     return { kind: "restarting", reason: shouldRestart }
   }
 
-  const { port, stop } = await deps.startServer({
+  // Sticky cloud auto-enable: a paired machine (cloud.json with
+  // enabled:true) comes online on every plain `kanna` run. `--no-cloud` skips
+  // it once; --share/--host/--remote imply a different exposure and win.
+  let cloudRuntime: CloudRuntime | null = null
+  const cloudEligible =
+    !parsedArgs.options.noCloud &&
+    !isShareEnabled(parsedArgs.options.share) &&
+    parsedArgs.options.host === "127.0.0.1"
+  if (cloudEligible) {
+    const readIdentity = deps.readCloudIdentityImpl
+      ?? ((warn: (message: string) => void) => readCloudIdentity(undefined, warn))
+    const identity = await readIdentity((message) => deps.warn(`${LOG_PREFIX} ${message}`))
+    if (identity?.enabled) {
+      cloudRuntime = (deps.createCloudRuntimeImpl ?? createCloudRuntime)(identity)
+    }
+  }
+
+  const started = await deps.startServer({
     ...parsedArgs.options,
-    trustProxy: isShareEnabled(parsedArgs.options.share),
+    trustProxy: isShareEnabled(parsedArgs.options.share) || cloudRuntime !== null,
+    cloud: cloudRuntime,
     onMigrationProgress: deps.log,
     update: {
       version: deps.version,
@@ -281,6 +358,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
       command: CLI_COMMAND,
     },
   })
+  const { port, stop } = started
   const bindHost = parsedArgs.options.host
   const displayHost = isShareEnabled(parsedArgs.options.share) || bindHost === "127.0.0.1" || bindHost === "0.0.0.0" ? "localhost" : bindHost
   const launchUrl = `http://${displayHost}:${port}`
@@ -316,6 +394,19 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     }
   }
 
+  if (cloudRuntime) {
+    const runtime = cloudRuntime
+    runtime.start({
+      localUrl: launchUrl,
+      log: (message) => deps.log(`${LOG_PREFIX} ${message}`),
+      warn: (message) => deps.warn(`${LOG_PREFIX} ${message}`),
+      onTunnelUp: (kind) => {
+        started.analytics?.track(kind === "started" ? "cloud_tunnel_started" : "cloud_tunnel_recovered")
+      },
+    })
+    deps.log(`${LOG_PREFIX} cloud: ${runtime.identity.appOrigin} (disable with \`${CLI_COMMAND} pair --disable\`)`)
+  }
+
   if (parsedArgs.options.openBrowser && !isShareEnabled(parsedArgs.options.share) && !suppressOpenBrowser) {
     deps.openUrl(launchUrl)
   }
@@ -323,6 +414,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   return {
     kind: "started",
     stop: async () => {
+      await cloudRuntime?.stop()
       shareTunnelStop?.()
       await stop()
     },

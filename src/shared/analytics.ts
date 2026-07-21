@@ -12,6 +12,8 @@ export const ANALYTICS_STATIC_EVENT_NAMES = [
   "update_failed",
   "analytics_enabled",
   "analytics_disabled",
+  "cloud_tunnel_started",
+  "cloud_tunnel_recovered",
 ] as const
 
 export const ANALYTICS_STATIC_PROPERTY_NAMES = [
@@ -26,4 +28,5 @@ export const ANALYTICS_STATIC_PROPERTY_NAMES = [
   "host_enabled",
   "share_quick_enabled",
   "share_token_enabled",
+  "cloud_enabled",
 ] as const
