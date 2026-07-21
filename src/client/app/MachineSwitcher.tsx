@@ -15,7 +15,7 @@ import { cn } from "../lib/utils"
 const MANAGE_MACHINES_URL = "https://kanna.sh/machines"
 
 /** Shared trigger padding: borderless, but keeps the same net inset as before. */
-const TRIGGER_CLASS = "w-full justify-between px-[10px] py-1.5 rounded-md hover:bg-transparent"
+const TRIGGER_CLASS = "w-full justify-between py-1.5 rounded-md hover:bg-transparent"
 
 /**
  * Full-width section wrapper: breaks out of the sidebar's 7px padding so the
@@ -100,7 +100,7 @@ export function MachineSwitcher() {
           type="button"
           onClick={() => setPairDialogOpen(true)}
           className={cn(
-            "flex items-center gap-1.5 text-sm text-muted-foreground [&>svg]:shrink-0 [&>span]:whitespace-nowrap",
+            "flex items-center gap-1.5 px-[10px] text-sm text-muted-foreground [&>svg]:shrink-0 [&>span]:whitespace-nowrap",
             TRIGGER_CLASS
           )}
         >
@@ -120,7 +120,7 @@ export function MachineSwitcher() {
   return (
     <MachineSection>
       <InputPopover
-        triggerClassName={TRIGGER_CLASS}
+        triggerClassName={cn(TRIGGER_CLASS, "px-[11px]")}
         trigger={
           <>
             <span className="flex min-w-0 items-center gap-2">
