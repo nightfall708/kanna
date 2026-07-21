@@ -58,7 +58,12 @@ export async function runPairCommand(args: PairCommandArgs, deps: PairCommandDep
   const confirm = deps.confirm ?? promptConfirm
   const { log, warn } = deps
 
-  const identity = await readIdentity(warn)
+  // While pairing, an unreadable/outdated cloud.json is irrelevant — it's
+  // about to be replaced, so don't tell the user to "run kanna pair again"
+  // mid-pair. For the management actions the warning matters.
+  const identity = await readIdentity(
+    args.action === "pair" ? () => {} : (message) => warn(`${LOG_PREFIX} ${message}`),
+  )
 
   switch (args.action) {
     case "pair": {

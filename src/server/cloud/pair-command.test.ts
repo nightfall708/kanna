@@ -98,6 +98,35 @@ describe("kanna pair", () => {
     expect(calls.log.some((line) => line.includes("run `kanna`"))).toBe(true)
   })
 
+  test("pairing over a stale/outdated cloud.json stays silent about it", async () => {
+    const { calls, deps } = createHarness()
+    // Simulate identity.ts finding an outdated v1 file: it invokes the warn
+    // callback and yields null. During `pair` that callback must be a no-op.
+    deps.readIdentity = async (warnCb) => {
+      warnCb?.("cloud.json is missing tunnelToken, tunnelHost — run `kanna pair` again")
+      return null
+    }
+
+    const code = await runPairCommand({ action: "pair", pairingCode: "ABC123" }, deps)
+
+    expect(code).toBe(0)
+    expect(calls.warn).toEqual([])
+    expect(calls.written.length).toBe(1)
+  })
+
+  test("management actions still surface a broken cloud.json with the log prefix", async () => {
+    const { calls, deps } = createHarness()
+    deps.readIdentity = async (warnCb) => {
+      warnCb?.("cloud.json is missing tunnelToken, tunnelHost — run `kanna pair` again")
+      return null
+    }
+
+    await runPairCommand({ action: "status", pairingCode: null }, deps)
+
+    expect(calls.warn.length).toBe(1)
+    expect(calls.warn[0].startsWith("[kanna] ")).toBe(true)
+  })
+
   test("warns when re-pairing an already paired machine", async () => {
     const { calls, deps } = createHarness({ identity: IDENTITY })
     await runPairCommand({ action: "pair", pairingCode: "ABC123" }, deps)
