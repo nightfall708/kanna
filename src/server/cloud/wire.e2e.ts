@@ -74,6 +74,9 @@ function startFakeCf() {
       if (url.pathname.includes("/dns_records") && req.method === "POST") {
         return Response.json({ success: true, result: { id: "wire-dns-id" } })
       }
+      if (url.pathname.includes("/workers/routes") && req.method === "POST") {
+        return Response.json({ success: true, result: { id: "wire-route-id" } })
+      }
       return Response.json({ success: true, result: {} })
     },
   })
