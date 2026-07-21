@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react"
-import { ExternalLink, Globe, Laptop, MonitorSmartphone } from "lucide-react"
+import { useEffect, useState, type ReactNode } from "react"
+import { ChevronDown, Cloud, ExternalLink, MonitorSmartphone } from "lucide-react"
 import {
   Dialog,
   DialogBody,
@@ -10,8 +10,24 @@ import {
 } from "../components/ui/dialog"
 import { InputPopover, PopoverMenuItem } from "../components/chat-ui/ChatPreferenceControls"
 import { findCurrentMachine, useConnectionStore } from "../stores/connectionStore"
+import { cn } from "../lib/utils"
 
 const MANAGE_MACHINES_URL = "https://kanna.sh/machines"
+
+/** Shared trigger padding: borderless, but keeps the same net inset as before. */
+const TRIGGER_CLASS = "w-full justify-between px-[10px] py-1.5 rounded-md hover:bg-transparent"
+
+/**
+ * Full-width section wrapper: breaks out of the sidebar's 7px padding so the
+ * bottom divider spans edge-to-edge, then re-adds matching inner padding.
+ */
+function MachineSection({ children }: { children: ReactNode }) {
+  return (
+    <div className="-mx-[7px] -mt-[7px] mb-[7px] border-b border-border p-[7px]">
+      {children}
+    </div>
+  )
+}
 
 function OnlineDot({ online }: { online: boolean }) {
   return (
@@ -29,7 +45,7 @@ function PairInstructionsDialog({ open, onOpenChange }: { open: boolean; onOpenC
         <DialogHeader>
           <DialogTitle>Use this machine from anywhere</DialogTitle>
           <DialogDescription>
-            Pair it with kanna.sh to get a personal URL that works from any browser.
+            Get a personal URL that works from any browser, 100% free.
           </DialogDescription>
         </DialogHeader>
         <DialogBody>
@@ -39,7 +55,7 @@ function PairInstructionsDialog({ open, onOpenChange }: { open: boolean; onOpenC
               <a href={MANAGE_MACHINES_URL} target="_blank" rel="noreferrer" className="font-medium underline underline-offset-2">
                 kanna.sh/machines
               </a>{" "}
-              and add a machine to get a pairing code.
+              and add a machine.
             </li>
             <li>
               Run{" "}
@@ -79,86 +95,77 @@ export function MachineSwitcher() {
 
   if (mode === "local") {
     return (
-      <>
-        <InputPopover
-          triggerClassName="w-full justify-between pl-3 pr-[9px] py-1.5 mb-1 rounded-md border border-border"
-          trigger={
-            <>
-              <span className="flex min-w-0 items-center gap-2">
-                <Laptop className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate text-xs font-medium">This machine</span>
-              </span>
-              <span className="text-[10px] uppercase tracking-wide opacity-60">local</span>
-            </>
-          }
-        >
-          {(close) => (
-            <PopoverMenuItem
-              onClick={() => {
-                close()
-                setPairDialogOpen(true)
-              }}
-              selected={false}
-              icon={<Globe className="h-4 w-4" />}
-              label="Pair with kanna.sh…"
-              description="Use this machine from any browser"
-            />
+      <MachineSection>
+        <button
+          type="button"
+          onClick={() => setPairDialogOpen(true)}
+          className={cn(
+            "flex items-center gap-1.5 text-sm text-muted-foreground [&>svg]:shrink-0 [&>span]:whitespace-nowrap",
+            TRIGGER_CLASS
           )}
-        </InputPopover>
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <Cloud className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate text-xs font-medium">Setup Kanna Cloud</span>
+          </span>
+          <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-60" />
+        </button>
         <PairInstructionsDialog open={pairDialogOpen} onOpenChange={setPairDialogOpen} />
-      </>
+      </MachineSection>
     )
   }
 
   const currentMachine = findCurrentMachine(machines)
 
   return (
-    <InputPopover
-      triggerClassName="w-full justify-between pl-3 pr-[9px] py-1.5 mb-1 rounded-md border border-border"
-      trigger={
-        <>
-          <span className="flex min-w-0 items-center gap-2">
-            <OnlineDot online={currentMachine?.online ?? true} />
-            <span className="truncate text-xs font-medium">
-              {currentMachine?.name ?? window.location.hostname}
+    <MachineSection>
+      <InputPopover
+        triggerClassName={TRIGGER_CLASS}
+        trigger={
+          <>
+            <span className="flex min-w-0 items-center gap-2">
+              <MonitorSmartphone className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate text-xs font-medium">
+                {currentMachine?.name ?? window.location.hostname}
+              </span>
             </span>
-          </span>
-          <MonitorSmartphone className="h-3.5 w-3.5 shrink-0 opacity-60" />
-        </>
-      }
-    >
-      {(close) => (
-        <>
-          {machines.map((machine) => {
-            const isCurrent = machine.subdomain === currentMachine?.subdomain
-            return (
-              <PopoverMenuItem
-                key={machine.subdomain}
-                onClick={() => {
-                  close()
-                  if (!isCurrent) {
-                    window.location.href = machine.appOrigin
-                  }
-                }}
-                selected={isCurrent}
-                icon={<OnlineDot online={machine.online} />}
-                label={machine.name}
-                description={`${machine.subdomain}.kanna.sh${machine.online ? "" : " · offline"}`}
-              />
-            )
-          })}
-          <PopoverMenuItem
-            onClick={() => {
-              close()
-              window.open(MANAGE_MACHINES_URL, "_blank", "noopener")
-            }}
-            selected={false}
-            icon={<ExternalLink className="h-4 w-4" />}
-            label="Manage machines"
-            description="Add or remove machines on kanna.sh"
-          />
-        </>
-      )}
-    </InputPopover>
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
+          </>
+        }
+      >
+        {(close) => (
+          <>
+            {machines.map((machine) => {
+              const isCurrent = machine.subdomain === currentMachine?.subdomain
+              return (
+                <PopoverMenuItem
+                  key={machine.subdomain}
+                  onClick={() => {
+                    close()
+                    if (!isCurrent) {
+                      window.location.href = machine.appOrigin
+                    }
+                  }}
+                  selected={isCurrent}
+                  icon={<OnlineDot online={machine.online} />}
+                  label={machine.name}
+                  description={`${machine.subdomain}.kanna.sh${machine.online ? "" : " · offline"}`}
+                />
+              )
+            })}
+            <PopoverMenuItem
+              onClick={() => {
+                close()
+                window.open(MANAGE_MACHINES_URL, "_blank", "noopener")
+              }}
+              selected={false}
+              icon={<ExternalLink className="h-4 w-4" />}
+              label="Manage machines"
+              description="Add or remove machines on kanna.sh"
+            />
+          </>
+        )}
+      </InputPopover>
+    </MachineSection>
   )
 }
