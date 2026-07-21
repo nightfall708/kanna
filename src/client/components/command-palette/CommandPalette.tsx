@@ -31,6 +31,7 @@ import type { KannaState } from "../../app/useKannaState"
 import { useComposer } from "../../hooks/useComposer"
 import { formatSidebarAgeLabel } from "../../lib/formatters"
 import { actionMatchesEvent, getBindingsForAction } from "../../lib/keybindings"
+import { formatPathWithTilde } from "../../lib/pathUtils"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
 import { useTerminalPreferencesStore } from "../../stores/terminalPreferencesStore"
@@ -119,11 +120,19 @@ function ThreadItem({
 
 const ICON_CLASS = "h-4 w-4 text-muted-foreground"
 
+/** Truncates from the head so the most specific path segments stay visible. */
+export function truncatePathHead(path: string, maxLength = 40) {
+  if (path.length <= maxLength) return path
+  return `…${path.slice(path.length - (maxLength - 1))}`
+}
+
 export function CommandPalette({ state }: { state: KannaState }) {
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const [pages, setPages] = useState<PalettePage[]>([])
   const [query, setQuery] = useState("")
+  // cmdk's highlighted item value, controlled so the footer can react to it.
+  const [selectedValue, setSelectedValue] = useState("")
   const page: PalettePage | "root" = pages.length > 0 ? pages[pages.length - 1] : "root"
 
   const editorPreset = useTerminalPreferencesStore((store) => store.editorPreset)
@@ -164,6 +173,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
   const openPalette = useCallback(() => {
     setPages([])
     setQuery("")
+    setSelectedValue("")
     setOpen(true)
   }, [])
 
@@ -372,6 +382,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
           title: "Copy Path",
           keywords: ["copy project path", "clipboard", "directory", "folder", projectPath],
           icon: <Copy className={ICON_CLASS} />,
+          hint: truncatePathHead(formatPathWithTilde(projectPath)),
           run: () => {
             close()
             void state.handleCopyPath(projectPath)
@@ -668,6 +679,23 @@ export function CommandPalette({ state }: { state: KannaState }) {
       .map((entry) => entry.item)
   }, [editorPreset, isMac, page, trimmedQuery])
 
+  // Item value → project path for rows that belong to a project (threads,
+  // project rows). Drives the sticky "⌘C Copy path" footer + shortcut.
+  const copyPathByValue = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const thread of threadResults) {
+      map.set(`thread-${thread.chatId}`, thread.row.localPath)
+    }
+    for (const project of projectSearchResults) {
+      map.set(`palette-project-${project.localPath}`, project.localPath)
+    }
+    for (const group of projectResults) {
+      map.set(`project-${group.groupKey}`, group.localPath)
+    }
+    return map
+  }, [projectResults, projectSearchResults, threadResults])
+  const footerCopyPath = selectedValue ? copyPathByValue.get(selectedValue) : undefined
+
   const inputPlaceholder = page === "models"
     ? `Search ${composer.providerConfig?.label ?? "provider"} models…`
     : page === "harness"
@@ -692,10 +720,29 @@ export function CommandPalette({ state }: { state: KannaState }) {
     >
       <Command
         shouldFilter={false}
+        value={selectedValue}
+        onValueChange={setSelectedValue}
         onKeyDown={(event) => {
           if (event.key === "Backspace" && !query && pages.length > 0) {
             event.preventDefault()
             popPage()
+            return
+          }
+          if (
+            footerCopyPath
+            && event.key === "c"
+            && (event.metaKey || event.ctrlKey)
+            && !event.shiftKey
+            && !event.altKey
+          ) {
+            // Let native copy win when the user has text selected in the input.
+            const target = event.target as HTMLInputElement | null
+            const hasInputSelection = typeof target?.selectionStart === "number"
+              && target.selectionStart !== target.selectionEnd
+            if (hasInputSelection) return
+            event.preventDefault()
+            void state.handleCopyPath(footerCopyPath)
+            close()
           }
         }}
       >
@@ -705,7 +752,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
           placeholder={inputPlaceholder}
           autoFocus
         />
-        <CommandList>
+        <CommandList className={footerCopyPath ? "pb-9" : undefined}>
           <CommandEmpty>No results found.</CommandEmpty>
 
           {page === "root" ? (() => {
@@ -885,6 +932,16 @@ export function CommandPalette({ state }: { state: KannaState }) {
             </CommandGroup>
           ) : null}
         </CommandList>
+
+        {footerCopyPath ? (
+          // Overlays the list bottom (absolute within the dialog) so it never
+          // grows the palette; the list gets matching bottom padding so the
+          // last rows aren't hidden underneath when scrolled down.
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-9 items-center justify-between rounded-b-xl border-t border-border bg-popover px-3.5 text-xs text-muted-foreground">
+            <span>Copy path</span>
+            <span>{isMac ? "⌘C" : "CTRL+C"}</span>
+          </div>
+        ) : null}
       </Command>
     </CommandDialog>
   )
