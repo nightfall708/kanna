@@ -458,7 +458,7 @@ export function withPiFaveModels(
 export const PROVIDERS: ProviderCatalogEntry[] = [
   {
     id: "claude",
-    label: "Claude",
+    label: "Claude Code",
     defaultModel: "claude-sonnet-4-6",
     defaultEffort: "high",
     supportsPlanMode: true,

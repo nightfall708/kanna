@@ -105,7 +105,7 @@ function getTranscriptMessageRenderState(
         break
       case "handoff_boundary":
         // Not rendered as its own row — the switch surfaces on the next
-        // session_init ("Claude → Codex").
+        // session_init ("Codex").
         shouldRender = false
         break
       case "account_info":
@@ -150,7 +150,7 @@ function buildTranscriptMessageRenderStates(
   // When older history hasn't been loaded, the window may start mid-transcript,
   // so nothing in it can be proven to be the chat's true first system/account
   // row — treat none as first rather than rendering a mid-transcript
-  // "Session Started". Self-heals as older pages load.
+  // initial harness label. Self-heals as older pages load.
   const firstSystemIndex = hasOlderHistory ? -1 : messages.findIndex((entry) => entry.kind === "system_init")
   const firstAccountIndex = hasOlderHistory ? -1 : messages.findIndex((entry) => entry.kind === "account_info")
 
@@ -176,7 +176,7 @@ function buildTranscriptMessageRenderStates(
   }
 
   // Attach each handoff boundary to the next session init: the switch renders
-  // as that init's "Claude → Codex" label rather than as its own row.
+  // as that init's destination harness label rather than as its own row.
   const handoffs = new Array<SessionHandoff | undefined>(messages.length)
   let pendingHandoff: SessionHandoff | undefined
   for (let index = 0; index < messages.length; index++) {

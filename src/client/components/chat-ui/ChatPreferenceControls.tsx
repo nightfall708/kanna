@@ -288,6 +288,9 @@ export function ChatPreferenceControls({
   className,
 }: ChatPreferenceControlsProps) {
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
+  const selectedProviderLabel = selectedProvider === "claude"
+    ? "Claude"
+    : providerConfig?.label ?? selectedProvider
   const ProviderIcon = PROVIDER_ICONS[selectedProvider]
   const ModelIcon = Box
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
@@ -315,7 +318,7 @@ export function ChatPreferenceControls({
           trigger={(
             <>
               <ProviderIcon className="h-3.5 w-3.5" />
-              <span>{providerConfig?.label ?? selectedProvider}</span>
+              <span>{selectedProviderLabel}</span>
             </>
           )}
           // Amber = staged harness switch (applies on the next message).

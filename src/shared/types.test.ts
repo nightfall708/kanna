@@ -14,6 +14,10 @@ import {
 } from "./types"
 
 describe("shared model normalization", () => {
+  test("uses the full Claude Code harness label", () => {
+    expect(PROVIDERS.find((provider) => provider.id === "claude")?.label).toBe("Claude Code")
+  })
+
   test("derives fallback Claude model labels from model ids", () => {
     expect(deriveClaudeModelLabel("fable")).toBe("Fable")
     expect(deriveClaudeModelLabel("claude-opus-4-8")).toBe("Opus")

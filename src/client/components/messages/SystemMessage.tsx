@@ -1,8 +1,9 @@
 import { useState, useMemo, type ReactNode } from "react"
-import { ArrowRightLeft, ChevronRight, Flower, Slash, UserRound } from "lucide-react"
+import { ArrowRightLeft, ChevronRight, Slash, UserRound } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import type { ProcessedSystemMessage } from "./types"
 import { PROVIDERS, resolveModelLabel, type AgentProvider } from "../../../shared/types"
+import { PROVIDER_ICONS } from "../chat-ui/ChatPreferenceControls"
 import { MetaRow, MetaLabel, MetaText, MetaPill, ExpandableRow, VerticalLineContainer, toolIcons, defaultToolIcon, getToolIcon } from "./shared"
 import { toTitleCase } from "../../lib/formatters"
 import { cn } from "../../lib/utils"
@@ -178,6 +179,8 @@ function RawMessageSection({ rawJson }: { rawJson: string }) {
 }
 
 export function SystemMessage({ message, rawJson, modelChanged, handoff }: Props) {
+  const iconProvider = handoff?.toProvider ?? message.provider
+  const ProviderIcon = PROVIDER_ICONS[iconProvider]
   const { coreTools, mcpServersWithTools } = useMemo(() => {
     const mcpToolsByServer = new Map<string, string[]>()
     const core: string[] = []
@@ -219,15 +222,13 @@ export function SystemMessage({ message, rawJson, modelChanged, handoff }: Props
           </VerticalLineContainer>
         }
       >
-        {handoff
-          ? <ArrowRightLeft className="h-5 w-5 p-0.5 -rotate-45 text-logo" />
-          : modelChanged
-            ? <ArrowRightLeft className="h-5 w-5 p-0.5 text-logo" />
-            : <Flower className="h-5 w-5 p-0.5 text-logo" />}
+        {modelChanged && !handoff
+          ? <ArrowRightLeft className="h-5 w-5 p-0.5 text-logo" />
+          : <ProviderIcon data-provider-icon={iconProvider} className="h-5 w-5 p-0.5 text-logo" />}
         <MetaLabel>
           {handoff
-            ? `${providerLabel(handoff.fromProvider)} → ${providerLabel(handoff.toProvider)}`
-            : modelChanged ? "Model Changed" : "Session Started"}
+            ? providerLabel(handoff.toProvider)
+            : modelChanged ? "Model Changed" : providerLabel(message.provider)}
           <span className="ml-1.5 opacity-50 tracking-normal">
             {resolveModelLabel(PROVIDERS.find((provider) => provider.id === message.provider)?.models, message.model)}
           </span>
