@@ -41,6 +41,7 @@ describe("normalizeKeybindings", () => {
       jumpToSidebarChat: ["Cmd+Alt"],
       createChatInCurrentProject: ["Cmd+Alt+N"],
       openAddProject: ["Cmd+Alt+O"],
+      openCommandPalette: ["Cmd+P"],
     }, TEST_FILE_PATH)
 
     expect(snapshot).toEqual({
@@ -53,6 +54,7 @@ describe("normalizeKeybindings", () => {
         jumpToSidebarChat: ["cmd+alt"],
         createChatInCurrentProject: ["cmd+alt+n"],
         openAddProject: ["cmd+alt+o"],
+        openCommandPalette: ["cmd+p"],
       },
       warning: null,
       filePathDisplay: TEST_FILE_PATH,
@@ -106,6 +108,7 @@ describe("KeybindingsManager", () => {
       jumpToSidebarChat: ["Cmd+Alt"],
       createChatInCurrentProject: ["Cmd+Alt+N"],
       openAddProject: ["Cmd+Alt+O"],
+      openCommandPalette: ["Cmd+P"],
     })
 
     expect(snapshot).toEqual({
@@ -118,6 +121,7 @@ describe("KeybindingsManager", () => {
         jumpToSidebarChat: ["cmd+alt"],
         createChatInCurrentProject: ["cmd+alt+n"],
         openAddProject: ["cmd+alt+o"],
+        openCommandPalette: ["cmd+p"],
       },
       warning: null,
       filePathDisplay: filePath,

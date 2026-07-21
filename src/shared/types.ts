@@ -64,6 +64,57 @@ export interface InstalledSkillsSnapshot {
   skills: InstalledSkillSummary[]
 }
 
+/**
+ * A skill found in one of the user-level ("global") skill roots, attributed to
+ * the harnesses that read that root:
+ *   ~/.agents/skills — codex, cursor, pi
+ *   ~/.claude/skills — claude
+ *   ~/.cursor/skills — cursor
+ *   ~/.codex/skills  — codex (deprecated root, still scanned by codex)
+ * The same name in multiple roots merges into one entry with the provider union.
+ */
+export interface GlobalSkillSummary {
+  name: string
+  description: string
+  /** Harnesses that can invoke this skill (ordered claude, codex, cursor, pi). */
+  providers: AgentProvider[]
+  /** Absolute SKILL.md paths where the skill was found (one per root). */
+  paths: string[]
+  /** skills-CLI lock file source (owner/repo) when the skill was installed via the marketplace. */
+  source?: string
+}
+
+export interface GlobalSkillsSnapshot {
+  skills: GlobalSkillSummary[]
+}
+
+/**
+ * A user-invocable skill/command surfaced by a harness, normalized across
+ * providers for the composer's "/" menu:
+ *   - claude: built-in commands, .claude/commands, .claude/skills, plugins
+ *   - codex:  agent skills (skills/list)
+ *   - cursor: SKILL.md dirs scanned from disk (no enumeration protocol)
+ *   - pi:     prompt templates + skills from the resource loader
+ */
+export type HarnessSkillSource = "builtin" | "command" | "skill" | "plugin" | "extension"
+
+export interface HarnessSkill {
+  /** Invoked as `/name` (already namespaced, e.g. "skill:foo" for pi skills, "plugin:cmd" for claude plugins). */
+  name: string
+  description: string
+  argumentHint?: string
+  source: HarnessSkillSource
+  /** Absolute path to the backing SKILL.md / command markdown, when one exists. */
+  path?: string
+}
+
+export interface ChatSkillsSnapshot {
+  provider: AgentProvider
+  skills: HarnessSkill[]
+  /** "live" = enumerated from the running harness; "filesystem" = Kanna's own disk scan (cold start / fallback). */
+  origin: "live" | "filesystem"
+}
+
 export interface ChatAttachment {
   id: string
   kind: AttachmentKind
@@ -329,6 +380,19 @@ export function deriveModelLabel(modelId: string): string {
   return words
     .map((word) => (MODEL_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : titleCaseWord(word)))
     .join(" ")
+}
+
+/**
+ * Human-readable label for a model id: prefer the catalog entry's label
+ * (matching by id or alias), otherwise derive one from the id. This is the
+ * single naming transform shared by the chat input's model picker trigger and
+ * the transcript's session rows.
+ */
+export function resolveModelLabel(models: ReadonlyArray<ProviderModelOption> | undefined, modelId: string): string {
+  const catalogEntry = models?.find(
+    (candidate) => candidate.id === modelId || candidate.aliases?.includes(modelId)
+  )
+  return catalogEntry?.label ?? deriveModelLabel(modelId)
 }
 
 export interface ProviderCatalogEntry {
@@ -904,6 +968,7 @@ export type KeybindingAction =
   | "jumpToSidebarChat"
   | "createChatInCurrentProject"
   | "openAddProject"
+  | "openCommandPalette"
 
 export const DEFAULT_KEYBINDINGS: Record<KeybindingAction, string[]> = {
   toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"],
@@ -914,6 +979,7 @@ export const DEFAULT_KEYBINDINGS: Record<KeybindingAction, string[]> = {
   jumpToSidebarChat: ["cmd+alt"],
   createChatInCurrentProject: ["cmd+alt+n"],
   openAddProject: ["cmd+alt+o"],
+  openCommandPalette: ["cmd+k", "ctrl+k"],
 }
 
 export interface KeybindingsSnapshot {
@@ -1299,6 +1365,24 @@ export interface InterruptedEntry extends TranscriptEntryBase {
   kind: "interrupted"
 }
 
+/**
+ * Marks a mid-conversation harness switch. The old provider session is gone
+ * (session token cleared); the next turn starts a fresh session on
+ * `toProvider` with a handoff context block prepended on the wire.
+ */
+export interface HandoffBoundaryEntry extends TranscriptEntryBase {
+  kind: "handoff_boundary"
+  fromProvider: AgentProvider
+  toProvider: AgentProvider
+  /** Debug metadata about the handoff context built for the new harness. */
+  stats?: {
+    totalEntries: number
+    includedEntries: number
+    elidedToolResults: number
+    approxTokens: number
+  }
+}
+
 export type TranscriptEntry =
   | UserPromptEntry
   | SystemInitEntry
@@ -1313,6 +1397,7 @@ export type TranscriptEntry =
   | CompactSummaryEntry
   | ContextClearedEntry
   | InterruptedEntry
+  | HandoffBoundaryEntry
 
 export interface HydratedToolCallBase<TKind extends string, TInput, TResult> {
   id: string
@@ -1404,6 +1489,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "compact_boundary"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "compact_summary"; summary: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "context_cleared"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "handoff_boundary"; fromProvider: AgentProvider; toProvider: AgentProvider; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "interrupted"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "unknown"; json: string; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ id: string; messageId?: string; hidden?: boolean } & HydratedToolCall)

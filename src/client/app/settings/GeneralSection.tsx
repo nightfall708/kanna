@@ -36,6 +36,7 @@ import {
   SettingsRow,
   shouldPreviewChatSoundChange,
 } from "./shared"
+import { SETTINGS_ROWS } from "./registry"
 
 const themeOptions = [
   { value: "light" as ThemePreference, label: "Light", icon: Sun },
@@ -221,7 +222,7 @@ export function GeneralSection({
       {appSettingsError ? <SettingsErrorBanner message={appSettingsError} /> : null}
       <div className="border-b border-border">
         <SettingsRow
-          title="Application Update"
+          def={SETTINGS_ROWS.applicationUpdate}
           description={(
             <>
               <span>{updateStatusLabel}.</span>
@@ -248,10 +249,7 @@ export function GeneralSection({
           </div>
         </SettingsRow>
 
-        <SettingsRow
-          title="Theme"
-          description="Choose between light, dark, or system appearance"
-        >
+        <SettingsRow def={SETTINGS_ROWS.theme}>
           <SegmentedControl
             value={theme}
             onValueChange={handleThemeChange}
@@ -260,10 +258,7 @@ export function GeneralSection({
           />
         </SettingsRow>
 
-        <SettingsRow
-          title="Chat Sounds"
-          description="Play a pop when a chat starts waiting on you or the unread chat count increases"
-        >
+        <SettingsRow def={SETTINGS_ROWS.chatSounds}>
           <Select
             value={chatSoundPreference}
             onValueChange={(value) => handleChatSoundPreferenceChange(value as ChatSoundPreference)}
@@ -283,10 +278,7 @@ export function GeneralSection({
           </Select>
         </SettingsRow>
 
-        <SettingsRow
-          title="Chat Sound"
-          description="The bundled sound used for chat notification playback and previews"
-        >
+        <SettingsRow def={SETTINGS_ROWS.chatSound}>
           <Select
             value={chatSoundId}
             onValueChange={(value) => handleChatSoundIdChange(value as ChatSoundId)}
@@ -320,10 +312,7 @@ export function GeneralSection({
           />
         </SettingsRow>
 
-        <SettingsRow
-          title="Jump Back to Board"
-          description="After opening a chat from the board, return to the board automatically once the conversation starts running"
-        >
+        <SettingsRow def={SETTINGS_ROWS.jumpBackToBoard}>
           <SegmentedControl
             value={boardAutoReturnValue}
             onValueChange={(value) => {
@@ -334,11 +323,7 @@ export function GeneralSection({
           />
         </SettingsRow>
 
-        <SettingsRow
-          title="Default Editor"
-          description="Used when opening transcript links or files from the git diff menu"
-          alignStart
-        >
+        <SettingsRow def={SETTINGS_ROWS.defaultEditor} alignStart>
           <Select
             value={editorPreset}
             onValueChange={(value) => handleEditorPresetChange(value as EditorPreset)}
@@ -387,10 +372,7 @@ export function GeneralSection({
           </div>
         ) : null}
 
-        <SettingsRow
-          title="Terminal Scrollback"
-          description="Lines retained for embedded terminal history"
-        >
+        <SettingsRow def={SETTINGS_ROWS.terminalScrollback}>
           <div className="flex w-full min-w-0 flex-col items-stretch gap-2 md:w-auto md:items-end">
             <Input
               type="number"
@@ -410,10 +392,7 @@ export function GeneralSection({
           </div>
         </SettingsRow>
 
-        <SettingsRow
-          title="Terminal Min Column Width"
-          description="Minimum width for each terminal pane"
-        >
+        <SettingsRow def={SETTINGS_ROWS.terminalMinColumnWidth}>
           <div className="flex w-full min-w-0 flex-col items-stretch gap-2 md:w-auto md:items-end">
             <Input
               type="number"
@@ -434,7 +413,7 @@ export function GeneralSection({
         </SettingsRow>
 
         <SettingsRow
-          title="Anonymous Analytics"
+          def={SETTINGS_ROWS.anonymousAnalytics}
           description={(
             <>
               <span>

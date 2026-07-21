@@ -40,6 +40,7 @@ export function BoardPage() {
         />
         <ProjectBoard
           data={state.sidebarData}
+          localProjects={state.localProjects?.projects ?? []}
           socket={state.socket}
           animateMove={boardMove}
           onOpenChat={(chatId, archived, columnId) => {

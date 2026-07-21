@@ -1,11 +1,7 @@
 import { useMemo, useState, type ComponentType, type ReactNode, type SVGProps } from "react"
 import { Box, Brain, Gauge, ListTodo, LockOpen, Plus, Search, SquareMenu, SquareMinus } from "lucide-react"
 import {
-  CLAUDE_CONTEXT_WINDOW_OPTIONS,
-  CLAUDE_REASONING_OPTIONS,
-  PI_REASONING_OPTIONS,
-  deriveModelLabel,
-  getCodexReasoningOptions,
+  resolveModelLabel,
   type AgentProvider,
   type ClaudeContextWindow,
   type ClaudeModelOptions,
@@ -17,9 +13,10 @@ import {
   type PiReasoningEffort,
   type ProviderCatalogEntry,
   type ProviderModelOption,
-  supportsClaudeMaxReasoningEffort,
 } from "../../../shared/types"
+import { deriveComposerOptionControls } from "../../lib/composer"
 import { cn } from "../../lib/utils"
+import type { ComposerState } from "../../stores/chatPreferencesStore"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>
@@ -258,6 +255,8 @@ interface ChatPreferenceControlsProps {
   selectedProvider: AgentProvider
   showProviderPicker?: boolean
   providerLocked?: boolean
+  /** A harness switch is staged for this chat and applies on the next send. */
+  providerSwitchPending?: boolean
   model: string
   modelOptions: ClaudeModelOptions | CodexModelOptions | CursorModelOptions | PiModelOptions
   onProviderChange?: (provider: AgentProvider) => void
@@ -276,6 +275,7 @@ export function ChatPreferenceControls({
   selectedProvider,
   showProviderPicker = true,
   providerLocked = false,
+  providerSwitchPending = false,
   model,
   modelOptions,
   onProviderChange,
@@ -290,17 +290,22 @@ export function ChatPreferenceControls({
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
   const ProviderIcon = PROVIDER_ICONS[selectedProvider]
   const ModelIcon = Box
-  const showPlanMode = includePlanMode && providerConfig?.supportsPlanMode && onPlanModeChange
-  const claudeModelOptions = selectedProvider === "claude" ? modelOptions as ClaudeModelOptions : null
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
-  const cursorModelOptions = selectedProvider === "cursor" ? modelOptions as CursorModelOptions : null
-  const piModelOptions = selectedProvider === "pi" ? modelOptions as PiModelOptions : null
-  const codexReasoningOptions = getCodexReasoningOptions(model)
-  const selectedModelOption = providerConfig.models.find((candidate) => candidate.id === model)
-  const contextWindowOptions = selectedModelOption?.contextWindowOptions ?? []
-  const modelSupportsFastMode = Boolean(selectedModelOption?.supportsFastMode)
-  const selectedContextWindow = claudeModelOptions?.contextWindow ?? CLAUDE_CONTEXT_WINDOW_OPTIONS[0].id
-  const ContextWindowIcon = selectedContextWindow === "1m" ? SquareMenu : SquareMinus
+  // Central availability registry (shared with the command palette): which
+  // option controls exist for this provider/model and their current values.
+  const controls = deriveComposerOptionControls(
+    { provider: selectedProvider, model, modelOptions, planMode } as ComposerState,
+    providerConfig
+  )
+  const showPlanMode = includePlanMode && controls.planMode && onPlanModeChange
+  const ContextWindowIcon = controls.contextWindow?.selectedId === "1m" ? SquareMenu : SquareMinus
+
+  const reasoningChangeFor = (effortId: string): ModelOptionChange =>
+    selectedProvider === "claude"
+      ? { type: "claudeReasoningEffort", effort: effortId as ClaudeReasoningEffort }
+      : selectedProvider === "pi"
+        ? { type: "piReasoningEffort", effort: effortId as PiReasoningEffort }
+        : { type: "codexReasoningEffort", effort: effortId as CodexReasoningEffort }
 
   return (
     <div className={cn("flex md:justify-center items-center gap-0.5", className)}>
@@ -313,6 +318,8 @@ export function ChatPreferenceControls({
               <span>{providerConfig?.label ?? selectedProvider}</span>
             </>
           )}
+          // Amber = staged harness switch (applies on the next message).
+          triggerClassName={providerSwitchPending ? "text-amber-500 dark:text-amber-400" : undefined}
         >
           {(close) => availableProviders.map((provider) => {
             const Icon = PROVIDER_ICONS[provider.id]
@@ -336,7 +343,7 @@ export function ChatPreferenceControls({
         trigger={(
           <>
             <ModelIcon className="h-3.5 w-3.5" />
-            <span>{providerConfig.models.find((candidate) => candidate.id === model)?.label ?? deriveModelLabel(model)}</span>
+            <span>{resolveModelLabel(providerConfig.models, model)}</span>
           </>
         )}
       >
@@ -373,83 +380,55 @@ export function ChatPreferenceControls({
         )}
       </InputPopover>
 
-      {selectedProvider !== "cursor" ? (
+      {controls.reasoning ? (
         <InputPopover
           trigger={(
             <>
               <Brain className="h-3.5 w-3.5" />
               <span>{
-                selectedProvider === "claude"
-                  ? CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === claudeModelOptions?.reasoningEffort)?.label ?? claudeModelOptions?.reasoningEffort
-                  : selectedProvider === "pi"
-                    ? PI_REASONING_OPTIONS.find((effort) => effort.id === piModelOptions?.reasoningEffort)?.label ?? piModelOptions?.reasoningEffort
-                    : codexReasoningOptions.find((effort) => effort.id === codexModelOptions?.reasoningEffort)?.label ?? codexModelOptions?.reasoningEffort
+                controls.reasoning.options.find((effort) => effort.id === controls.reasoning?.selectedId)?.label
+                  ?? controls.reasoning.selectedId
               }</span>
             </>
           )}
         >
-          {(close) => (
-            selectedProvider === "claude"
-              ? CLAUDE_REASONING_OPTIONS.map((effort) => (
-                <PopoverMenuItem
-                  key={effort.id}
-                  onClick={() => {
-                    onModelOptionChange({ type: "claudeReasoningEffort", effort: effort.id })
-                    close()
-                  }}
-                  selected={claudeModelOptions?.reasoningEffort === effort.id}
-                  icon={<Brain className="h-4 w-4 text-muted-foreground" />}
-                  label={effort.label}
-                  disabled={effort.id === "max" && !supportsClaudeMaxReasoningEffort(model)}
-                />
-              ))
-              : selectedProvider === "pi"
-                ? PI_REASONING_OPTIONS.map((effort) => (
-                  <PopoverMenuItem
-                    key={effort.id}
-                    onClick={() => {
-                      onModelOptionChange({ type: "piReasoningEffort", effort: effort.id })
-                      close()
-                    }}
-                    selected={piModelOptions?.reasoningEffort === effort.id}
-                    icon={<Brain className="h-4 w-4 text-muted-foreground" />}
-                    label={effort.label}
-                  />
-                ))
-                : codexReasoningOptions.map((effort) => (
-                  <PopoverMenuItem
-                    key={effort.id}
-                    onClick={() => {
-                      onModelOptionChange({ type: "codexReasoningEffort", effort: effort.id })
-                      close()
-                    }}
-                    selected={codexModelOptions?.reasoningEffort === effort.id}
-                    icon={<Brain className="h-4 w-4 text-muted-foreground" />}
-                    label={effort.label}
-                    description={effort.description}
-                  />
-                ))
-          )}
+          {(close) => controls.reasoning?.options.map((effort) => (
+            <PopoverMenuItem
+              key={effort.id}
+              onClick={() => {
+                onModelOptionChange(reasoningChangeFor(effort.id))
+                close()
+              }}
+              selected={controls.reasoning?.selectedId === effort.id}
+              icon={<Brain className="h-4 w-4 text-muted-foreground" />}
+              label={effort.label}
+              description={effort.description}
+              disabled={effort.disabled}
+            />
+          ))}
         </InputPopover>
       ) : null}
 
-      {selectedProvider === "claude" && contextWindowOptions.length > 1 ? (
+      {controls.contextWindow ? (
         <InputPopover
           trigger={(
             <>
               <ContextWindowIcon className="h-3.5 w-3.5" />
-              <span>{contextWindowOptions.find((option) => option.id === selectedContextWindow)?.label ?? selectedContextWindow}</span>
+              <span>{
+                controls.contextWindow.options.find((option) => option.id === controls.contextWindow?.selectedId)?.label
+                  ?? controls.contextWindow.selectedId
+              }</span>
             </>
           )}
         >
-          {(close) => contextWindowOptions.map((option) => (
+          {(close) => controls.contextWindow?.options.map((option) => (
             <PopoverMenuItem
               key={option.id}
                 onClick={() => {
-                  onModelOptionChange({ type: "contextWindow", contextWindow: option.id })
+                  onModelOptionChange({ type: "contextWindow", contextWindow: option.id as ClaudeContextWindow })
                   close()
                 }}
-                selected={selectedContextWindow === option.id}
+                selected={controls.contextWindow?.selectedId === option.id}
                 icon={option.id === "1m"
                   ? <SquareMenu className="h-4 w-4 text-muted-foreground" />
                   : <SquareMinus className="h-4 w-4 text-muted-foreground" />}
@@ -459,117 +438,47 @@ export function ChatPreferenceControls({
         </InputPopover>
       ) : null}
 
-      {selectedProvider === "claude" && modelSupportsFastMode ? (
-        <InputPopover
-          trigger={(
-            <>
-              {claudeModelOptions?.fastMode
-                ? <Gauge className="h-3.5 w-3.5" />
-                : <Gauge className="h-3.5 w-3.5 -scale-x-100" />}
-              <span>{claudeModelOptions?.fastMode ? "Fast Mode" : "Standard"}</span>
-            </>
-          )}
-          triggerClassName={claudeModelOptions?.fastMode ? "text-emerald-500 dark:text-emerald-400" : undefined}
-        >
-          {(close) => (
-            <>
-              <PopoverMenuItem
-                onClick={() => {
-                  onModelOptionChange({ type: "fastMode", fastMode: false })
-                  close()
-                }}
-                selected={!claudeModelOptions?.fastMode}
-                icon={<Gauge className="h-4 w-4 text-muted-foreground -scale-x-100" />}
-                label="Standard"
-              />
-              <PopoverMenuItem
-                onClick={() => {
-                  onModelOptionChange({ type: "fastMode", fastMode: true })
-                  close()
-                }}
-                selected={Boolean(claudeModelOptions?.fastMode)}
-                icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
-                label="Fast Mode"
-              />
-            </>
-          )}
-        </InputPopover>
-      ) : null}
-
-      {selectedProvider === "codex" && modelSupportsFastMode ? (
-        <InputPopover
-          trigger={(
-            <>
-              {codexModelOptions?.fastMode
-                ? <Gauge className="h-3.5 w-3.5" />
-                : <Gauge className="h-3.5 w-3.5 -scale-x-100" />}
-              <span>{codexModelOptions?.fastMode ? "Fast Mode" : "Standard"}</span>
-            </>
-          )}
-          triggerClassName={codexModelOptions?.fastMode ? "text-emerald-500 dark:text-emerald-400" : undefined}
-        >
-          {(close) => (
-            <>
-              <PopoverMenuItem
-                onClick={() => {
-                  onModelOptionChange({ type: "fastMode", fastMode: false })
-                  close()
-                }}
-                selected={!codexModelOptions?.fastMode}
-                icon={<Gauge className="h-4 w-4 text-muted-foreground -scale-x-100" />}
-                label="Standard"
-              />
-              <PopoverMenuItem
-                onClick={() => {
-                  onModelOptionChange({ type: "fastMode", fastMode: true })
-                  close()
-                }}
-                selected={Boolean(codexModelOptions?.fastMode)}
-                icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
-                label="Fast Mode"
-              />
-            </>
-          )}
-        </InputPopover>
-      ) : null}
-
-      {selectedProvider === "cursor" && modelSupportsFastMode ? (
-        <InputPopover
-          trigger={(
-            <>
-              {cursorModelOptions?.fastMode
-                ? <Gauge className="h-3.5 w-3.5" />
-                : <Gauge className="h-3.5 w-3.5 -scale-x-100" />}
-              <span>{cursorModelOptions?.fastMode ? "Fast" : "Standard"}</span>
-            </>
-          )}
-          triggerClassName={cursorModelOptions?.fastMode ? "text-emerald-500 dark:text-emerald-400" : undefined}
-        >
-          {(close) => (
-            <>
-              <PopoverMenuItem
-                onClick={() => {
-                  onModelOptionChange({ type: "fastMode", fastMode: false })
-                  close()
-                }}
-                selected={!cursorModelOptions?.fastMode}
-                icon={<Gauge className="h-4 w-4 text-muted-foreground -scale-x-100" />}
-                label="Standard"
-              />
-              <PopoverMenuItem
-                onClick={() => {
-                  onModelOptionChange({ type: "fastMode", fastMode: true })
-                  close()
-                }}
-                selected={Boolean(cursorModelOptions?.fastMode)}
-                icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
-                label="Fast"
-                description="Faster responses, higher usage"
-              />
-            </>
-          )}
-        </InputPopover>
-      ) : null}
+      {controls.fastMode ? (() => {
+        const fastEnabled = controls.fastMode.enabled
+        const fastLabel = selectedProvider === "cursor" ? "Fast" : "Fast Mode"
+        return (
+          <InputPopover
+            trigger={(
+              <>
+                {fastEnabled
+                  ? <Gauge className="h-3.5 w-3.5" />
+                  : <Gauge className="h-3.5 w-3.5 -scale-x-100" />}
+                <span>{fastEnabled ? fastLabel : "Standard"}</span>
+              </>
+            )}
+            triggerClassName={fastEnabled ? "text-emerald-500 dark:text-emerald-400" : undefined}
+          >
+            {(close) => (
+              <>
+                <PopoverMenuItem
+                  onClick={() => {
+                    onModelOptionChange({ type: "fastMode", fastMode: false })
+                    close()
+                  }}
+                  selected={!fastEnabled}
+                  icon={<Gauge className="h-4 w-4 text-muted-foreground -scale-x-100" />}
+                  label="Standard"
+                />
+                <PopoverMenuItem
+                  onClick={() => {
+                    onModelOptionChange({ type: "fastMode", fastMode: true })
+                    close()
+                  }}
+                  selected={fastEnabled}
+                  icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
+                  label={fastLabel}
+                  description={selectedProvider === "cursor" ? "Faster responses, higher usage" : undefined}
+                />
+              </>
+            )}
+          </InputPopover>
+        )
+      })() : null}
 
       {showPlanMode ? (
         <InputPopover

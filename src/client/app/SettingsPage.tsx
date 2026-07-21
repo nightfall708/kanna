@@ -1,16 +1,12 @@
 import { useEffect, useMemo, useState } from "react"
 import {
-  BookText,
-  Command,
   Code,
   Info,
   Loader2,
   Menu,
-  MessageSquareQuote,
-  Settings2,
   LogOut,
 } from "lucide-react"
-import { useNavigate, useOutletContext, useParams } from "react-router-dom"
+import { useLocation, useNavigate, useOutletContext, useParams } from "react-router-dom"
 import { getKeybindingsFilePathDisplay, SDK_CLIENT_APP } from "../../shared/branding"
 import { SettingsHeaderButton } from "../components/ui/settings-header-button"
 import { getResolvedKeybindings } from "../lib/keybindings"
@@ -19,6 +15,7 @@ import { ChangelogSection, useChangelog } from "./settings/ChangelogSection"
 import { GeneralSection } from "./settings/GeneralSection"
 import { KeybindingsSection } from "./settings/KeybindingsSection"
 import { ProvidersSection } from "./settings/ProvidersSection"
+import { SETTINGS_SECTIONS } from "./settings/registry"
 import { SkillsSection } from "./settings/SkillsSection"
 import { getKeybindingsSubtitle } from "./settings/shared"
 import type { KannaState } from "./useKannaState"
@@ -37,39 +34,7 @@ export {
 export { SkillsSection } from "./settings/SkillsSection"
 export { getKeybindingsSubtitle, shouldPreviewChatSoundChange } from "./settings/shared"
 
-const sidebarItems = [
-  {
-    id: "general",
-    label: "General",
-    icon: Settings2,
-    subtitle: "Manage appearance, editor behavior, and embedded terminal defaults.",
-  },
-  {
-    id: "skills",
-    label: "Skills",
-    icon: BookText,
-    subtitle: "Manage globally installed agent skills from the active skill lock file.",
-  },
-  {
-    id: "providers",
-    label: "Providers",
-    icon: MessageSquareQuote,
-    subtitle: "Manage the default chat provider and saved model defaults for Claude Code, Codex, Cursor, and Pi.",
-  },
-  {
-    id: "keybindings",
-    label: "Keybindings",
-    icon: Command,
-    subtitle: "Edit global app shortcuts stored in the active keybindings file.",
-  },
-  // always last
-  {
-    id: "changelog",
-    label: "Changelog",
-    icon: BookText,
-    subtitle: "Release notes pulled from the public GitHub releases feed.",
-  },
-] as const
+const sidebarItems = SETTINGS_SECTIONS
 type SidebarItem = (typeof sidebarItems)[number]
 type SidebarPageId = SidebarItem["id"]
 
@@ -78,8 +43,50 @@ export function resolveSettingsSectionId(sectionId: string | undefined): Sidebar
   return sidebarItems.some((item) => item.id === sectionId) ? (sectionId as SidebarPageId) : null
 }
 
+/**
+ * Scrolls the settings row matching `#rowId` into view and briefly
+ * highlights it. Used by the command palette's "jump to setting" entries.
+ */
+function useSettingsRowHashScroll(hash: string, ready: boolean) {
+  useEffect(() => {
+    if (!ready) return
+    const rowId = hash.startsWith("#") ? hash.slice(1) : hash
+    if (!rowId) return
+
+    let cancelled = false
+    let attempts = 0
+    let timeoutId: number | null = null
+
+    function tryScroll() {
+      if (cancelled) return
+      const element = document.getElementById(rowId)
+      if (!element) {
+        attempts += 1
+        if (attempts < 20) {
+          requestAnimationFrame(tryScroll)
+        }
+        return
+      }
+
+      element.scrollIntoView({ block: "center" })
+      element.classList.add("bg-muted", "transition-colors", "duration-700")
+      timeoutId = window.setTimeout(() => {
+        element.classList.remove("bg-muted")
+      }, 900)
+    }
+
+    requestAnimationFrame(tryScroll)
+
+    return () => {
+      cancelled = true
+      if (timeoutId !== null) window.clearTimeout(timeoutId)
+    }
+  }, [hash, ready])
+}
+
 export function SettingsPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { sectionId } = useParams<{ sectionId: string }>()
   const state = useOutletContext<KannaState>()
   const [signingOut, setSigningOut] = useState(false)
@@ -92,6 +99,8 @@ export function SettingsPage() {
   const changelog = useChangelog(selectedPage === "changelog" && !isConnecting)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(state.keybindings), [state.keybindings])
   const keybindingsFilePathDisplay = resolvedKeybindings.filePathDisplay || getKeybindingsFilePathDisplay()
+
+  useSettingsRowHashScroll(location.hash, !isConnecting)
 
   useEffect(() => {
     if (!sectionId) return

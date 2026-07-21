@@ -214,7 +214,7 @@ describe("DiffStore", () => {
   test("refreshSnapshot reports origin presence before the first commit", async () => {
     const repoRoot = await createRepo()
     tempDirs.push(repoRoot)
-    await run(["git", "remote", "add", "origin", "https://github.com/jakemor/test224.git"], repoRoot)
+    await run(["git", "remote", "add", "origin", "git@github.com:jakemor/test224.git"], repoRoot)
     await writeFile(path.join(repoRoot, "poem.md"), "rose\n", "utf8")
 
     const store = new DiffStore(repoRoot)

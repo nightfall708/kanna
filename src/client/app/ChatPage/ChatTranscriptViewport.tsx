@@ -23,6 +23,9 @@ import {
 } from "./utils"
 import type { EditorOpenSettings, EditorPreset, OpenExternalAction } from "../../../shared/protocol"
 
+/** Max auto-fetched history pages per chat when the list is too short to scroll. */
+const MAX_HISTORY_AUTO_FILL_PAGES = 4
+
 interface ChatTranscriptViewportProps {
   activeChatId: string | null
   listRef: React.RefObject<LegendListRef | null>
@@ -104,7 +107,8 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
     isLoading: isProcessing,
     localPath: localPath ?? undefined,
     latestToolIds,
-  }), [isProcessing, latestToolIds, localPath, messages])
+    hasOlderHistory,
+  }), [hasOlderHistory, isProcessing, latestToolIds, localPath, messages])
   const resolvedRows = useStableResolvedRows(rawRows)
 
   useEffect(() => {
@@ -191,6 +195,38 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
     void loadOlderHistory()
   }, [hasOlderHistory, isHistoryLoading, loadOlderHistory])
 
+  // A long tool-call run can collapse the entire loaded window into a single
+  // tool-group row, leaving the list too short to scroll — so onStartReached
+  // can never fire. Auto-fetch older pages until the viewport overflows
+  // (capped); the header button below is the manual escape hatch beyond that.
+  const autoFillPagesRef = useRef(0)
+
+  useEffect(() => {
+    autoFillPagesRef.current = 0
+  }, [activeChatId])
+
+  useEffect(() => {
+    if (isHistoryLoading || !hasOlderHistory || resolvedRows.length === 0) {
+      return
+    }
+    if (autoFillPagesRef.current >= MAX_HISTORY_AUTO_FILL_PAGES) {
+      return
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      const scrollNode = listRef.current?.getScrollableNode?.()
+      if (!(scrollNode instanceof HTMLElement)) {
+        return
+      }
+      if (scrollNode.scrollHeight > scrollNode.clientHeight + 1) {
+        return
+      }
+      autoFillPagesRef.current += 1
+      void loadOlderHistory()
+    })
+    return () => window.cancelAnimationFrame(frameId)
+  }, [activeChatId, hasOlderHistory, isHistoryLoading, listRef, loadOlderHistory, resolvedRows.length])
+
   const handleOpenLocalLinkClick = useCallback((target: OpenLocalLinkTarget) => {
     if (target.trigger !== "contextmenu") {
       const action = shouldOpenLocalFileLinkInEditor(target.path) ? "open_editor" : "open_default"
@@ -238,6 +274,16 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
               Loading more messages...
             </AnimatedShinyText>
           </span>
+        </div>
+      ) : hasOlderHistory ? (
+        <div className="flex justify-center pb-4">
+          <button
+            type="button"
+            onClick={() => void loadOlderHistory()}
+            className="cursor-pointer rounded-md px-2 py-1 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            Load older messages
+          </button>
         </div>
       ) : null}
     </div>

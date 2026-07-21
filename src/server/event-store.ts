@@ -692,6 +692,11 @@ export class EventStore {
     return path.join(this.transcriptsDir, `${chatId}.jsonl`)
   }
 
+  /** Absolute path of a chat's JSONL transcript (may not exist yet for a fresh chat). */
+  getTranscriptPath(chatId: string) {
+    return this.transcriptPath(chatId)
+  }
+
   /** Cached entries for a chat, loading from disk on miss. Callers must not mutate. */
   private getTranscriptEntries(chatId: string): TranscriptEntry[] {
     const cached = this.transcriptCache.get(chatId)

@@ -1,10 +1,12 @@
-import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
+import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage, type SlashCommand } from "@anthropic-ai/claude-agent-sdk"
 import { homedir } from "node:os"
 import type {
   AgentProvider,
   ChatAttachment,
+  ChatSkillsSnapshot,
   CodexReasoningEffort,
   ContextWindowUsageSnapshot,
+  HarnessSkill,
   ModelOptions,
   NormalizedToolCall,
   PendingToolSnapshot,
@@ -24,6 +26,15 @@ import { PiAgentManager, resolvePiConnection } from "./pi-agent"
 import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
+  appendSystemMessageBlock,
+  buildSkillSystemMessage,
+  findSkillByName,
+  parseSkillInvocation,
+  scanClaudeSkills,
+  scanCodexSkills,
+  scanCursorSkills,
+} from "./harness-skills"
+import {
   applyClaudeSdkModels,
   applyCursorModels,
   type ClaudeSdkModelInfo,
@@ -39,6 +50,7 @@ import {
 import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import { asNumber, asRecord } from "../shared/json"
+import { buildHandoffContext, buildHandoffMessageContent, type HandoffContext } from "./handoff"
 import { timestamped } from "./transcript"
 
 const CLAUDE_TOOLSET = [
@@ -102,6 +114,7 @@ interface ClaudeSessionHandle {
   setPermissionMode: (planMode: boolean) => Promise<void>
   setFastMode?: (fastMode: boolean) => Promise<void>
   supportedModels?: () => Promise<ClaudeSdkModelInfo[]>
+  supportedCommands?: () => Promise<SlashCommand[]>
 }
 
 interface ClaudeSessionState {
@@ -190,10 +203,40 @@ function stringFromUnknown(value: unknown) {
   }
 }
 
-function buildSteeredMessageContent(content: string) {
-  return content.trim().length > 0
-    ? `${STEERED_MESSAGE_PREFIX}\n\n${content}`
-    : STEERED_MESSAGE_PREFIX
+export function buildSteeredMessageContent(content: string) {
+  const trimmed = content.trim()
+  if (trimmed.length === 0) {
+    return STEERED_MESSAGE_PREFIX
+  }
+  // Slash invocations must stay at the very start of the message — claude
+  // checks trim().startsWith("/") and pi checks startsWith("/") before
+  // expanding — so the steer block trails instead of leading for them.
+  if (trimmed.startsWith("/")) {
+    return `${content}\n\n${STEERED_MESSAGE_PREFIX}`
+  }
+  return `${STEERED_MESSAGE_PREFIX}\n\n${content}`
+}
+
+export interface ConcurrentProjectChat {
+  title: string
+  transcriptPath: string
+}
+
+/**
+ * Wire-only notice (never stored in the transcript — same pattern as the
+ * codex/cursor skill failsafe) appended to the harness-bound prompt when
+ * other chats have active turns in the same project directory.
+ */
+export function buildConcurrentAgentsNotice(chats: ConcurrentProjectChat[]): string | null {
+  if (chats.length === 0) return null
+  const lines = chats.map((chat) => `${chat.title}: ${chat.transcriptPath}`)
+  return [
+    "<system-message>there are other agents working in the current directory. Don't overwrite their work if builds fail, don't fix broken tests (as they may be stale while the other agent works) and expect changes between reads.",
+    "",
+    "Active chats & their transcripts can be found here:",
+    ...lines,
+    "</system-message>",
+  ].join("\n")
 }
 
 function escapeXmlAttribute(value: string) {
@@ -447,7 +490,10 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
   return []
 }
 
-async function* createClaudeHarnessStream(q: Query): AsyncGenerator<HarnessEvent> {
+async function* createClaudeHarnessStream(
+  q: Query,
+  hooks?: { onCommandsChanged?: (commands: SlashCommand[]) => void }
+): AsyncGenerator<HarnessEvent> {
   let seenAssistantUsageIds = new Set<string>()
   let latestUsageSnapshot: ContextWindowUsageSnapshot | null = null
   let lastKnownContextWindow: number | undefined
@@ -456,6 +502,13 @@ async function* createClaudeHarnessStream(q: Query): AsyncGenerator<HarnessEvent
     const sessionToken = typeof sdkMessage.session_id === "string" ? sdkMessage.session_id : null
     if (sessionToken) {
       yield { type: "session_token", sessionToken }
+    }
+
+    // Mid-session command/skill list changes are pushed by the SDK; per its
+    // docs the payload must REPLACE any cached list (a supportedCommands()
+    // re-fetch would return the stale initialize-time list).
+    if (sdkMessage?.type === "system" && sdkMessage.subtype === "commands_changed" && Array.isArray(sdkMessage.commands)) {
+      hooks?.onCommandsChanged?.(sdkMessage.commands as SlashCommand[])
     }
 
     // Per-step usage lives on the nested API message (`sdkMessage.message.usage`);
@@ -639,9 +692,17 @@ async function startClaudeSession(args: {
     },
   })
 
+  // Latest command list pushed via system/commands_changed; null until the
+  // first push. supportedCommands() below prefers this over a q re-fetch.
+  const commandsRef: { current: SlashCommand[] | null } = { current: null }
+
   return {
     provider: "claude",
-    stream: createClaudeHarnessStream(q),
+    stream: createClaudeHarnessStream(q, {
+      onCommandsChanged: (commands) => {
+        commandsRef.current = commands
+      },
+    }),
     getAccountInfo: async () => {
       try {
         return await q.accountInfo()
@@ -676,6 +737,7 @@ async function startClaudeSession(args: {
       await q.applyFlagSettings({ fastMode })
     },
     supportedModels: async () => await q.supportedModels(),
+    supportedCommands: async () => commandsRef.current ?? await q.supportedCommands(),
     close: () => {
       promptQueueClosed = true
       promptQueue.finish()
@@ -793,9 +855,13 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
   }
 
+  /**
+   * An explicit provider on the message wins — sending with a different
+   * provider than the chat's current one performs a mid-conversation harness
+   * switch (fresh session + handoff context, see prepareProviderHandoff).
+   */
   private resolveProvider(options: SendMessageOptions, currentProvider: AgentProvider | null) {
-    if (currentProvider) return currentProvider
-    return options.provider ?? "claude"
+    return options.provider ?? currentProvider ?? "claude"
   }
 
   private getProviderSettings(provider: AgentProvider, options: SendMessageOptions) {
@@ -862,7 +928,7 @@ export class AgentCoordinator {
     await this.startTurnForChat({
       chatId,
       provider,
-      content: options?.steered ? buildSteeredMessageContent(queuedMessage.content) : queuedMessage.content,
+      content: queuedMessage.content,
       attachments: queuedMessage.attachments,
       model: settings.model,
       effort: settings.effort,
@@ -881,6 +947,67 @@ export class AgentCoordinator {
     if (!nextQueuedMessage) return false
     await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage)
     return true
+  }
+
+  /**
+   * Other chats with an active turn in the same project directory as
+   * `localPath` (matched by path, not project id, so two Kanna projects
+   * pointing at the same directory still see each other). Draining streams
+   * are excluded — those turns are winding down, not doing new work.
+   */
+  private collectConcurrentProjectChats(chatId: string, localPath: string): ConcurrentProjectChat[] {
+    const chats: ConcurrentProjectChat[] = []
+    for (const activeChatId of this.activeTurns.keys()) {
+      if (activeChatId === chatId) continue
+      const chat = this.store.getChat(activeChatId)
+      if (!chat) continue
+      const project = this.store.getProject(chat.projectId)
+      if (!project || project.localPath !== localPath) continue
+      chats.push({ title: chat.title, transcriptPath: this.store.getTranscriptPath(activeChatId) })
+    }
+    return chats
+  }
+
+  /**
+   * Mid-conversation harness switch. Closes the outgoing provider's session
+   * plumbing, clears the chat's session tokens (fresh native session on the
+   * new harness — stale old sessions are never resumed, even when switching
+   * back), and appends a handoff_boundary entry. Returns the wire-only
+   * handoff context to prepend to this turn's prompt, or null when the
+   * transcript has nothing worth handing off (the switch still happens).
+   */
+  private async prepareProviderHandoff(
+    chatId: string,
+    fromProvider: AgentProvider,
+    toProvider: AgentProvider,
+    entries: TranscriptEntry[],
+  ): Promise<HandoffContext | null> {
+    const claudeSession = this.claudeSessions.get(chatId)
+    if (claudeSession) {
+      claudeSession.session.close()
+      this.claudeSessions.delete(chatId)
+    }
+    // Codex keeps a warm per-chat app-server session that would silently
+    // resume the old thread on switch-back; kill it so the cleared session
+    // token actually takes effect. Cursor spawns per turn — nothing to close.
+    this.codexManager.stopSession(chatId)
+    this.piManager.closeChat(chatId)
+    await this.store.setSessionToken(chatId, null)
+    await this.store.setPendingForkSessionToken(chatId, null)
+
+    const handoff = buildHandoffContext({
+      entries,
+      fromProvider,
+      toProvider,
+      transcriptPath: this.store.getTranscriptPath(chatId),
+    })
+    await this.store.appendMessage(chatId, timestamped({
+      kind: "handoff_boundary",
+      fromProvider,
+      toProvider,
+      ...(handoff ? { stats: handoff.stats } : {}),
+    }))
+    return handoff
   }
 
   private async startTurnForChat(args: {
@@ -908,7 +1035,8 @@ export class AgentCoordinator {
       throw new Error("Chat is already running")
     }
 
-    if (!chat.provider) {
+    const previousProvider = chat.provider
+    if (chat.provider !== args.provider) {
       await this.store.setChatProvider(args.chatId, args.provider)
     }
     await this.store.setPlanMode(args.chatId, args.planMode)
@@ -925,6 +1053,15 @@ export class AgentCoordinator {
     if (!project) {
       throw new Error("Project not found")
     }
+
+    // Mid-conversation harness switch: drop the old provider's session (its
+    // native context is stale the moment another harness takes a turn — we
+    // never resume it, even when switching back), mark the boundary in the
+    // transcript, and build the wire-only handoff context from the entries
+    // that precede this turn's prompt.
+    const handoff = previousProvider !== null && previousProvider !== args.provider
+      ? await this.prepareProviderHandoff(args.chatId, previousProvider, args.provider, existingMessages)
+      : null
 
     if (args.appendUserPrompt) {
       const userPromptEntry = timestamped(
@@ -957,6 +1094,43 @@ export class AgentCoordinator {
       })
     }
 
+    // Wire-only injections. The transcript above stores the user's typed text
+    // verbatim; anything Kanna adds for the harness is applied here and never
+    // persisted (the `steered` flag on the entry drives the UI affordance).
+    //
+    // Steer: prefix the mid-turn <system-message> block — or suffix it when
+    // the message is a slash invocation, since claude/pi only expand a message
+    // that STARTS with "/name".
+    //
+    // Concurrent agents: when other chats have active turns in the same
+    // project directory, suffix a <system-message> notice listing them (and
+    // their transcript paths) so agents don't trample each other's work.
+    //
+    // Handoff: after a harness switch, the rendered transcript context leads
+    // the first prompt sent to the new harness (see handoff.ts).
+    let wireContent = args.steered ? buildSteeredMessageContent(args.content) : args.content
+    const concurrentAgentsNotice = buildConcurrentAgentsNotice(
+      this.collectConcurrentProjectChats(args.chatId, project.localPath)
+    )
+    if (concurrentAgentsNotice) {
+      wireContent = appendSystemMessageBlock(wireContent, concurrentAgentsNotice)
+    }
+
+    // Harness switch: lead with the handoff transcript so the user's actual
+    // prompt is the last thing in context (trails for slash invocations,
+    // which must stay at the very start of the message).
+    if (handoff) {
+      wireContent = buildHandoffMessageContent(handoff.text, wireContent)
+    }
+
+    // "/name" skill invocation, translated per provider:
+    //   claude/pi — passthrough; both harnesses expand a leading "/name".
+    //   codex     — structured skill input item + <system-message> failsafe.
+    //   cursor    — <system-message> failsafe only (no headless expansion).
+    const skillInvocation = (args.provider === "codex" || args.provider === "cursor")
+      ? parseSkillInvocation(args.content)
+      : null
+
     let turn: HarnessTurn
     if (args.provider === "claude") {
       turn = await this.startClaudeTurn({
@@ -974,10 +1148,17 @@ export class AgentCoordinator {
       // Refresh the model catalog off the turn's critical path if a previous
       // fetch never succeeded (e.g. the user just logged in to cursor-agent).
       void this.refreshCursorModelCatalog()
+      let cursorContent = buildPromptText(wireContent, args.attachments)
+      if (skillInvocation) {
+        const match = findSkillByName(scanCursorSkills({ cwd: project.localPath }), skillInvocation.name)
+        if (match?.path) {
+          cursorContent = appendSystemMessageBlock(cursorContent, buildSkillSystemMessage(match.path))
+        }
+      }
       // Cursor cannot fork (see canForkChat), so a turn always resumes its own session.
       turn = await this.cursorManager.startTurn({
         cwd: project.localPath,
-        content: buildPromptText(args.content, args.attachments),
+        content: cursorContent,
         model: args.model,
         sessionToken: chat.sessionToken,
       })
@@ -988,7 +1169,7 @@ export class AgentCoordinator {
       turn = await this.piManager.startTurn({
         chatId: args.chatId,
         cwd: project.localPath,
-        content: buildPromptText(args.content, args.attachments),
+        content: buildPromptText(wireContent, args.attachments),
         model: args.model,
         effort: normalizePiModelOptions(undefined, args.effort).reasoningEffort,
         sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
@@ -1009,7 +1190,10 @@ export class AgentCoordinator {
       }
       turn = await this.codexManager.startTurn({
         chatId: args.chatId,
-        content: buildPromptText(args.content, args.attachments),
+        content: buildPromptText(wireContent, args.attachments),
+        skill: skillInvocation
+          ? await this.resolveCodexSkill(args.chatId, project.localPath, skillInvocation.name)
+          : undefined,
         model: args.model,
         effort: args.effort as CodexReasoningEffort | undefined,
         serviceTier: args.serviceTier,
@@ -1070,10 +1254,10 @@ export class AgentCoordinator {
         sessionId: session.id,
         promptSeq,
         activeStatus: active.status,
-        contentPreview: args.content.slice(0, 160),
+        contentPreview: wireContent.slice(0, 160),
         pendingPromptSeqs: [...session.pendingPromptSeqs],
       })
-      await session.session.sendPrompt(buildPromptText(args.content, args.attachments))
+      await session.session.sendPrompt(buildPromptText(wireContent, args.attachments))
       return
     }
 
@@ -1247,6 +1431,104 @@ export class AgentCoordinator {
     }
 
     await this.store.removeQueuedMessage(command.chatId, command.queuedMessageId)
+  }
+
+  /**
+   * Enumerate the skills/commands the selected harness can invoke, for the
+   * composer's "/" menu. Prefers the live harness (authoritative — includes
+   * built-ins, plugins, and enabled flags) and degrades to Kanna's filesystem
+   * scan of the same discovery roots when no session is running yet.
+   *
+   * Adding a harness = one branch here (list) plus, if its wire protocol needs
+   * more than leading-"/name" text, one translation in startTurnForChat.
+   */
+  async listSkills(
+    command: Extract<ClientCommand, { type: "chat.listSkills" }>
+  ): Promise<ChatSkillsSnapshot> {
+    const cwd = this.resolveSkillScanCwd(command)
+    if (!cwd) {
+      return { provider: command.provider, skills: [], origin: "filesystem" }
+    }
+
+    switch (command.provider) {
+      case "claude": {
+        const handle = command.chatId ? this.claudeSessions.get(command.chatId)?.session : undefined
+        if (handle?.supportedCommands) {
+          try {
+            const commands = await handle.supportedCommands()
+            const skills: HarnessSkill[] = commands
+              .filter((entry) => !entry.name.startsWith("._"))
+              .map((entry) => ({
+                name: entry.name,
+                description: entry.description ?? "",
+                ...(entry.argumentHint ? { argumentHint: entry.argumentHint } : {}),
+                source: "command" as const,
+              }))
+            return { provider: "claude", skills, origin: "live" }
+          } catch {
+            // Session mid-shutdown or old CLI — fall through to the scan.
+          }
+        }
+        return { provider: "claude", skills: scanClaudeSkills({ cwd }), origin: "filesystem" }
+      }
+      case "codex": {
+        const live = command.chatId
+          ? await this.codexManager.listSkills({ chatId: command.chatId, cwd })
+          : null
+        if (live) {
+          const skills: HarnessSkill[] = live.map((skill) => ({
+            name: skill.name,
+            description: skill.shortDescription || skill.description || "",
+            source: "skill" as const,
+            path: skill.path,
+          }))
+          return { provider: "codex", skills, origin: "live" }
+        }
+        return { provider: "codex", skills: scanCodexSkills({ cwd }), origin: "filesystem" }
+      }
+      case "cursor":
+        // Cursor has no enumeration protocol; the scan mirrors the CLI's own
+        // skill discovery roots, and invocation is failsafe-only by design.
+        return { provider: "cursor", skills: scanCursorSkills({ cwd }), origin: "filesystem" }
+      case "pi": {
+        const skills = await this.piManager.listSkills({ chatId: command.chatId, cwd })
+        return { provider: "pi", skills, origin: "live" }
+      }
+    }
+  }
+
+  private resolveSkillScanCwd(args: { chatId?: string; projectId?: string }): string | null {
+    if (args.chatId) {
+      const chat = this.store.getChat(args.chatId)
+      const project = chat ? this.store.getProject(chat.projectId) : undefined
+      if (project) return project.localPath
+    }
+    if (args.projectId) {
+      const project = this.store.getProject(args.projectId)
+      if (project) return project.localPath
+    }
+    return null
+  }
+
+  /**
+   * Resolve a typed `/name` to a codex skill for the structured input item.
+   * Live skills/list is authoritative (paths must exact-match the server's own
+   * discovery for the item to inject); the fs scan of the same roots covers
+   * codex versions that predate skills/list. Unresolved names degrade to plain
+   * text — codex silently ignores unknown skill items anyway.
+   */
+  private async resolveCodexSkill(
+    chatId: string,
+    cwd: string,
+    name: string
+  ): Promise<{ name: string; path: string } | undefined> {
+    const live = await this.codexManager.listSkills({ chatId, cwd })
+    if (live) {
+      const match = live.find((skill) => skill.name === name)
+      return match ? { name: match.name, path: match.path } : undefined
+    }
+    const scanned = findSkillByName(scanCodexSkills({ cwd }), name)
+    return scanned?.path ? { name: scanned.name, path: scanned.path } : undefined
   }
 
   async forkChat(chatId: string) {

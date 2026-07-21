@@ -92,10 +92,12 @@ export type ClientCommand =
   | { type: "settings.writeAppSettings"; analyticsEnabled: boolean }
   | { type: "settings.writeAppSettingsPatch"; patch: AppSettingsPatch }
   | { type: "settings.readLlmProvider" }
+  | { type: "chat.listSkills"; provider: AgentProvider; chatId?: string; projectId?: string }
   | { type: "skills.search"; query: string; limit?: number }
   | { type: "skills.install"; source: string; skillId: string }
   | { type: "skills.uninstall"; skillId: string }
   | { type: "skills.listInstalled" }
+  | { type: "skills.listGlobal" }
   | {
       type: "settings.writeLlmProvider"
       provider: LlmProviderSnapshot["provider"]

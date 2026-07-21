@@ -15,7 +15,7 @@ import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
 import { cloneRepository, createDirectory, ensureProjectDirectory, listDirectory, resolveClonePath, resolveLocalPath } from "./paths"
 import { applyPiFaveModels } from "./provider-catalog"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
-import { installSkill, listInstalledSkills, searchSkills, uninstallSkill } from "./skills"
+import { installSkill, listGlobalSkillsWithSources, listInstalledSkills, searchSkills, uninstallSkill } from "./skills"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
@@ -748,6 +748,11 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
+        case "chat.listSkills": {
+          const snapshot = await agent.listSkills(command)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          return
+        }
         case "skills.search": {
           const snapshot = await searchSkills(command.query, command.limit)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
@@ -765,6 +770,11 @@ export function createWsRouter({
         }
         case "skills.listInstalled": {
           const result = await listInstalledSkills()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "skills.listGlobal": {
+          const result = await listGlobalSkillsWithSources()
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }

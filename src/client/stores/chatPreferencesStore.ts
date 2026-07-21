@@ -199,6 +199,13 @@ interface ChatPreferencesState {
   defaultProvider: DefaultProviderPreference
   providerDefaults: ChatProviderPreferences
   chatStates: Record<string, ComposerState>
+  /**
+   * Chats where the user explicitly picked a different harness than the
+   * chat's current provider — the switch (with server-side handoff) applies
+   * on the next send. Deliberately not persisted: chat states seeded from
+   * defaults must never read as an intentional switch.
+   */
+  pendingProviderSwitches: Record<string, true>
   legacyComposerState: ComposerState | null
   setDefaultProvider: (provider: DefaultProviderPreference) => void
   syncProviderDefaults: (defaultProvider: DefaultProviderPreference, providerDefaults: ChatProviderPreferences) => void
@@ -219,6 +226,8 @@ interface ChatPreferencesState {
   ) => void
   setChatComposerPlanMode: (chatId: string, planMode: boolean) => void
   resetChatComposerFromProvider: (chatId: string, provider: AgentProvider) => void
+  markPendingProviderSwitch: (chatId: string) => void
+  clearPendingProviderSwitch: (chatId: string) => void
 }
 
 export function migrateChatPreferencesState(
@@ -251,6 +260,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
     defaultProvider: "last_used",
     providerDefaults: createDefaultProviderDefaults(),
     chatStates: {},
+    pendingProviderSwitches: {},
     legacyComposerState: null,
     setDefaultProvider: (defaultProvider) => set({ defaultProvider }),
     syncProviderDefaults: (defaultProvider, providerDefaults) =>
@@ -367,5 +377,17 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
             [chatId]: composerFromProviderDefaults(provider, state.providerDefaults),
           },
         })),
+      markPendingProviderSwitch: (chatId) =>
+        set((state) => (
+          state.pendingProviderSwitches[chatId]
+            ? state
+            : { pendingProviderSwitches: { ...state.pendingProviderSwitches, [chatId]: true } }
+        )),
+      clearPendingProviderSwitch: (chatId) =>
+        set((state) => {
+          if (!state.pendingProviderSwitches[chatId]) return state
+          const { [chatId]: _cleared, ...rest } = state.pendingProviderSwitches
+          return { pendingProviderSwitches: rest }
+        }),
   })
 )

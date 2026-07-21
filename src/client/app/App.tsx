@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
 import { Flower } from "lucide-react"
 import { StandaloneShareDialog } from "../components/chat-ui/StandaloneShareDialog"
+import { CommandPalette } from "../components/command-palette/CommandPalette"
 import { AppDialogProvider } from "../components/ui/app-dialog"
 import { Button } from "../components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card"
@@ -230,9 +231,6 @@ function KannaLayout() {
   const handleSidebarArchiveChat = useCallback((chat: Parameters<typeof state.handleArchiveChat>[0]) => {
     void state.handleArchiveChat(chat)
   }, [state.handleArchiveChat])
-  const handleSidebarMarkChatDone = useCallback((chat: Parameters<typeof state.handleMarkChatDone>[0]) => {
-    void state.handleMarkChatDone(chat)
-  }, [state.handleMarkChatDone])
   const handleOpenArchivedChat = useCallback((chatId: string) => {
     void state.handleOpenArchivedChat(chatId)
   }, [state.handleOpenArchivedChat])
@@ -276,7 +274,6 @@ function KannaLayout() {
       keybindings={state.keybindings}
       onRenameChat={handleSidebarRenameChat}
       onShareChat={handleSidebarShareChat}
-      onMarkChatDone={handleSidebarMarkChatDone}
       onArchiveChat={handleSidebarArchiveChat}
       onOpenArchivedChat={handleOpenArchivedChat}
       onDeleteChat={handleSidebarDeleteChat}
@@ -296,7 +293,6 @@ function KannaLayout() {
     handleSidebarCopyPath,
     handleSidebarCreateChat,
     handleSidebarArchiveChat,
-    handleSidebarMarkChatDone,
     handleSidebarDeleteChat,
     handleOpenArchivedChat,
     handleSidebarForkChat,
@@ -366,6 +362,7 @@ function KannaLayout() {
     <div className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">
       {sidebarElement}
       <Outlet context={state} />
+      <CommandPalette state={state} />
       <StandaloneShareDialog
         open={Boolean(state.standaloneShareUrl)}
         shareUrl={state.standaloneShareUrl ?? ""}

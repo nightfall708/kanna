@@ -1,6 +1,8 @@
 export const FOCUS_FALLBACK_IGNORE_ATTRIBUTE = "data-focus-fallback-ignore"
 export const ALLOW_FOCUS_RETAIN_ATTRIBUTE = "data-allow-focus-retain"
 export const RESTORE_CHAT_INPUT_FOCUS_EVENT = "kanna:restore-chat-input-focus"
+/** Fired by the command palette's "Attach Files" action; ChatInput opens its file picker. */
+export const REQUEST_ATTACH_FILES_EVENT = "kanna:request-attach-files"
 export const CHAT_INPUT_ATTRIBUTE = "data-chat-input"
 export const CHAT_SELECTION_ZONE_ATTRIBUTE = "data-chat-selection-zone"
 

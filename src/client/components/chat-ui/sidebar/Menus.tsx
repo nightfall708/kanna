@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import { Archive, Check, Code, Copy, EyeOff, FolderOpen, Pencil, Split, Trash2, UserRoundPlus } from "lucide-react"
+import { Archive, Code, Copy, EyeOff, FolderOpen, Pencil, Split, Trash2, UserRoundPlus } from "lucide-react"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -97,7 +97,6 @@ export function ChatRowMenu({
   onShare,
   onOpenInFinder,
   onFork,
-  onMarkDone,
   onArchive,
   onDelete,
   children,
@@ -107,8 +106,6 @@ export function ChatRowMenu({
   onShare: () => void
   onOpenInFinder: () => void
   onFork: () => void
-  /** When omitted, the "Mark Done" item is hidden (e.g. already-done chats). */
-  onMarkDone?: () => void
   onArchive: () => void
   onDelete: () => void
   children: ReactNode
@@ -157,17 +154,6 @@ export function ChatRowMenu({
           <Split className="h-3.5 w-3.5" />
           <span className="text-xs font-medium">Fork</span>
         </ContextMenuItem>
-        {onMarkDone ? (
-          <ContextMenuItem
-            onSelect={(event) => {
-              event.preventDefault()
-              onMarkDone()
-            }}
-          >
-            <Check className="h-3.5 w-3.5" />
-            <span className="text-xs font-medium">Mark Done</span>
-          </ContextMenuItem>
-        ) : null}
         <ContextMenuItem
           onSelect={(event) => {
             event.preventDefault()

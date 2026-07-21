@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ComponentType } from "react"
 import { flushSync } from "react-dom"
 import { Check, CircleDashed, CircleDot, Folder, GitBranch, GitPullRequest } from "lucide-react"
-import type { ChatDiffSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
+import type { ChatDiffSnapshot, LocalProjectSummary, SidebarChatRow, SidebarData } from "../../shared/types"
 import type { KannaSocket } from "../app/socket"
 import {
   getProjectBoardColumns,
@@ -10,7 +10,9 @@ import {
   type ProjectBoardColumnId,
 } from "../lib/projectBoard"
 import { formatSidebarAgeLabel } from "../lib/formatters"
+import { BOARD_PROJECT_FILTERS_STORAGE_KEY } from "../lib/storageKeys"
 import { cn } from "../lib/utils"
+import { groupProjectsByRecency } from "./LocalDev"
 import { PROVIDER_ICONS } from "./chat-ui/ChatPreferenceControls"
 import { ChatRowMenu } from "./chat-ui/sidebar/Menus"
 import { AnimatedShinyText } from "./ui/animated-shiny-text"
@@ -37,6 +39,8 @@ export interface ProjectBoardMove {
 
 interface ProjectBoardProps {
   data: SidebarData
+  /** Local projects, used to order the filter pills like the "/" page. */
+  localProjects: LocalProjectSummary[]
   socket: KannaSocket
   onOpenChat: (chatId: string, archived: boolean, columnId: ProjectBoardColumnId) => void
   onMarkChatDone: (chat: SidebarChatRow) => void
@@ -52,6 +56,35 @@ interface ProjectBoardProps {
 
 function getBoardCardViewTransitionName(chatId: string) {
   return `board-card-${chatId.replace(/[^a-zA-Z0-9_-]/g, "-")}`
+}
+
+function readStoredBoardProjectFilters(): ReadonlySet<string> {
+  if (typeof window === "undefined") return new Set()
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(BOARD_PROJECT_FILTERS_STORAGE_KEY) ?? "[]")
+    if (!Array.isArray(parsed)) return new Set()
+    return new Set(parsed.filter((value): value is string => typeof value === "string"))
+  } catch {
+    return new Set()
+  }
+}
+
+function persistBoardProjectFilters(projectIds: ReadonlySet<string>) {
+  if (typeof window === "undefined") return
+  if (projectIds.size === 0) {
+    window.localStorage.removeItem(BOARD_PROJECT_FILTERS_STORAGE_KEY)
+    return
+  }
+  window.localStorage.setItem(BOARD_PROJECT_FILTERS_STORAGE_KEY, JSON.stringify([...projectIds]))
+}
+
+function getBoardFilterPillClass(active: boolean) {
+  return cn(
+    "h-7 shrink-0 cursor-pointer whitespace-nowrap rounded-full border px-3 text-xs font-medium transition-colors",
+    active
+      ? "border-transparent bg-muted text-foreground"
+      : "border-border bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+  )
 }
 
 function getColumnAssignments(data: SidebarData) {
@@ -229,6 +262,7 @@ function BoardCardContent({
 
 export function ProjectBoard({
   data,
+  localProjects,
   socket,
   onOpenChat,
   onMarkChatDone,
@@ -332,6 +366,76 @@ export function ProjectBoard({
   )
   const diffsByProjectId = useProjectBoardDiffs(socket, entries)
 
+  // Projects with cards on the board, ordered like the "/" page (recency
+  // groups, most recently edited first). Projects missing from local-projects
+  // keep their board order at the end.
+  const boardProjects = useMemo(() => {
+    const byId = new Map<string, { projectId: string; title: string; localPath: string }>()
+    for (const entry of entries) {
+      if (!byId.has(entry.projectId)) {
+        byId.set(entry.projectId, {
+          projectId: entry.projectId,
+          title: entry.projectTitle,
+          localPath: entry.chat.localPath,
+        })
+      }
+    }
+    const orderByPath = new Map(
+      groupProjectsByRecency(localProjects)
+        .flatMap((group) => group.projects)
+        .map((project, index) => [project.localPath, index] as const)
+    )
+    return [...byId.values()].sort((left, right) =>
+      (orderByPath.get(left.localPath) ?? Number.MAX_SAFE_INTEGER)
+      - (orderByPath.get(right.localPath) ?? Number.MAX_SAFE_INTEGER)
+    )
+  }, [entries, localProjects])
+
+  // Selected project filters; empty means "All". Persisted so returning to
+  // the board keeps the same filters.
+  const [selectedProjectIds, setSelectedProjectIds] = useState<ReadonlySet<string>>(readStoredBoardProjectFilters)
+
+  useEffect(() => {
+    persistBoardProjectFilters(selectedProjectIds)
+  }, [selectedProjectIds])
+
+  // Drop selections for projects that no longer have cards on the board.
+  // Skipped while the board is empty (e.g. before the first snapshot lands)
+  // so a page load doesn't wipe the restored selection.
+  useEffect(() => {
+    if (boardProjects.length === 0) return
+    setSelectedProjectIds((current) => {
+      if (current.size === 0) return current
+      const stillOnBoard = [...current].filter((projectId) =>
+        boardProjects.some((project) => project.projectId === projectId)
+      )
+      return stillOnBoard.length === current.size ? current : new Set(stillOnBoard)
+    })
+  }, [boardProjects])
+
+  function toggleProjectFilter(projectId: string) {
+    setSelectedProjectIds((current) => {
+      const next = new Set(current)
+      if (next.has(projectId)) {
+        next.delete(projectId)
+      } else {
+        next.add(projectId)
+      }
+      return next
+    })
+  }
+
+  const visibleColumns = useMemo(() => {
+    if (selectedProjectIds.size === 0) return columns
+    const keep = (columnEntries: ProjectBoardChat[]) =>
+      columnEntries.filter((entry) => selectedProjectIds.has(entry.projectId))
+    return {
+      running: keep(columns.running),
+      waiting: keep(columns.waiting),
+      done: keep(columns.done),
+    }
+  }, [columns, selectedProjectIds])
+
   // Drop optimistic overrides once the server confirms the done state (or the chat disappears).
   useEffect(() => {
     if (pendingDoneChatIds.size === 0) return
@@ -345,29 +449,50 @@ export function ProjectBoard({
   }, [displayData, pendingDoneChatIds])
 
   const kanbanColumns = useMemo(() => ({
-    running: columns.running.map((entry) => entry.chat.chatId),
-    waiting: columns.waiting.map((entry) => entry.chat.chatId),
-    done: columns.done.map((entry) => entry.chat.chatId),
-  }), [columns])
-
-  function markEntryDone(entry: ProjectBoardChat) {
-    if (entry.columnId === "done" || entry.archived) return
-    setPendingDoneChatIds((current) => new Set([...current, entry.chat.chatId]))
-    onMarkChatDone(entry.chat)
-  }
+    running: visibleColumns.running.map((entry) => entry.chat.chatId),
+    waiting: visibleColumns.waiting.map((entry) => entry.chat.chatId),
+    done: visibleColumns.done.map((entry) => entry.chat.chatId),
+  }), [visibleColumns])
 
   function handleMove({ itemId, fromColumn, toColumn }: KanbanMoveEvent) {
     if (toColumn !== "done" || fromColumn === "done") return
     const entry = entryByChatId.get(itemId)
-    if (!entry) return
-    markEntryDone(entry)
+    if (!entry || entry.archived) return
+    setPendingDoneChatIds((current) => new Set([...current, itemId]))
+    onMarkChatDone(entry.chat)
   }
 
   return (
-    // The board fills the space under the page header; each column scrolls its
-    // own card list. The horizontal scroller is full-bleed (gutters live inside
-    // the scroll content) so columns run edge to edge on narrow screens.
-    <Kanban columns={kanbanColumns} onMove={handleMove} className="flex-1 min-h-0 overflow-x-auto">
+    <>
+      {boardProjects.length > 0 ? (
+        <div className="flex shrink-0 items-center gap-1.5 overflow-x-auto px-4 pb-3 sm:px-6">
+          <button
+            type="button"
+            aria-pressed={selectedProjectIds.size === 0}
+            onClick={() => setSelectedProjectIds(new Set())}
+            className={getBoardFilterPillClass(selectedProjectIds.size === 0)}
+          >
+            All
+          </button>
+          {boardProjects.map((project) => (
+            <button
+              key={project.projectId}
+              type="button"
+              aria-pressed={selectedProjectIds.has(project.projectId)}
+              onClick={() => toggleProjectFilter(project.projectId)}
+              className={getBoardFilterPillClass(selectedProjectIds.has(project.projectId))}
+            >
+              {project.title}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {/*
+        The board fills the space under the page header; each column scrolls its
+        own card list. The horizontal scroller is full-bleed (gutters live inside
+        the scroll content) so columns run edge to edge on narrow screens.
+      */}
+      <Kanban columns={kanbanColumns} onMove={handleMove} className="flex-1 min-h-0 overflow-x-auto">
       <div className="grid h-full min-w-[48rem] grid-cols-3 grid-rows-[minmax(0,1fr)] gap-2 px-4 pb-4 sm:px-6">
         {BOARD_COLUMNS.map((column) => (
           <KanbanColumn
@@ -386,10 +511,10 @@ export function ProjectBoard({
               <h2 id={`project-board-${column.id}`} className="text-sm font-medium text-foreground">
                 {column.title}
               </h2>
-              <span className="text-sm tabular-nums text-muted-foreground">{columns[column.id].length}</span>
+              <span className="text-sm tabular-nums text-muted-foreground">{visibleColumns[column.id].length}</span>
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overscroll-contain">
-              {columns[column.id].length > 0 ? columns[column.id].map((entry) => (
+              {visibleColumns[column.id].length > 0 ? visibleColumns[column.id].map((entry) => (
                 <KanbanItem
                   key={entry.chat.chatId}
                   value={entry.chat.chatId}
@@ -407,7 +532,6 @@ export function ProjectBoard({
                     onShare={() => onShareChat(entry.chat.chatId)}
                     onOpenInFinder={() => onOpenChatInFinder(entry.chat.localPath)}
                     onFork={() => onForkChat(entry.chat)}
-                    onMarkDone={column.id === "done" ? undefined : () => markEntryDone(entry)}
                     onArchive={() => onArchiveChat(entry.chat)}
                     onDelete={() => onDeleteChat(entry.chat)}
                   >
@@ -436,6 +560,7 @@ export function ProjectBoard({
           )
         }}
       </KanbanOverlay>
-    </Kanban>
+      </Kanban>
+    </>
   )
 }

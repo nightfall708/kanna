@@ -3,7 +3,7 @@ import type { AskUserQuestionItem, ProcessedToolCall } from "../components/messa
 import type { AskUserQuestionAnswerMap, ChatAttachment, HydratedTranscriptMessage } from "../../shared/types"
 import { UserMessage } from "../components/messages/UserMessage"
 import { RawJsonMessage } from "../components/messages/RawJsonMessage"
-import { SystemMessage } from "../components/messages/SystemMessage"
+import { SystemMessage, type SessionHandoff } from "../components/messages/SystemMessage"
 import { AccountInfoMessage } from "../components/messages/AccountInfoMessage"
 import { TextMessage } from "../components/messages/TextMessage"
 import { AskUserQuestionMessage } from "../components/messages/AskUserQuestionMessage"
@@ -34,6 +34,8 @@ export interface ResolvedSingleTranscriptRow {
   localPath?: string
   isFirstSystem: boolean
   isModelChange: boolean
+  /** Set on a system_init that follows a harness switch (handoff_boundary). */
+  handoff?: SessionHandoff
   isFirstAccount: boolean
   isLatestAskUserQuestion: boolean
   isLatestExitPlanMode: boolean
@@ -62,12 +64,17 @@ export interface StableResolvedTranscriptRowsState {
 interface TranscriptMessageRenderState {
   isFirstSystem: boolean
   isModelChange: boolean
+  handoff?: SessionHandoff
   isFirstAccount: boolean
   isLatestTodoWrite: boolean
   hideResult: boolean
   isFinalStatus: boolean
   nextPromptTimestamp?: string
   shouldRender: boolean
+}
+
+function sameHandoff(left: SessionHandoff | undefined, right: SessionHandoff | undefined) {
+  return left?.fromProvider === right?.fromProvider && left?.toProvider === right?.toProvider
 }
 
 function isCollapsibleToolCall(message: HydratedTranscriptMessage) {
@@ -81,6 +88,7 @@ function getTranscriptMessageRenderState(
   {
     isFirstSystem,
     isModelChange,
+    handoff,
     isFirstAccount,
     isLatestTodoWrite,
     hideResult,
@@ -93,7 +101,12 @@ function getTranscriptMessageRenderState(
   if (shouldRender) {
     switch (message.kind) {
       case "system_init":
-        shouldRender = isFirstSystem || isModelChange
+        shouldRender = isFirstSystem || isModelChange || handoff !== undefined
+        break
+      case "handoff_boundary":
+        // Not rendered as its own row — the switch surfaces on the next
+        // session_init ("Claude → Codex").
+        shouldRender = false
         break
       case "account_info":
         shouldRender = isFirstAccount
@@ -119,6 +132,7 @@ function getTranscriptMessageRenderState(
   return {
     isFirstSystem,
     isModelChange,
+    handoff,
     isFirstAccount,
     isLatestTodoWrite,
     hideResult,
@@ -130,10 +144,15 @@ function getTranscriptMessageRenderState(
 
 function buildTranscriptMessageRenderStates(
   messages: HydratedTranscriptMessage[],
-  latestToolIds: Record<string, string | null>
+  latestToolIds: Record<string, string | null>,
+  hasOlderHistory: boolean
 ) {
-  const firstSystemIndex = messages.findIndex((entry) => entry.kind === "system_init")
-  const firstAccountIndex = messages.findIndex((entry) => entry.kind === "account_info")
+  // When older history hasn't been loaded, the window may start mid-transcript,
+  // so nothing in it can be proven to be the chat's true first system/account
+  // row — treat none as first rather than rendering a mid-transcript
+  // "Session Started". Self-heals as older pages load.
+  const firstSystemIndex = hasOlderHistory ? -1 : messages.findIndex((entry) => entry.kind === "system_init")
+  const firstAccountIndex = hasOlderHistory ? -1 : messages.findIndex((entry) => entry.kind === "account_info")
 
   // Timestamp of the next visible user prompt after each message (undefined when none follows).
   const nextPromptTimestamps = new Array<string | undefined>(messages.length)
@@ -156,12 +175,29 @@ function buildTranscriptMessageRenderStates(
     previousModel = message.model
   }
 
+  // Attach each handoff boundary to the next session init: the switch renders
+  // as that init's "Claude → Codex" label rather than as its own row.
+  const handoffs = new Array<SessionHandoff | undefined>(messages.length)
+  let pendingHandoff: SessionHandoff | undefined
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index]!
+    if (message.kind === "handoff_boundary") {
+      pendingHandoff = { fromProvider: message.fromProvider, toProvider: message.toProvider }
+      continue
+    }
+    if (message.kind === "system_init" && pendingHandoff) {
+      handoffs[index] = pendingHandoff
+      pendingHandoff = undefined
+    }
+  }
+
   return messages.map<TranscriptMessageRenderState>((message, index) => {
     const previousMessage = messages[index - 1]
     const nextMessage = messages[index + 1]
     return getTranscriptMessageRenderState(message, {
       isFirstSystem: firstSystemIndex === index,
       isModelChange: modelChanges[index] ?? false,
+      handoff: handoffs[index],
       isFirstAccount: firstAccountIndex === index,
       isLatestTodoWrite: message.id === latestToolIds.TodoWrite,
       hideResult: nextMessage?.kind === "context_cleared" || previousMessage?.kind === "context_cleared",
@@ -295,6 +331,10 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
     case "context_cleared":
     case "interrupted":
       return true
+    case "handoff_boundary":
+      return right.kind === "handoff_boundary"
+        && left.fromProvider === right.fromProvider
+        && left.toProvider === right.toProvider
     case "unknown":
       return right.kind === "unknown" && left.json === right.json
   }
@@ -309,6 +349,7 @@ function isResolvedTranscriptRowUnchanged(left: ResolvedTranscriptRow, right: Re
       && left.localPath === right.localPath
       && left.isFirstSystem === right.isFirstSystem
       && left.isModelChange === right.isModelChange
+      && sameHandoff(left.handoff, right.handoff)
       && left.isFirstAccount === right.isFirstAccount
       && left.isLatestAskUserQuestion === right.isLatestAskUserQuestion
       && left.isLatestExitPlanMode === right.isLatestExitPlanMode
@@ -370,6 +411,7 @@ interface TranscriptSingleRowProps {
   localPath?: string
   isFirstSystem: boolean
   isModelChange: boolean
+  handoff?: SessionHandoff
   isFirstAccount: boolean
   isLatestAskUserQuestion: boolean
   isLatestExitPlanMode: boolean
@@ -392,6 +434,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   localPath,
   isFirstSystem,
   isModelChange,
+  handoff,
   isFirstAccount,
   isLatestAskUserQuestion,
   isLatestExitPlanMode,
@@ -412,8 +455,16 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
         rendered = <RawJsonMessage key={message.id} json={message.json} />
         break
       case "system_init":
-        rendered = isFirstSystem || isModelChange
-          ? <SystemMessage key={message.id} message={message} rawJson={message.debugRaw} modelChanged={!isFirstSystem && isModelChange} />
+        rendered = isFirstSystem || isModelChange || handoff
+          ? (
+            <SystemMessage
+              key={message.id}
+              message={message}
+              rawJson={message.debugRaw}
+              modelChanged={!isFirstSystem && isModelChange}
+              handoff={isFirstSystem ? undefined : handoff}
+            />
+          )
           : null
         break
       case "account_info":
@@ -492,6 +543,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   && prev.localPath === next.localPath
   && prev.isFirstSystem === next.isFirstSystem
   && prev.isModelChange === next.isModelChange
+  && sameHandoff(prev.handoff, next.handoff)
   && prev.isFirstAccount === next.isFirstAccount
   && prev.isLatestAskUserQuestion === next.isLatestAskUserQuestion
   && prev.isLatestExitPlanMode === next.isLatestExitPlanMode
@@ -554,13 +606,16 @@ export function buildResolvedTranscriptRows(
     isLoading,
     localPath,
     latestToolIds,
+    hasOlderHistory = false,
   }: {
     isLoading: boolean
     localPath?: string
     latestToolIds: Record<string, string | null>
+    /** True when the loaded window may not include the start of the transcript. */
+    hasOlderHistory?: boolean
   }
 ): ResolvedTranscriptRow[] {
-  const renderStates = buildTranscriptMessageRenderStates(messages, latestToolIds)
+  const renderStates = buildTranscriptMessageRenderStates(messages, latestToolIds, hasOlderHistory)
   const renderItems = buildTranscriptRenderItems(messages, renderStates)
   const rows: ResolvedTranscriptRow[] = []
 
@@ -588,6 +643,7 @@ export function buildResolvedTranscriptRows(
       localPath,
       isFirstSystem: renderState.isFirstSystem,
       isModelChange: renderState.isModelChange,
+      handoff: renderState.handoff,
       isFirstAccount: renderState.isFirstAccount,
       isLatestAskUserQuestion: item.message.id === latestToolIds.AskUserQuestion,
       isLatestExitPlanMode: item.message.id === latestToolIds.ExitPlanMode,
@@ -646,6 +702,7 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
       localPath={row.localPath}
       isFirstSystem={row.isFirstSystem}
       isModelChange={row.isModelChange}
+      handoff={row.handoff}
       isFirstAccount={row.isFirstAccount}
       isLatestAskUserQuestion={row.isLatestAskUserQuestion}
       isLatestExitPlanMode={row.isLatestExitPlanMode}
@@ -681,6 +738,7 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
       && prev.row.localPath === next.row.localPath
       && prev.row.isFirstSystem === next.row.isFirstSystem
       && prev.row.isModelChange === next.row.isModelChange
+      && sameHandoff(prev.row.handoff, next.row.handoff)
       && prev.row.isFirstAccount === next.row.isFirstAccount
       && prev.row.isLatestAskUserQuestion === next.row.isLatestAskUserQuestion
       && prev.row.isLatestExitPlanMode === next.row.isLatestExitPlanMode

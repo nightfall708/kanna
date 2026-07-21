@@ -162,6 +162,7 @@ function createDefaultSnapshot(filePath: string, warning: string | null = null):
       jumpToSidebarChat: [...DEFAULT_KEYBINDINGS.jumpToSidebarChat],
       createChatInCurrentProject: [...DEFAULT_KEYBINDINGS.createChatInCurrentProject],
       openAddProject: [...DEFAULT_KEYBINDINGS.openAddProject],
+      openCommandPalette: [...DEFAULT_KEYBINDINGS.openCommandPalette],
     },
     warning,
     filePathDisplay: formatDisplayPath(filePath),

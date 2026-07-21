@@ -39,14 +39,26 @@ function withDerivedMetrics(
 export function deriveLatestContextWindowSnapshot(
   entries: ReadonlyArray<TranscriptEntry>,
 ): ContextWindowSnapshot | null {
-  const compactsAutomatically = entries.some((entry) =>
+  // A harness switch starts a fresh provider session — usage entries from
+  // before the last handoff boundary describe the old session's context
+  // window, so only the segment after it counts.
+  let segmentStart = 0
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries[index]?.kind === "handoff_boundary") {
+      segmentStart = index + 1
+      break
+    }
+  }
+  const segment = segmentStart > 0 ? entries.slice(segmentStart) : entries
+
+  const compactsAutomatically = segment.some((entry) =>
     entry.kind === "compact_boundary"
     || entry.kind === "compact_summary"
     || entry.kind === "context_cleared"
   )
 
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index]
+  for (let index = segment.length - 1; index >= 0; index -= 1) {
+    const entry = segment[index]
     if (!entry) continue
 
     if (entry.kind !== "context_window_updated" || entry.usage.usedTokens <= 0) {

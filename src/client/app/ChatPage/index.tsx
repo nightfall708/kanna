@@ -27,6 +27,7 @@ import { TERMINAL_TOGGLE_ANIMATION_DURATION_MS } from "../terminalToggleAnimatio
 import { useRightSidebarToggleAnimation } from "../useRightSidebarToggleAnimation"
 import { useStickyChatFocus } from "../useStickyChatFocus"
 import { useTerminalToggleAnimation } from "../useTerminalToggleAnimation"
+import type { AgentProvider, ChatSkillsSnapshot } from "../../../shared/types"
 import type { KannaState } from "../useKannaState"
 import { getNextMeasuredInputHeight, getTranscriptPaddingBottom } from "../useKannaState"
 import { ChatInputDock } from "./ChatInputDock"
@@ -807,6 +808,17 @@ export function ChatPage() {
     await state.handleSend(content, options)
   }, [scrollToTranscriptEnd, state.handleSend])
 
+  const handleListSkills = useCallback(
+    (provider: AgentProvider) =>
+      state.socket.command<ChatSkillsSnapshot>({
+        type: "chat.listSkills",
+        provider,
+        chatId: state.activeChatId ?? undefined,
+        projectId: projectId ?? undefined,
+      }),
+    [state.socket, state.activeChatId, projectId]
+  )
+
   useEffect(() => {
     return () => clearShowScrollTimeout()
   }, [clearShowScrollTimeout])
@@ -1044,6 +1056,7 @@ export function ChatPage() {
         onSubmit={handleChatSubmit}
         onCancel={handleCancel}
         onEditModels={() => setDefaultModelsDialogOpen(true)}
+        onListSkills={handleListSkills}
       />
       <DefaultModelsDialog
         open={defaultModelsDialogOpen}

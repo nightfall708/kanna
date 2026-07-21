@@ -13,10 +13,11 @@ import {
 const ROW_WRAPPER_CLASS = "mx-auto max-w-[800px] pb-5"
 
 // Minimal test harness mirroring how ChatTranscriptViewport renders resolved rows.
-function TestTranscript({ messages }: { messages: HydratedTranscriptMessage[] }) {
+function TestTranscript({ messages, hasOlderHistory }: { messages: HydratedTranscriptMessage[]; hasOlderHistory?: boolean }) {
   const rows = buildResolvedTranscriptRows(messages, {
     isLoading: false,
     latestToolIds: { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null },
+    hasOlderHistory,
   })
 
   return (
@@ -39,8 +40,8 @@ function TestTranscript({ messages }: { messages: HydratedTranscriptMessage[] })
   )
 }
 
-function renderTranscript(messages: HydratedTranscriptMessage[]) {
-  return renderToStaticMarkup(<TestTranscript messages={messages} />)
+function renderTranscript(messages: HydratedTranscriptMessage[], hasOlderHistory?: boolean) {
+  return renderToStaticMarkup(<TestTranscript messages={messages} hasOlderHistory={hasOlderHistory} />)
 }
 
 function countRowWrappers(html: string) {
@@ -356,7 +357,7 @@ Please check the latest error first.`,
         id: "system-1",
         kind: "system_init",
         provider: "claude",
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-4-6",
         tools: [],
         agents: [],
         slashCommands: [],
@@ -367,7 +368,7 @@ Please check the latest error first.`,
         id: "system-2",
         kind: "system_init",
         provider: "claude",
-        model: "claude-opus-4-6",
+        model: "claude-opus-4-8",
         tools: [],
         agents: [],
         slashCommands: [],
@@ -378,7 +379,7 @@ Please check the latest error first.`,
         id: "system-3",
         kind: "system_init",
         provider: "claude",
-        model: "claude-opus-4-6",
+        model: "claude-opus-4-8",
         tools: [],
         agents: [],
         slashCommands: [],
@@ -388,8 +389,127 @@ Please check the latest error first.`,
     ])
 
     expect(countRowWrappers(html)).toBe(2)
-    expect(html).toContain("Session started with claude-sonnet-4-5")
-    expect(html).toContain("Model changed to claude-opus-4-6")
+    // Model ids resolve to their human-readable catalog labels.
+    expect(html).toContain("Session Started")
+    expect(html).toContain("Sonnet")
+    expect(html).toContain("Model Changed")
+    expect(html).toContain("Opus")
+  })
+
+  test("labels the session init after a handoff with the harness transition instead of a boundary row", () => {
+    const html = renderTranscript([
+      {
+        id: "system-1",
+        kind: "system_init",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        tools: [],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "handoff-1",
+        kind: "handoff_boundary",
+        fromProvider: "claude",
+        toProvider: "codex",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "user-1",
+        kind: "user_prompt",
+        content: "keep going",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "system-2",
+        kind: "system_init",
+        provider: "codex",
+        model: "gpt-5.4",
+        tools: [],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+        timestamp: new Date().toISOString(),
+      },
+    ])
+
+    // The boundary renders no row of its own — the switch surfaces on the
+    // new session init as "Claude → Codex".
+    expect(countRowWrappers(html)).toBe(3)
+    expect(html).toContain("Claude → Codex")
+    expect(html).not.toContain("Handed off")
+    expect(html).not.toContain("Model Changed")
+  })
+
+  test("suppresses window-first system and account rows while older history is unloaded", () => {
+    const messages: HydratedTranscriptMessage[] = [
+      {
+        id: "user-1",
+        kind: "user_prompt",
+        content: "Back after a while",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "system-resume-1",
+        kind: "system_init",
+        provider: "claude",
+        model: "claude-opus-4-8",
+        tools: [],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "account-resume-1",
+        kind: "account_info",
+        accountInfo: { email: "a@example.com", subscriptionType: "Pro" },
+        timestamp: new Date().toISOString(),
+      },
+    ]
+
+    // The loaded window starts mid-transcript: the resume init is not the true
+    // first, so it must not render as "Session Started".
+    const truncatedHtml = renderTranscript(messages, true)
+    expect(truncatedHtml).not.toContain("Session Started")
+    expect(truncatedHtml).not.toContain("Account")
+
+    // Once the full history is loaded, the same rows render as first.
+    const fullHtml = renderTranscript(messages, false)
+    expect(fullHtml).toContain("Session Started")
+    expect(fullHtml).toContain("Account")
+  })
+
+  test("still renders model changes while older history is unloaded", () => {
+    const html = renderTranscript([
+      {
+        id: "system-1",
+        kind: "system_init",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        tools: [],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "system-2",
+        kind: "system_init",
+        provider: "claude",
+        model: "claude-opus-4-8",
+        tools: [],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+        timestamp: new Date().toISOString(),
+      },
+    ], true)
+
+    expect(html).not.toContain("Session Started")
+    expect(html).toContain("Model Changed")
   })
 
   test("renders one wrapper for visible transcript rows", () => {

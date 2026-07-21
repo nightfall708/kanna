@@ -36,6 +36,25 @@ describe("deriveLatestContextWindowSnapshot", () => {
 
     expect(snapshot?.compactsAutomatically).toBe(true)
   })
+
+  test("a harness switch resets the meter: only usage after the last handoff boundary counts", () => {
+    // Usage (and compaction signals) from the old provider's session don't
+    // describe the new session's context window.
+    expect(deriveLatestContextWindowSnapshot([
+      entry({ kind: "compact_boundary" }, 1),
+      entry({ kind: "context_window_updated", usage: { usedTokens: 999, compactsAutomatically: false } }, 2),
+      entry({ kind: "handoff_boundary", fromProvider: "claude", toProvider: "codex" }, 3),
+    ])).toBeNull()
+
+    const afterSwitch = deriveLatestContextWindowSnapshot([
+      entry({ kind: "compact_boundary" }, 1),
+      entry({ kind: "context_window_updated", usage: { usedTokens: 999, compactsAutomatically: false } }, 2),
+      entry({ kind: "handoff_boundary", fromProvider: "claude", toProvider: "codex" }, 3),
+      entry({ kind: "context_window_updated", usage: { usedTokens: 42, compactsAutomatically: false } }, 4),
+    ])
+    expect(afterSwitch?.usedTokens).toBe(42)
+    expect(afterSwitch?.compactsAutomatically).toBe(false)
+  })
 })
 
 describe("formatContextWindowTokens", () => {
