@@ -23,7 +23,14 @@ const HEARTBEAT_EVERY_N_PINGS = 4
  * restarted — tolerates transient edge blips without churning the connector.
  */
 const PING_FAILURE_TOLERANCE = 3
-const RESTART_BACKOFF_MS = [1_000, 2_000, 4_000, 10_000]
+/**
+ * For the first minute of a failure streak, retry every second — the common
+ * failure (laptop wake, network flap, edge blip) clears in seconds and should
+ * recover as fast as possible. Only a sustained outage earns the backoff.
+ */
+const FAST_RETRY_WINDOW_MS = 60_000
+const FAST_RETRY_DELAY_MS = 1_000
+const RESTART_BACKOFF_MS = [2_000, 4_000, 10_000]
 const RESTART_BACKOFF_MAX_MS = 30_000
 
 export interface CloudTunnelSupervisor {
@@ -34,6 +41,7 @@ export interface TunnelSupervisorDeps {
   startTunnelImpl?: (localUrl: string, tunnelToken: string) => Promise<StartedShareTunnel>
   fetchImpl?: typeof fetch
   sleepImpl?: (ms: number, signal: AbortSignal) => Promise<void>
+  nowImpl?: () => number
   pingIntervalMs?: number
   heartbeatEveryNPings?: number
 }
@@ -67,9 +75,11 @@ function defaultSleep(ms: number, signal: AbortSignal) {
   })
 }
 
-export function restartDelayMs(failureCount: number) {
-  // failureCount is 1-based: 1 → 1s, 2 → 2s, 3 → 4s, 4 → 10s, 5+ → 30s.
-  return RESTART_BACKOFF_MS[failureCount - 1] ?? RESTART_BACKOFF_MAX_MS
+export function restartDelayMs(msIntoFailureStreak: number, failuresPastFastWindow: number) {
+  // Inside the fast window: always 1s. Past it (failuresPastFastWindow is
+  // 1-based): 1 → 2s, 2 → 4s, 3 → 10s, 4+ → 30s.
+  if (msIntoFailureStreak < FAST_RETRY_WINDOW_MS) return FAST_RETRY_DELAY_MS
+  return RESTART_BACKOFF_MS[failuresPastFastWindow - 1] ?? RESTART_BACKOFF_MAX_MS
 }
 
 export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTunnelSupervisor {
@@ -77,6 +87,7 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
   const warn = args.warn ?? log
   const fetchImpl = args.deps?.fetchImpl ?? fetch
   const sleepImpl = args.deps?.sleepImpl ?? defaultSleep
+  const nowImpl = args.deps?.nowImpl ?? Date.now
   const startTunnelImpl = args.deps?.startTunnelImpl
     ?? ((localUrl: string, tunnelToken: string) =>
       startShareTunnel(localUrl, { kind: "token", token: tunnelToken }, { log }))
@@ -87,6 +98,9 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
   let stopped = false
   let activeTunnel: StartedShareTunnel | null = null
   let hasEverConnected = false
+  /** Wall-clock start of the current failure streak (null while healthy). */
+  let failureStreakStartedAt: number | null = null
+  let failuresPastFastWindow = 0
   const abortController = new AbortController()
 
   async function pingPublicHealth() {
@@ -112,6 +126,8 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
       await sendHeartbeat()
       args.onTunnelUp?.(hasEverConnected ? "recovered" : "started")
       hasEverConnected = true
+      failureStreakStartedAt = null
+      failuresPastFastWindow = 0
       log(`cloud: connected (${args.identity.appOrigin})`)
 
       let pingCount = 0
@@ -154,19 +170,20 @@ export function startCloudTunnelSupervisor(args: TunnelSupervisorArgs): CloudTun
   }
 
   async function supervise() {
-    let consecutiveFailures = 0
     while (!stopped) {
       try {
         await runOnce()
-        consecutiveFailures = 0
       } catch (error) {
         if (error instanceof CloudApiError && error.status === 401) {
           warn("cloud: this machine was revoked on kanna.sh — run `kanna pair` again (or `kanna pair --disable` to silence this)")
           return
         }
         if (stopped) return
-        consecutiveFailures += 1
-        const delay = restartDelayMs(consecutiveFailures)
+        const now = nowImpl()
+        failureStreakStartedAt ??= now
+        const msIntoStreak = now - failureStreakStartedAt
+        if (msIntoStreak >= FAST_RETRY_WINDOW_MS) failuresPastFastWindow += 1
+        const delay = restartDelayMs(msIntoStreak, failuresPastFastWindow)
         warn(`cloud: connection down (${error instanceof Error ? error.message : String(error)}) — restarting in ${Math.round(delay / 1000)}s`)
         await sleepImpl(delay, abortController.signal)
       }

@@ -1,4 +1,4 @@
-import { BookText, Command, MessageSquareQuote, Settings2, type LucideIcon } from "lucide-react"
+import { BookText, Command, Gauge, MessageSquareQuote, Settings2, type LucideIcon } from "lucide-react"
 
 /**
  * Single source of truth for settings navigation targets.
@@ -34,6 +34,12 @@ export const SETTINGS_SECTIONS = [
     label: "Keybindings",
     icon: Command as LucideIcon,
     subtitle: "Edit global app shortcuts stored in the active keybindings file.",
+  },
+  {
+    id: "usage",
+    label: "Usage",
+    icon: Gauge as LucideIcon,
+    subtitle: "Subscription rate-limit utilization for each harness, with reset times and when each figure was recorded.",
   },
   // always last
   {

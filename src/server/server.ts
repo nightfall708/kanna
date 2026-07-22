@@ -13,8 +13,10 @@ import { classifyCloudRequest, isAllowedCloudWsUpgrade, type CloudRequestClass }
 import type { CloudRuntime } from "./cloud"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
+import { CodexAppServerManager } from "./codex-app-server"
 import { KannaAnalyticsReporter } from "./analytics"
 import { AppSettingsManager } from "./app-settings"
+import { UsageLimitsManager } from "./usage-limits"
 import { DiffStore } from "./diff-store"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
@@ -140,9 +142,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       trackEvent: analytics.track.bind(analytics),
     })
     : null
+  const codexManager = new CodexAppServerManager()
   const agent = new AgentCoordinator({
     store,
     analytics,
+    codexManager,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
       if (chatId) {
         if (options?.immediate) {
@@ -155,6 +159,14 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       router.scheduleBroadcast()
     },
   })
+  const usageLimits = new UsageLimitsManager(path.join(store.dataDir, "usage-limits.json"), {
+    fetchClaudeUsage: () => agent.fetchClaudeUsage(),
+    fetchCodexRateLimits: () => agent.fetchCodexRateLimits(),
+  })
+  await usageLimits.initialize()
+  agent.setClaudeRateLimitListener((info) => usageLimits.recordClaudeRateLimitPush(info))
+  codexManager.setRateLimitsListener((snapshot) => usageLimits.recordCodexRateLimitPush(snapshot))
+
   router = createWsRouter({
     store,
     diffStore,
@@ -163,6 +175,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     keybindings,
     appSettings,
     analytics,
+    usageLimits,
     llmProvider: {
       read: readLlmProviderSnapshot,
       write: writeLlmProviderSnapshot,
@@ -394,6 +407,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       await agent.cancel(chatId)
     }
     router.dispose()
+    usageLimits.dispose()
     appSettings.dispose()
     keybindings.dispose()
     terminals.closeAll()

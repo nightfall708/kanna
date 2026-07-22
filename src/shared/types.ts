@@ -892,6 +892,82 @@ export interface AppSettingsPatch {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Usage limits (subscription rate-limit utilization per harness)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a usage number came from, so the UI can show honest staleness:
+ * - `on_demand`: a fresh probe/read at page load or manual refresh
+ * - `turn_push`: piggybacked on a turn event (may only cover one window)
+ * - `cache`: loaded from the persisted last-known snapshot after a restart
+ */
+export type UsageLimitSource = "on_demand" | "turn_push" | "cache"
+
+/** One rolling rate-limit window (e.g. Claude 5-hour, Codex weekly). */
+export interface UsageLimitWindow {
+  /** Stable id within a provider (e.g. "five_hour", "seven_day_opus", "codex:primary"). */
+  id: string
+  /** Human label for the bar (e.g. "5-hour session", "Weekly · Opus"). */
+  label: string
+  /** Percentage of the window consumed, 0–100, or null when unknown. */
+  usedPercent: number | null
+  /** ISO 8601 timestamp when this window resets, or null when unknown. */
+  resetsAt: string | null
+  /** When this specific window value was recorded (ISO 8601). */
+  recordedAt: string
+  /** Source of this window's value. */
+  source: UsageLimitSource
+}
+
+/** Pay-per-use credit balance (Codex PAYG, Claude extra usage). */
+export interface UsageLimitCredits {
+  /** Human label (e.g. "Credits", "Extra usage"). */
+  label: string
+  /** Percentage consumed of a cap, 0–100, or null when there is no cap/unknown. */
+  usedPercent: number | null
+  /** Amount consumed in major currency units (dollars), or null when unknown. */
+  usedAmount: number | null
+  /** Spend cap in major currency units (dollars), or null when there is no cap. */
+  limitAmount: number | null
+  /** ISO 4217 currency code for the amounts (e.g. "USD"), or null when unknown. */
+  currency: string | null
+  /** Free-form fallback description when amounts aren't numeric (e.g. "Unlimited"). */
+  detail: string | null
+  recordedAt: string
+  source: UsageLimitSource
+}
+
+export type UsageLimitStatus =
+  // Windows present and meaningful.
+  | "ok"
+  // Provider auth doesn't expose limits (API key / Bedrock / Vertex, or logged out).
+  | "unavailable"
+  // Provider has no subscription limits by design (pi passthrough).
+  | "not_applicable"
+  // We haven't fetched anything yet for this provider.
+  | "unknown"
+
+/** Per-provider usage snapshot rendered as a card on the Usage page. */
+export interface ProviderUsageSnapshot {
+  provider: AgentProvider
+  status: UsageLimitStatus
+  /** Plan / subscription label when known (e.g. "max", "pro", "Ultra"). */
+  plan: string | null
+  /** Rate-limit windows to render as horizontal bars. */
+  windows: UsageLimitWindow[]
+  /** Optional credit balance row. */
+  credits: UsageLimitCredits | null
+  /** Human explanation shown when status !== "ok" (e.g. "Sign in to Codex to see limits"). */
+  detail: string | null
+  /** Latest recordedAt across all windows/credits, ISO 8601, or null when never fetched. */
+  updatedAt: string | null
+}
+
+export interface UsageLimitsSnapshot {
+  providers: ProviderUsageSnapshot[]
+}
+
 /** A user-curated model shortcut shown in Pi's model picker. */
 export interface FaveModel {
   label: string

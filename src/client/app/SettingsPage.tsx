@@ -17,6 +17,7 @@ import { KeybindingsSection } from "./settings/KeybindingsSection"
 import { ProvidersSection } from "./settings/ProvidersSection"
 import { SETTINGS_SECTIONS } from "./settings/registry"
 import { SkillsSection } from "./settings/SkillsSection"
+import { UsageSection } from "./settings/UsageSection"
 import { getKeybindingsSubtitle } from "./settings/shared"
 import type { KannaState } from "./useKannaState"
 
@@ -295,6 +296,8 @@ export function SettingsPage() {
                   <KeybindingsSection state={state} />
                 ) : selectedPage === "skills" ? (
                   <SkillsSection state={state} />
+                ) : selectedPage === "usage" ? (
+                  <UsageSection state={state} />
                 ) : (
                   <ChangelogSection
                     status={changelog.status}
