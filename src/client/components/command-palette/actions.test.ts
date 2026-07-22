@@ -4,6 +4,7 @@ import {
   flattenPaletteProjects,
   flattenSidebarThreads,
   getRecentThreads,
+  getReviewThreads,
   getSettingsPaletteEntries,
   scorePaletteItem,
   searchProjects,
@@ -86,6 +87,42 @@ describe("getRecentThreads", () => {
     const threads = flattenSidebarThreads(makeSidebarData())
     const recent = getRecentThreads(threads, 3)
     expect(recent.map((thread) => thread.chatId)).toEqual(["chat-2", "chat-4", "chat-1"])
+  })
+
+  test("excludes chatIds passed in the exclude set", () => {
+    const threads = flattenSidebarThreads(makeSidebarData())
+    const recent = getRecentThreads(threads, 3, new Set(["chat-2"]))
+    expect(recent.map((thread) => thread.chatId)).toEqual(["chat-4", "chat-1"])
+  })
+})
+
+describe("getReviewThreads", () => {
+  test("selects waiting_for_user / unread chats (sidebar dot), most recent first", () => {
+    const data: SidebarData = {
+      projectGroups: [
+        {
+          groupKey: "p",
+          title: "P",
+          realTitle: "P",
+          localPath: "/tmp/p",
+          chats: [
+            makeChatRow({ chatId: "waiting", title: "Waiting", status: "waiting_for_user", lastMessageAt: 300 }),
+            makeChatRow({ chatId: "unread", title: "Unread", unread: true, lastMessageAt: 600 }),
+            makeChatRow({ chatId: "idle", title: "Idle", lastMessageAt: 900 }),
+            makeChatRow({ chatId: "running", title: "Running", status: "running", lastMessageAt: 950 }),
+          ],
+          previewChats: [],
+          olderChats: [],
+          archivedChats: [
+            makeChatRow({ chatId: "archived-unread", title: "Archived", unread: true, lastMessageAt: 990 }),
+          ],
+          defaultCollapsed: false,
+        },
+      ],
+    }
+    const review = getReviewThreads(flattenSidebarThreads(data))
+    // unread (600) before waiting (300); idle, running, and archived excluded.
+    expect(review.map((thread) => thread.chatId)).toEqual(["unread", "waiting"])
   })
 })
 

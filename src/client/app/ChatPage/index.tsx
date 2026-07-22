@@ -1031,6 +1031,7 @@ export function ChatPage() {
           isEmptyStateTypingComplete={isEmptyStateTypingComplete}
           isPageFileDragActive={isPageFileDragActive}
           showEmptyState={showEmptyState}
+          socket={state.socket}
           emptyStateProjectPath={state.navbarLocalPath}
           onOpenProjectExternal={handleOpenExternal}
         />
@@ -1047,6 +1048,7 @@ export function ChatPage() {
         runtimeStatus={state.runtimeStatus}
         canCancel={state.canCancel}
         projectId={projectId}
+        projectPath={state.navbarLocalPath ?? null}
         activeProvider={state.runtime?.provider ?? null}
         availableProviders={state.availableProviders}
         contextWindowSnapshot={contextWindowSnapshot}

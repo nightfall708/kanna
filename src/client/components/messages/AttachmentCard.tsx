@@ -73,7 +73,7 @@ export function AttachmentImageCard({
         )}
         <div
           className={cn(
-            "pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent text-left opacity-0 transition-opacity duration-200 group-hover/image:opacity-100",
+            "pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/30 to-black/10 md:to-black/0 text-left opacity-0 transition-opacity duration-200 group-hover/image:opacity-100",
             isComposer ? "px-2.5 pb-2 pt-6" : "px-4 pb-3 pt-10",
           )}
         >

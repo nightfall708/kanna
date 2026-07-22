@@ -195,6 +195,22 @@ describe("normalizeCodexRateLimits", () => {
     expect(snapshot.windows.map((w) => w.label)).toEqual(["5-hour · All models", "5-hour · Fast lane"])
   })
 
+  test("model-id limit names run through the shared model-label formatter", () => {
+    const snapshot = normalizeCodexRateLimits(
+      {
+        rateLimitsByLimitId: {
+          codex: { primary: { usedPercent: 0, windowDurationMins: 10080 } },
+          codex_bengalfox: { limitName: "GPT-5.3-Codex-Spark", primary: { usedPercent: 0, windowDurationMins: 10080 } },
+        },
+      },
+      NOW,
+    )
+    expect(snapshot.windows.map((w) => w.label)).toEqual([
+      "Weekly · All models",
+      "Weekly · GPT 5.3 Codex Spark",
+    ])
+  })
+
   test("empty response is unavailable", () => {
     expect(normalizeCodexRateLimits({}, NOW).status).toBe("unavailable")
     expect(normalizeCodexRateLimits(null, NOW).status).toBe("unavailable")
@@ -300,12 +316,32 @@ describe("UsageLimitsManager", () => {
     await manager.initialize()
     await manager.refresh()
     fail = true
-    await manager.refresh()
+    await manager.refresh({ force: true })
 
     const claude = manager.getSnapshot().providers.find((p) => p.provider === "claude")
     expect(claude?.windows).toHaveLength(1)
     expect(claude?.windows[0]?.usedPercent).toBe(42)
     expect(claude?.detail).toContain("probe timed out")
+    manager.dispose()
+  })
+
+  test("non-forced refresh is throttled by TTL; force bypasses it", async () => {
+    const filePath = await createTempFilePath()
+    let fetches = 0
+    const manager = new UsageLimitsManager(filePath, {
+      now: () => new Date(NOW),
+      fetchClaudeUsage: async () => {
+        fetches += 1
+        return { rate_limits_available: true, rate_limits: { five_hour: { utilization: 1 } } }
+      },
+    })
+    await manager.initialize()
+
+    await manager.refresh()
+    await manager.refresh() // within TTL → skipped
+    expect(fetches).toBe(1)
+    await manager.refresh({ force: true })
+    expect(fetches).toBe(2)
     manager.dispose()
   })
 

@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { LOG_PREFIX } from "../shared/branding"
+import { deriveModelLabel } from "../shared/types"
 import type {
   AgentProvider,
   ProviderUsageSnapshot,
@@ -332,6 +333,15 @@ export function normalizeCodexRateLimits(
       ? [[raw.rateLimits.limitId ?? "codex", raw.rateLimits] as [string, CodexRateLimitSnapshotRaw]]
       : []
 
+  // The default "codex" (All models) bucket always renders first; named
+  // model-specific lanes (e.g. Spark) follow. Object key order isn't
+  // guaranteed and turn-push merges can reorder, so pin it explicitly.
+  buckets.sort(([a], [b]) => {
+    if (a === "codex") return -1
+    if (b === "codex") return 1
+    return a.localeCompare(b)
+  })
+
   if (buckets.length === 0) {
     return {
       ...base,
@@ -348,8 +358,16 @@ export function normalizeCodexRateLimits(
   for (const [limitId, bucket] of buckets) {
     plan = plan ?? bucket.planType ?? null
     // The default bucket ("codex") has no limitName; named buckets are
-    // model-specific lanes (e.g. "GPT-5.3-Codex-Spark").
-    const suffix = multiple ? (bucket.limitName ?? (limitId === "codex" ? "All models" : limitId)) : ""
+    // model-specific lanes whose limitName is a model id — run it through the
+    // shared model-label formatter so "GPT-5.3-Codex-Spark" → "GPT 5.3 Codex
+    // Spark", matching the rest of the app.
+    const suffix = !multiple
+      ? ""
+      : bucket.limitName
+        ? deriveModelLabel(bucket.limitName)
+        : limitId === "codex"
+          ? "All models"
+          : limitId
     windows.push(...codexBucketWindows(bucket, limitId, now, source, suffix))
     if (!credits && bucket.credits && (bucket.credits.hasCredits || bucket.credits.unlimited)) {
       credits = {
@@ -436,6 +454,9 @@ function staticProviderSnapshot(provider: AgentProvider): ProviderUsageSnapshot 
 
 const PROVIDER_ORDER: AgentProvider[] = ["claude", "codex", "cursor", "pi"]
 
+/** Non-forced refreshes within this window reuse the last read (probes are pricey). */
+const REFRESH_TTL_MS = 60_000
+
 interface UsageLimitsFile {
   version?: number
   providers?: Partial<Record<AgentProvider, ProviderUsageSnapshot>>
@@ -455,6 +476,7 @@ export class UsageLimitsManager {
   private snapshots = new Map<AgentProvider, ProviderUsageSnapshot>()
   private readonly listeners = new Set<(snapshot: UsageLimitsSnapshot) => void>()
   private refreshInFlight: Promise<void> | null = null
+  private lastRefreshAt: number | null = null
   /** Serializes disk writes so overlapping saves can't interleave. */
   private persistChain: Promise<void> = Promise.resolve()
 
@@ -542,9 +564,18 @@ export class UsageLimitsManager {
     this.setProvider("codex", mergeCodexRateLimitPush(prev, raw, this.nowIso()))
   }
 
-  /** On-demand refresh of claude + codex; coalesces concurrent calls. */
-  async refresh(): Promise<void> {
+  /**
+   * On-demand refresh of claude + codex; coalesces concurrent calls. Reads may
+   * spawn short-lived harness probe processes, so non-forced calls (e.g. every
+   * usage-limits subscription) are throttled to once per TTL — the explicit
+   * Refresh button passes force.
+   */
+  async refresh(options: { force?: boolean } = {}): Promise<void> {
     if (this.refreshInFlight) return this.refreshInFlight
+    if (!options.force && this.lastRefreshAt !== null) {
+      const age = (this.deps.now?.() ?? new Date()).getTime() - this.lastRefreshAt
+      if (age < REFRESH_TTL_MS) return
+    }
     this.refreshInFlight = this.doRefresh().finally(() => {
       this.refreshInFlight = null
     })
@@ -553,6 +584,7 @@ export class UsageLimitsManager {
 
   private async doRefresh() {
     await Promise.all([this.refreshClaude(), this.refreshCodex()])
+    this.lastRefreshAt = (this.deps.now?.() ?? new Date()).getTime()
     // Make refresh() a durable point: the persisted cache reflects this read.
     await this.persistChain
   }

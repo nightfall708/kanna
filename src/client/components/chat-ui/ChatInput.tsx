@@ -18,6 +18,7 @@ import { useIsStandalone } from "../../hooks/useIsStandalone"
 import { useChatInputStore } from "../../stores/chatInputStore"
 import { type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput, REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
+import { formatPathWithTilde } from "../../lib/pathUtils"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 import { ContextWindowMeter } from "./ContextWindowMeter"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
@@ -126,6 +127,8 @@ interface Props {
   canCancel?: boolean
   chatId?: string | null
   projectId?: string | null
+  /** Current project directory, shown in the placeholder ("Build something in ~/…"). */
+  projectPath?: string | null
   inputElementRef?: React.Ref<HTMLTextAreaElement>
   activeProvider: AgentProvider | null
   availableProviders: ProviderCatalogEntry[]
@@ -148,6 +151,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   canCancel,
   chatId,
   projectId,
+  projectPath,
   inputElementRef,
   activeProvider,
   availableProviders,
@@ -198,6 +202,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [skillMenuOffset, setSkillMenuOffset] = useState(0)
   const skillsFetchRef = useRef<{ provider: AgentProvider | null; pending: boolean }>({ provider: null, pending: false })
   const selectedSkillItemRef = useRef<HTMLButtonElement | null>(null)
+
+  const placeholder = projectPath
+    ? `Build in ${formatPathWithTilde(projectPath)}`
+    : "Build something..."
 
   const activeContextWindow = useMemo(() => {
     if (providerPrefs.provider !== "claude") {
@@ -795,7 +803,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           <div className="flex items-end max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] pr-1.5">
             <Textarea
               ref={setTextareaRefs}
-              placeholder="Build something..."
+              placeholder={placeholder}
               value={value}
               autoFocus
               {...{ [CHAT_INPUT_ATTRIBUTE]: "" }}

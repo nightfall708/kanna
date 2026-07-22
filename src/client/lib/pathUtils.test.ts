@@ -1,5 +1,21 @@
 import { describe, expect, test } from "bun:test"
-import { parseLocalFileLink, shouldOpenLocalFileLinkInEditor } from "./pathUtils"
+import { formatPathWithTilde, parseLocalFileLink, shouldOpenLocalFileLinkInEditor } from "./pathUtils"
+
+describe("formatPathWithTilde", () => {
+  test("contracts a home subpath to ~", () => {
+    expect(formatPathWithTilde("/Users/jake/Projects/kanna")).toBe("~/Projects/kanna")
+    expect(formatPathWithTilde("/home/jake/x")).toBe("~/x")
+  })
+
+  test("expands the home root instead of showing ~", () => {
+    expect(formatPathWithTilde("/Users/jake")).toBe("/Users/jake")
+    expect(formatPathWithTilde("/home/jake")).toBe("/home/jake")
+  })
+
+  test("leaves non-home paths unchanged", () => {
+    expect(formatPathWithTilde("/opt/tool")).toBe("/opt/tool")
+  })
+})
 
 describe("parseLocalFileLink", () => {
   test("parses an absolute file path with a line fragment", () => {

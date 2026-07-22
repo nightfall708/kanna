@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import {
   Archive,
@@ -8,7 +8,6 @@ import {
   Copy,
   ExternalLink,
   FolderGit2,
-  FolderPlus,
   Gauge,
   GitBranch,
   GitFork,
@@ -16,26 +15,31 @@ import {
   History,
   House,
   ListTodo,
+  Loader2,
   LockOpen,
-  MessageSquarePlus,
+  MessageCircle,
   Paperclip,
+  Plus,
   Settings2,
   Share2,
   SquareKanban,
   SquareMenu,
+  SquarePen,
   SquareTerminal,
 } from "lucide-react"
-import type { ClaudeContextWindow } from "../../../shared/types"
+import type { ClaudeContextWindow, SidebarChatRow } from "../../../shared/types"
+import { cn } from "../../lib/utils"
 import { REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
 import type { KannaState } from "../../app/useKannaState"
 import { useComposer } from "../../hooks/useComposer"
-import { formatSidebarAgeLabel } from "../../lib/formatters"
 import { actionMatchesEvent, getBindingsForAction } from "../../lib/keybindings"
 import { formatPathWithTilde } from "../../lib/pathUtils"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
 import { useTerminalPreferencesStore } from "../../stores/terminalPreferencesStore"
+import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import { PROVIDER_ICONS } from "../chat-ui/ChatPreferenceControls"
+import { UsageSection } from "../../app/settings/UsageSection"
 import { getOpenAppItems, openAppValue, OpenAppIcon } from "../open-external-menu"
 import {
   Command,
@@ -50,6 +54,7 @@ import {
   flattenPaletteProjects,
   flattenSidebarThreads,
   getRecentThreads,
+  getReviewThreads,
   getSettingsPaletteEntries,
   scorePaletteItem,
   searchProjects,
@@ -59,7 +64,10 @@ import {
   type PaletteThread,
 } from "./actions"
 
-type PalettePage = "models" | "harness" | "new-thread" | "open-in" | "settings"
+/** Window event that opens the command palette from anywhere (e.g. mobile nav). */
+export const OPEN_COMMAND_PALETTE_EVENT = "kanna:open-command-palette"
+
+type PalettePage = "models" | "harness" | "new-thread" | "open-in" | "settings" | "usage"
 
 interface PaletteAction {
   id: string
@@ -75,10 +83,41 @@ interface PaletteAction {
   run: () => void
 }
 
+const SHORTCUT_MODIFIER_GLYPHS: Record<string, string> = {
+  cmd: "⌘", command: "⌘", meta: "⌘",
+  ctrl: "⌃", control: "⌃",
+  alt: "⌥", option: "⌥",
+  shift: "⇧",
+}
+
+const SHORTCUT_KEY_GLYPHS: Record<string, string> = {
+  enter: "↵", return: "↵", escape: "⎋", esc: "⎋",
+  backspace: "⌫", delete: "⌦", tab: "⇥", space: "␣",
+  up: "↑", down: "↓", left: "←", right: "→",
+  arrowup: "↑", arrowdown: "↓", arrowleft: "←", arrowright: "→",
+}
+
+/** Canonical mac ordering: Control, Option, Shift, Command. */
+const SHORTCUT_GLYPH_ORDER = ["⌃", "⌥", "⇧", "⌘"]
+
+/** Render a binding like "cmd+alt+k" as glyphs "⌥⌘K". */
+function shortcutToGlyphs(binding: string): string {
+  const modifiers = new Set<string>()
+  let key = ""
+  for (const raw of binding.split("+").map((part) => part.trim().toLowerCase()).filter(Boolean)) {
+    const modifier = SHORTCUT_MODIFIER_GLYPHS[raw]
+    if (modifier) modifiers.add(modifier)
+    else key = raw
+  }
+  const orderedModifiers = SHORTCUT_GLYPH_ORDER.filter((glyph) => modifiers.has(glyph))
+  const keyGlyph = SHORTCUT_KEY_GLYPHS[key] ?? key.toUpperCase()
+  return [...orderedModifiers, keyGlyph].join("")
+}
+
 function ShortcutHint({ binding }: { binding: string }) {
   return (
-    <span className="ml-auto shrink-0 pl-3 text-xs text-muted-foreground">
-      {binding.toUpperCase()}
+    <span className="ml-auto shrink-0 pl-3 text-xs tracking-widest text-muted-foreground">
+      {shortcutToGlyphs(binding)}
     </span>
   )
 }
@@ -87,32 +126,80 @@ function statusDotClass(archived: boolean) {
   return archived ? "text-muted-foreground/50" : "text-muted-foreground"
 }
 
+/**
+ * Status glyph mirroring the sidebar chat rows: spinner while running, a
+ * blue ping when waiting on the user, a green ping when unread. Returns null
+ * for idle chats so callers can fall back to a default icon.
+ */
+function renderChatStatusDot(chat: SidebarChatRow): ReactNode | null {
+  if (chat.status === "starting" || chat.status === "running") {
+    return <Loader2 className="size-3.5 shrink-0 animate-spin text-logo" />
+  }
+  const color = chat.status === "waiting_for_user" ? "blue" : chat.unread ? "emerald" : null
+  if (!color) return null
+  return (
+    <div className="relative flex size-4 shrink-0 items-center justify-center">
+      <div
+        className={cn(
+          "absolute size-2.5 rounded-full animate-ping",
+          color === "blue" ? "bg-blue-400/80" : "bg-emerald-400/80",
+        )}
+      />
+      <div
+        className={cn(
+          "size-2.5 rounded-full ring-2 ring-muted/20 dark:ring-muted/50",
+          color === "blue" ? "bg-blue-400" : "bg-emerald-400",
+        )}
+      />
+    </div>
+  )
+}
+
 function ThreadItem({
   thread,
   nowMs,
   onSelect,
+  showStatus = false,
 }: {
   thread: PaletteThread
   nowMs: number
   onSelect: (thread: PaletteThread) => void
+  /** Use the sidebar status glyph (ping dots / spinner) instead of the chat icon. */
+  showStatus?: boolean
 }) {
-  // Same relative-age formatting and timestamp source as the sidebar rows.
-  const ageLabel = formatSidebarAgeLabel(thread.lastActivityAt, nowMs)
+  const statusDot = showStatus ? renderChatStatusDot(thread.row) : null
+  // Faint preview of the latest user prompt (already on the sidebar row). Fills
+  // the space between the title and the trailing project/time, truncating tail.
+  const previewText = thread.row.lastUserMessagePreview?.trim() || null
+  // No status dot → show the chat's harness icon (falls back to a chat bubble
+  // when the provider is unknown).
+  const HarnessIcon = thread.row.provider ? PROVIDER_ICONS[thread.row.provider] : null
   return (
     <CommandItem value={`thread-${thread.chatId}`} onSelect={() => onSelect(thread)}>
-      <MessageSquarePlus className={`h-4 w-4 ${statusDotClass(thread.archived)}`} />
-      <span className="min-w-0 truncate">{thread.title}</span>
-      {ageLabel ? (
-        // Counteract part of the CommandItem flex gap so the age hugs the title.
-        <span className="-ml-1 shrink-0 text-xs text-muted-foreground">
-          {ageLabel === "now" ? ageLabel : `${ageLabel} ago`}
-        </span>
+      {statusDot ?? (HarnessIcon
+        ? <HarnessIcon className={`h-4 w-4 ${statusDotClass(thread.archived)}`} />
+        : <MessageCircle className={`h-4 w-4 ${statusDotClass(thread.archived)}`} />)}
+      {thread.row.status === "running" || thread.row.status === "starting" ? (
+        <AnimatedShinyText
+          className="!mx-0 min-w-0 shrink truncate"
+          animate={thread.row.status === "running"}
+          shimmerWidth={Math.max(20, thread.title.length * 3)}
+        >
+          {thread.title}
+        </AnimatedShinyText>
+      ) : (
+        <span className="min-w-0 shrink truncate">{thread.title}</span>
+      )}
+      {previewText ? (
+        // Grows to fill the middle and truncates its tail; -ml-1 offsets part
+        // of the parent gap so it hugs the title.
+        <span className="-ml-1 min-w-0 flex-1 truncate text-xs text-muted-foreground">{previewText}</span>
       ) : null}
-      <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-3 text-xs text-muted-foreground">
+      <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-3 text-xs">
         {thread.archived ? (
-          <span className="rounded border border-border px-1 py-px text-[10px] uppercase tracking-wide">Archived</span>
+          <span className="rounded border border-border px-1 py-px text-[10px] uppercase tracking-wide text-muted-foreground">Archived</span>
         ) : null}
-        <span className="max-w-[140px] truncate">{thread.projectTitle}</span>
+        <span className="max-w-[140px] truncate text-muted-foreground">{thread.projectTitle}</span>
       </span>
     </CommandItem>
   )
@@ -131,6 +218,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
   const [open, setOpen] = useState(false)
   const [pages, setPages] = useState<PalettePage[]>([])
   const [query, setQuery] = useState("")
+  const listRef = useRef<HTMLDivElement>(null)
   // cmdk's highlighted item value, controlled so the footer can react to it.
   const [selectedValue, setSelectedValue] = useState("")
   const page: PalettePage | "root" = pages.length > 0 ? pages[pages.length - 1] : "root"
@@ -146,6 +234,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
     activeProvider: state.runtime?.provider ?? null,
     availableProviders: state.availableProviders,
   })
+
 
   const onChatPage = Boolean(state.activeChatId)
   const projectId = state.activeProjectId
@@ -202,6 +291,15 @@ export function CommandPalette({ state }: { state: KannaState }) {
     return () => window.removeEventListener("keydown", handleGlobalKeydown)
   }, [open, openPalette, state.keybindings])
 
+  // Programmatic open (e.g. the mobile nav search button).
+  useEffect(() => {
+    function handleOpenRequest() {
+      openPalette()
+    }
+    window.addEventListener(OPEN_COMMAND_PALETTE_EVENT, handleOpenRequest)
+    return () => window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, handleOpenRequest)
+  }, [openPalette])
+
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     if (nextOpen) {
       openPalette()
@@ -242,6 +340,13 @@ export function CommandPalette({ state }: { state: KannaState }) {
     store.setViewMode(projectId, viewMode)
   }, [projectId])
 
+  const currentProjectTitle = useMemo(
+    () => (projectId
+      ? state.sidebarData.projectGroups.find((group) => group.groupKey === projectId)?.title ?? null
+      : null),
+    [projectId, state.sidebarData.projectGroups]
+  )
+
   const actions = useMemo<PaletteAction[]>(() => {
     const list: PaletteAction[] = []
     const chatShortcuts = (action: Parameters<typeof getBindingsForAction>[1]) =>
@@ -250,9 +355,9 @@ export function CommandPalette({ state }: { state: KannaState }) {
     if (projectId) {
       list.push({
         id: "new-thread-current",
-        title: "New Thread in Current Project",
+        title: currentProjectTitle ? `New Thread in ${currentProjectTitle}` : "New Thread in Current...",
         keywords: ["create chat", "compose", "start"],
-        icon: <MessageSquarePlus className={ICON_CLASS} />,
+        icon: <SquarePen className={ICON_CLASS} />,
         shortcut: chatShortcuts("createChatInCurrentProject"),
         run: () => {
           close()
@@ -266,7 +371,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
         id: "new-thread-choose",
         title: "New Thread in…",
         keywords: ["create chat", "compose", "start", "project"],
-        icon: <MessageSquarePlus className={ICON_CLASS} />,
+        icon: <SquarePen className={ICON_CLASS} />,
         run: () => pushPage("new-thread"),
       })
     }
@@ -275,7 +380,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
       id: "new-project",
       title: "New Project…",
       keywords: ["create", "add", "open folder", "clone", "repo"],
-      icon: <FolderPlus className={ICON_CLASS} />,
+      icon: <Plus className={ICON_CLASS} />,
       shortcut: chatShortcuts("openAddProject"),
       run: () => {
         close()
@@ -312,6 +417,14 @@ export function CommandPalette({ state }: { state: KannaState }) {
       keywords: ["preferences", "config", "options", "theme", "keybindings", "providers", "general"],
       icon: <Settings2 className={ICON_CLASS} />,
       run: () => pushPage("settings"),
+    })
+
+    list.push({
+      id: "usage",
+      title: "Usage…",
+      keywords: ["limits", "rate limit", "quota", "credits", "plan", "utilization", "claude", "codex"],
+      icon: <Gauge className={ICON_CLASS} />,
+      run: () => pushPage("usage"),
     })
 
     if (onChatPage && projectId) {
@@ -586,6 +699,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
     close,
     composer,
     currentChatRow,
+    currentProjectTitle,
     navigate,
     onChatPage,
     openGitPanel,
@@ -625,17 +739,82 @@ export function CommandPalette({ state }: { state: KannaState }) {
     return searchSettingsEntries(settingsEntries, trimmedQuery, settingsEntries.length)
   }, [page, settingsEntries, trimmedQuery])
 
-  const threadResults = useMemo(
+  // Empty-query root sections. "Review" (waiting on you / unread) leads and is
+  // uncapped; "In Progress" (running/starting, minus review) follows uncapped;
+  // "Recents" is the most-recent chats that are in neither — 3 normally, but 5
+  // when there's nothing in Review or In Progress.
+  const reviewResults = useMemo(
     () => (trimmedQuery
-      ? searchThreadsByTitle(threads, trimmedQuery)
-      : getRecentThreads(threads).map((thread) => ({ ...thread, score: 1 }))),
+      ? []
+      : getReviewThreads(threads).map((thread) => ({ ...thread, score: 1 }))),
     [threads, trimmedQuery]
   )
+
+  const inProgressResults = useMemo(() => {
+    if (trimmedQuery) return []
+    const reviewIds = new Set(reviewResults.map((thread) => thread.chatId))
+    return threads
+      .filter((thread) =>
+        !thread.archived
+        && !reviewIds.has(thread.chatId)
+        && (thread.row.status === "running" || thread.row.status === "starting"))
+      .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
+      .map((thread) => ({ ...thread, score: 1 }))
+  }, [threads, trimmedQuery, reviewResults])
+
+  const threadResults = useMemo(() => {
+    if (trimmedQuery) return searchThreadsByTitle(threads, trimmedQuery)
+    const excludeIds = new Set([...reviewResults, ...inProgressResults].map((thread) => thread.chatId))
+    const limit = reviewResults.length === 0 && inProgressResults.length === 0 ? 5 : 3
+    // Hide empty new chats (no messages yet → no lastMessageAt) from recents.
+    const withMessages = threads.filter((thread) => thread.row.lastMessageAt != null)
+    return getRecentThreads(withMessages, limit, excludeIds).map((thread) => ({ ...thread, score: 1 }))
+  }, [threads, trimmedQuery, reviewResults, inProgressResults])
 
   const projectSearchResults = useMemo(
     () => (trimmedQuery ? searchProjects(paletteProjects, trimmedQuery) : []),
     [paletteProjects, trimmedQuery]
   )
+
+  // The value of the first rendered result row, matching the group order used
+  // below (empty query: review → in-progress → recents → actions; typing:
+  // whichever of actions/projects/threads scores highest). Drives an explicit
+  // selection reset so typing/deleting always re-highlights the top item.
+  const firstResultValue = useMemo(() => {
+    if (trimmedQuery) {
+      return [
+        { value: rankedActions[0] ? `action-${rankedActions[0].action.id}` : null, score: rankedActions[0]?.score ?? -Infinity },
+        { value: projectSearchResults[0] ? `palette-project-${projectSearchResults[0].localPath}` : null, score: projectSearchResults[0]?.score ?? -Infinity },
+        { value: threadResults[0] ? `thread-${threadResults[0].chatId}` : null, score: threadResults[0]?.score ?? -Infinity },
+      ]
+        .filter((candidate) => candidate.value !== null)
+        .sort((left, right) => right.score - left.score)[0]?.value ?? ""
+    }
+    const firstThread = reviewResults[0] ?? inProgressResults[0] ?? threadResults[0]
+    if (firstThread) return `thread-${firstThread.chatId}`
+    if (rankedActions[0]) return `action-${rankedActions[0].action.id}`
+    return ""
+  }, [trimmedQuery, rankedActions, projectSearchResults, threadResults, reviewResults, inProgressResults])
+
+  const firstResultValueRef = useRef(firstResultValue)
+  firstResultValueRef.current = firstResultValue
+
+  // On open and every query change, snap selection to the first result and the
+  // scroll to the top. Setting the selection to the first item (rather than
+  // clearing it) keeps a row highlighted — clearing left cmdk briefly with no
+  // selection, and letting it keep the old (now mid-list) selection scrolled
+  // you into the middle. The rAF scrollTop also wins the race against cmdk's
+  // own scroll-into-view, which runs after this effect.
+  useEffect(() => {
+    setSelectedValue(firstResultValueRef.current)
+    const el = listRef.current
+    if (!el) return
+    el.scrollTop = 0
+    const raf = requestAnimationFrame(() => {
+      if (listRef.current) listRef.current.scrollTop = 0
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [open, query])
 
   const modelResults = useMemo(() => {
     if (page !== "models") return []
@@ -683,7 +862,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
   // project rows). Drives the sticky "⌘C Copy path" footer + shortcut.
   const copyPathByValue = useMemo(() => {
     const map = new Map<string, string>()
-    for (const thread of threadResults) {
+    for (const thread of [...reviewResults, ...inProgressResults, ...threadResults]) {
       map.set(`thread-${thread.chatId}`, thread.row.localPath)
     }
     for (const project of projectSearchResults) {
@@ -693,7 +872,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
       map.set(`project-${group.groupKey}`, group.localPath)
     }
     return map
-  }, [projectResults, projectSearchResults, threadResults])
+  }, [inProgressResults, projectResults, projectSearchResults, reviewResults, threadResults])
   const footerCopyPath = selectedValue ? copyPathByValue.get(selectedValue) : undefined
 
   const inputPlaceholder = page === "models"
@@ -706,7 +885,9 @@ export function CommandPalette({ state }: { state: KannaState }) {
           ? "Open project in…"
           : page === "settings"
             ? "Search settings…"
-            : "Type a command or search threads…"
+            : page === "usage"
+              ? "Harness usage"
+              : "Type a command or search threads…"
 
   return (
     <CommandDialog
@@ -752,14 +933,36 @@ export function CommandPalette({ state }: { state: KannaState }) {
           placeholder={inputPlaceholder}
           autoFocus
         />
-        <CommandList className={footerCopyPath ? "pb-9" : undefined}>
-          <CommandEmpty>No results found.</CommandEmpty>
+        <CommandList ref={listRef} className={footerCopyPath ? "pb-9" : undefined}>
+          {page !== "usage" ? <CommandEmpty>No results found.</CommandEmpty> : null}
+
+          {page === "usage" ? (
+            <div className="px-2 py-1.5">
+              <UsageSection state={state} />
+            </div>
+          ) : null}
 
           {page === "root" ? (() => {
+            const reviewGroup = reviewResults.length > 0 ? (
+              <CommandGroup key="review" heading="Review">
+                {reviewResults.map((thread) => (
+                  <ThreadItem key={thread.chatId} thread={thread} nowMs={nowMs} onSelect={openThread} showStatus />
+                ))}
+              </CommandGroup>
+            ) : null
+
+            const inProgressGroup = inProgressResults.length > 0 ? (
+              <CommandGroup key="in-progress" heading="In Progress">
+                {inProgressResults.map((thread) => (
+                  <ThreadItem key={thread.chatId} thread={thread} nowMs={nowMs} onSelect={openThread} showStatus />
+                ))}
+              </CommandGroup>
+            ) : null
+
             const threadsGroup = threadResults.length > 0 ? (
-              <CommandGroup key="threads" heading={trimmedQuery ? "Threads" : "Recent Threads"}>
+              <CommandGroup key="threads" heading={trimmedQuery ? "Threads" : "Recents"}>
                 {threadResults.map((thread) => (
-                  <ThreadItem key={thread.chatId} thread={thread} nowMs={nowMs} onSelect={openThread} />
+                  <ThreadItem key={thread.chatId} thread={thread} nowMs={nowMs} onSelect={openThread} showStatus={!trimmedQuery} />
                 ))}
               </CommandGroup>
             ) : null
@@ -798,12 +1001,13 @@ export function CommandPalette({ state }: { state: KannaState }) {
               </CommandGroup>
             ) : null
 
-            // Empty query = quick switcher (Enter jumps to the most recent
-            // thread). Typing = groups ordered by their best match, so the
+            // Empty query = quick switcher. "Review" leads so Enter jumps to
+            // the most recent chat waiting on you; then in-progress, recents,
+            // and actions. Typing = groups ordered by their best match, so the
             // most relevant kind of result floats to the top; ties keep the
             // declared order (actions, projects, threads) via stable sort.
             if (!trimmedQuery) {
-              return [threadsGroup, actionsGroup]
+              return [reviewGroup, inProgressGroup, threadsGroup, actionsGroup]
             }
 
             return [
@@ -901,7 +1105,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
                     state.openAddProjectModal()
                   }}
                 >
-                  <FolderPlus className={ICON_CLASS} />
+                  <Plus className={ICON_CLASS} />
                   <span>New Project…</span>
                 </CommandItem>
               ) : null}

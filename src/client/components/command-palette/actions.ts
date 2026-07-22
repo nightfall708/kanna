@@ -46,11 +46,27 @@ export function flattenSidebarThreads(data: SidebarData): PaletteThread[] {
   return threads
 }
 
-export function getRecentThreads(threads: PaletteThread[], limit = 7): PaletteThread[] {
+export function getRecentThreads(
+  threads: PaletteThread[],
+  limit = 3,
+  exclude?: ReadonlySet<string>,
+): PaletteThread[] {
   return [...threads]
-    .filter((thread) => !thread.archived)
+    .filter((thread) => !thread.archived && !(exclude?.has(thread.chatId)))
     .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
     .slice(0, limit)
+}
+
+/**
+ * Chats "ready for review" — exactly the ones that would show a status dot in
+ * the sidebar as needing you: waiting on the user (plan/question) or unread.
+ * Running chats (spinner, still in progress) and archived chats are excluded.
+ * Sorted most-recent first so Cmd+K → Enter jumps to the freshest one.
+ */
+export function getReviewThreads(threads: PaletteThread[]): PaletteThread[] {
+  return [...threads]
+    .filter((thread) => !thread.archived && (thread.row.status === "waiting_for_user" || thread.row.unread))
+    .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
 }
 
 /**

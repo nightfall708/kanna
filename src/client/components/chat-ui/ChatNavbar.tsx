@@ -1,10 +1,11 @@
-import { Check, Flower, GitBranch, Globe, Loader2, Menu, MoreHorizontal, PanelLeft, PanelRight, SquarePen, Terminal, UserRoundPlus } from "lucide-react"
+import { Check, Flower, GitBranch, Globe, Loader2, Menu, MoreHorizontal, PanelLeft, PanelRight, Search, SquarePen, Terminal, UserRoundPlus } from "lucide-react"
 import type { EditorOpenSettings, EditorPreset, OpenExternalAction } from "../../../shared/protocol"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
 import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "../ui/tooltip"
 import { cn } from "../../lib/utils"
 import { OpenExternalSelect, openContextMenuFromButton } from "../open-external-menu"
+import { OPEN_COMMAND_PALETTE_EVENT } from "../command-palette/CommandPalette"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "../ui/context-menu"
 
 function NavbarOverflowMenu({
@@ -149,7 +150,7 @@ export function ChatNavbar({
         "bg-gradient-to-b from-background lg:from-background/0"
       )}
     >
-      <div className="absolute top-0 left-0 right-0 z-0 h-[100px] bg-gradient-to-b from-background via-background/50 pointer-events-none block"></div>
+      <div className="absolute top-0 left-0 right-0 z-0 h-[100px] bg-gradient-to-b from-background via-background/50 to-background/10 md:to-background/0 pointer-events-none block"></div>
       <div className="relative flex items-center gap-2 w-full">
         <div className={`md:h-[30px] flex items-center gap-0 flex-shrink-0 border border-border/0 rounded-[9px] ${sidebarCollapsed ? 'px-1.5  border-border' : ''} md:px-[2px]`}>
           <Button
@@ -176,6 +177,15 @@ export function ChatNavbar({
               </Button>
             </>
           )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="max-md:h-[45px] max-md:w-[45px] hover:!border-border/0 hover:!bg-transparent"
+            onClick={() => window.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT))}
+            title="Search"
+          >
+            <Search className="size-4 max-md:size-5" />
+          </Button>
           <Button
             variant="ghost"
             size="icon"

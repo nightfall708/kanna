@@ -8,6 +8,7 @@ import { OpenLocalLinkProvider, type OpenLocalLinkTarget } from "../../component
 import { ProcessingMessage } from "../../components/messages/ProcessingMessage"
 import { ContextMenu, ContextMenuTrigger } from "../../components/ui/context-menu"
 import { OpenExternalContextMenuContent, openContextMenuFromButton } from "../../components/open-external-menu"
+import { TRANSCRIPT_PADDING_BOTTOM_OFFSET } from "../kannaStateHelpers"
 import { cn } from "../../lib/utils"
 import { formatPathWithTilde, shouldOpenLocalFileLinkInEditor } from "../../lib/pathUtils"
 import {
@@ -17,6 +18,8 @@ import {
   useStableResolvedRows,
 } from "../KannaTranscript"
 import type { KannaState } from "../useKannaState"
+import type { KannaSocket } from "../socket"
+import { EmptyStateUsageCards } from "./EmptyStateUsageCards"
 import {
   CHAT_NAVBAR_OFFSET_PX,
   EMPTY_STATE_TEXT,
@@ -54,6 +57,8 @@ interface ChatTranscriptViewportProps {
   isEmptyStateTypingComplete: boolean
   isPageFileDragActive: boolean
   showEmptyState: boolean
+  /** When provided, the empty state shows live harness usage cards. */
+  socket?: KannaSocket
   emptyStateProjectPath?: string | null
   onOpenProjectExternal?: (action: OpenExternalAction, editor?: EditorOpenSettings) => void
   editorPreset?: EditorPreset
@@ -90,6 +95,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   isEmptyStateTypingComplete,
   isPageFileDragActive,
   showEmptyState,
+  socket,
   emptyStateProjectPath,
   onOpenProjectExternal,
   editorPreset = "cursor",
@@ -371,10 +377,18 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
           className="pointer-events-none absolute inset-x-4 animate-fade-in"
           style={{
             top: headerOffsetPx,
-            bottom: transcriptPaddingBottom,
+            // Align the scroll area's bottom to the top of the chat input.
+            // transcriptPaddingBottom carries an extra clearance offset the
+            // message list needs; the empty state shouldn't include it.
+            bottom: Math.max(0, transcriptPaddingBottom - TRANSCRIPT_PADDING_BOTTOM_OFFSET),
           }}
         >
-          <div className="mx-auto flex h-full max-w-[800px] items-center justify-center">
+          <div className="pointer-events-auto mx-auto flex h-full max-w-[740px] flex-col items-center overflow-y-auto">
+            {/* Flexbox-only center-or-scroll: my-auto centers the group when
+                there's room, but its auto margins collapse once the content
+                outgrows the container, so overflow-y-auto scrolls it from the
+                top instead of clipping — no height measurement. */}
+            <div className="my-auto flex w-full flex-col items-center py-6">
             <div className="flex flex-col items-center justify-center gap-4 text-muted-foreground opacity-70">
               <Flower strokeWidth={1.5} className="kanna-empty-state-flower size-8 text-muted-foreground" />
               <div
@@ -424,6 +438,19 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
                   />
                 </ContextMenu>
               ) : null}
+            </div>
+            {socket ? (
+              <div
+                className={cn(
+                  "mt-8 flex w-full justify-center transition-opacity duration-500",
+                  isEmptyStateTypingComplete
+                    ? "pointer-events-auto opacity-100"
+                    : "pointer-events-none opacity-0",
+                )}
+              >
+                <EmptyStateUsageCards socket={socket} activeChatId={activeChatId} />
+              </div>
+            ) : null}
             </div>
           </div>
         </div>
