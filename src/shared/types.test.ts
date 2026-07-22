@@ -14,6 +14,10 @@ import {
 } from "./types"
 
 describe("shared model normalization", () => {
+  test("uses the full Claude Code harness label", () => {
+    expect(PROVIDERS.find((provider) => provider.id === "claude")?.label).toBe("Claude Code")
+  })
+
   test("derives fallback Claude model labels from model ids", () => {
     expect(deriveClaudeModelLabel("fable")).toBe("Fable")
     expect(deriveClaudeModelLabel("claude-opus-4-8")).toBe("Opus")
@@ -99,7 +103,8 @@ describe("shared model normalization", () => {
     expect(deriveModelLabel("lab/kimi-k2.5:nitro")).toBe("Kimi K2.5")
     expect(deriveModelLabel("gpt-5.6-sol")).toBe("GPT 5.6 Sol")
     expect(deriveModelLabel("openai/gpt-5.6")).toBe("GPT 5.6")
-    expect(deriveModelLabel("anthropic/claude-sonnet-5")).toBe("Claude Sonnet 5")
+    expect(deriveModelLabel("anthropic/claude-sonnet-5")).toBe("Sonnet 5")
+    expect(deriveModelLabel("claude-fable-5")).toBe("Fable 5")
     expect(deriveModelLabel("deepseek/deepseek-v4-pro")).toBe("Deepseek V4 Pro")
     expect(deriveModelLabel("z-ai/glm-5.2")).toBe("GLM 5.2")
   })

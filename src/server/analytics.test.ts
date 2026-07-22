@@ -29,7 +29,20 @@ describe("getLaunchAnalyticsProperties", () => {
       host_enabled: false,
       share_quick_enabled: true,
       share_token_enabled: false,
+      cloud_enabled: false,
     })
+  })
+
+  test("cloud launches stamp cloud_enabled", () => {
+    expect(getLaunchAnalyticsProperties({
+      port: 3210,
+      host: "127.0.0.1",
+      openBrowser: true,
+      share: false,
+      password: null,
+      strictPort: false,
+      cloud: true,
+    }).cloud_enabled).toBe(true)
   })
 })
 
@@ -129,6 +142,7 @@ describe("KannaAnalyticsReporter", () => {
           host_enabled: false,
           share_quick_enabled: false,
           share_token_enabled: false,
+          cloud_enabled: false,
         },
       },
     })

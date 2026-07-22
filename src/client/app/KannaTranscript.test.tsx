@@ -390,13 +390,14 @@ Please check the latest error first.`,
 
     expect(countRowWrappers(html)).toBe(2)
     // Model ids resolve to their human-readable catalog labels.
-    expect(html).toContain("Session Started")
+    expect(html).toContain("Claude Code")
     expect(html).toContain("Sonnet")
     expect(html).toContain("Model Changed")
     expect(html).toContain("Opus")
+    expect(html.match(/data-provider-icon="claude"/g)).toHaveLength(1)
   })
 
-  test("labels the session init after a handoff with the harness transition instead of a boundary row", () => {
+  test("labels the session init after a handoff with only the destination harness", () => {
     const html = renderTranscript([
       {
         id: "system-1",
@@ -436,9 +437,11 @@ Please check the latest error first.`,
     ])
 
     // The boundary renders no row of its own — the switch surfaces on the
-    // new session init as "Claude → Codex".
+    // new session init as only the destination harness.
     expect(countRowWrappers(html)).toBe(3)
-    expect(html).toContain("Claude → Codex")
+    expect(html).toContain("Codex")
+    expect(html).not.toContain("Claude Code → Codex")
+    expect(html).toContain('data-provider-icon="codex"')
     expect(html).not.toContain("Handed off")
     expect(html).not.toContain("Model Changed")
   })
@@ -471,14 +474,14 @@ Please check the latest error first.`,
     ]
 
     // The loaded window starts mid-transcript: the resume init is not the true
-    // first, so it must not render as "Session Started".
+    // first, so it must not render the harness label.
     const truncatedHtml = renderTranscript(messages, true)
-    expect(truncatedHtml).not.toContain("Session Started")
+    expect(truncatedHtml).not.toContain("Claude Code")
     expect(truncatedHtml).not.toContain("Account")
 
     // Once the full history is loaded, the same rows render as first.
     const fullHtml = renderTranscript(messages, false)
-    expect(fullHtml).toContain("Session Started")
+    expect(fullHtml).toContain("Claude Code")
     expect(fullHtml).toContain("Account")
   })
 
@@ -508,7 +511,7 @@ Please check the latest error first.`,
       },
     ], true)
 
-    expect(html).not.toContain("Session Started")
+    expect(html).not.toContain("Claude Code")
     expect(html).toContain("Model Changed")
   })
 

@@ -261,4 +261,75 @@ describe("KannaSocket", () => {
     await Promise.resolve()
     socket.dispose()
   })
+
+  test("async url provider resolves before each connection (cloud URL rotation)", async () => {
+    const urls = ["ws://tunnel-one/ws?token=a", "ws://tunnel-two/ws?token=b"]
+    let resolveCount = 0
+    const socket = new KannaSocket(async () => urls[Math.min(resolveCount++, urls.length - 1)])
+
+    socket.start()
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0]!.url).toBe("ws://tunnel-one/ws?token=a")
+    FakeWebSocket.instances[0]!.open()
+
+    // Drop the connection → reconnect timer → provider re-resolves → new URL.
+    FakeWebSocket.instances[0]!.close()
+    const reconnectTimer = (socket as any).reconnectTimer as number
+    timers.runTimeout(reconnectTimer)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(FakeWebSocket.instances[1]!.url).toBe("ws://tunnel-two/ws?token=b")
+    socket.dispose()
+  })
+
+  test("provider failure schedules a reconnect with backoff", async () => {
+    const statuses: string[] = []
+    let failuresLeft = 1
+    const socket = new KannaSocket(async () => {
+      if (failuresLeft > 0) {
+        failuresLeft -= 1
+        throw new Error("ws-endpoint unreachable")
+      }
+      return "ws://tunnel/ws?token=x"
+    })
+    socket.onStatus((status) => statuses.push(status))
+
+    socket.start()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(FakeWebSocket.instances).toHaveLength(0)
+    expect(statuses).toContain("disconnected")
+    const reconnectTimer = (socket as any).reconnectTimer as number
+    expect(timers.timeouts.has(reconnectTimer)).toBe(true)
+
+    timers.runTimeout(reconnectTimer)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0]!.url).toBe("ws://tunnel/ws?token=x")
+    socket.dispose()
+  })
+
+  test("dispose during provider resolution never opens a socket", async () => {
+    const resolver: { resolve: ((url: string) => void) | null } = { resolve: null }
+    const socket = new KannaSocket(
+      () => new Promise<string>((resolve) => {
+        resolver.resolve = resolve
+      }),
+    )
+
+    socket.start()
+    socket.dispose()
+    resolver.resolve?.("ws://tunnel/ws?token=late")
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(FakeWebSocket.instances).toHaveLength(0)
+  })
 })

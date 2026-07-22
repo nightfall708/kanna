@@ -52,3 +52,18 @@ React client (src/client)
   `bun test` from picking them up).
 - When tests need git, they create throwaway repos; in sandboxes set
   `GIT_CONFIG_GLOBAL` to a clean config so URL rewrites/identity don't leak in.
+
+## Cloud contract
+
+- `src/shared/cloud-api.ts` is the wire contract with the hosted control
+  plane/proxy (kanna-site, a separate private repo that deploys
+  independently). It is **append-only**: never remove or rename a field or
+  constant; add optional fields only — machines in the wild must keep working.
+  The file is mirrored verbatim at `kanna-site/src/shared/cloud-api.ts`; keep
+  the two copies identical when changing either.
+- The machine side lives in `src/server/cloud/` (identity file, control-plane
+  client, tunnel supervisor, request guard). The hosted proxy sees proxied
+  HTTP but never WebSocket frames — the browser's WS connects directly to the
+  machine's tunnel.
+- `bun run test:cloud` runs the cross-repo wire e2e against a local
+  `wrangler dev` of `../kanna-site` (skips if the sibling repo is missing).

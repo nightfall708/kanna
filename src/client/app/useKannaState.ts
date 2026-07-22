@@ -37,6 +37,7 @@ import {
   sameDiffs,
   shouldPreserveExistingProjectDiffs,
 } from "./snapshotEquality"
+import { CLOUD_WS_ENDPOINT_PATH, type CloudWsEndpointResponse } from "../../shared/cloud-api"
 import { KannaSocket, type SocketStatus } from "./socket"
 import { useAppSettingsSync } from "./useAppSettingsSync"
 import { useChatCommands } from "./useChatCommands"
@@ -70,15 +71,44 @@ export {
   type StartChatIntent,
 } from "./kannaStateHelpers"
 
-function wsUrl() {
+function sameOriginWsUrl() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
   return `${protocol}//${window.location.host}/ws`
+}
+
+/**
+ * Resolved before every (re)connect. The machine always serves
+ * /api/cloud/ws-endpoint: through the kanna.sh proxy it returns the direct
+ * tunnel URL plus a fresh short-lived connect token (so the WebSocket
+ * bypasses the proxy); locally it returns wsUrl null and we connect
+ * same-origin. Any failure falls back to same-origin, keeping local behavior
+ * unchanged.
+ */
+async function wsUrlProvider(): Promise<string> {
+  try {
+    const response = await fetch(CLOUD_WS_ENDPOINT_PATH, {
+      headers: { Accept: "application/json" },
+    })
+    if (response.ok) {
+      const payload = await response.json() as CloudWsEndpointResponse
+      if (payload.wsUrl) {
+        const url = new URL(payload.wsUrl)
+        if (payload.connectToken) {
+          url.searchParams.set("token", payload.connectToken)
+        }
+        return url.toString()
+      }
+    }
+  } catch {
+    // Endpoint unreachable — connect same-origin.
+  }
+  return sameOriginWsUrl()
 }
 
 function useKannaSocket() {
   const socketRef = useRef<KannaSocket | null>(null)
   if (!socketRef.current) {
-    socketRef.current = new KannaSocket(wsUrl())
+    socketRef.current = new KannaSocket(wsUrlProvider)
   }
 
   useEffect(() => {

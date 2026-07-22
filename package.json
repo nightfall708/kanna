@@ -1,7 +1,7 @@
 {
   "name": "kanna-code",
   "type": "module",
-  "version": "0.47.0",
+  "version": "0.49.0",
   "description": "A beautiful web UI for Claude Code",
   "license": "MIT",
   "keywords": [
@@ -45,6 +45,7 @@
     "install:dev": "bun install && bun run build && bun install -g .",
     "start": "bun run ./src/server/cli.ts",
     "test": "bun test",
+    "test:cloud": "bun test ./src/server/cloud/wire.e2e.ts",
     "prepublishOnly": "bun run build",
     "test:e2e": "bun run build && playwright test"
   },
