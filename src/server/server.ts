@@ -25,6 +25,7 @@ import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
 import { createWsRouter, type ClientState } from "./ws-router"
+import { instanceFingerprint } from "./instance"
 import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload } from "./uploads"
 import { getProjectUploadDir } from "./paths"
 
@@ -303,7 +304,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
           }
 
           if (url.pathname === "/health") {
-            return Response.json({ ok: true, port: actualPort })
+            // `instance` lets a second `kanna` invocation detect that this
+            // data dir is already being served (single-instance guard). Only
+            // exposed on local/proxied requests — the raw-tunnel /health
+            // above stays minimal.
+            return Response.json({ ok: true, port: actualPort, instance: instanceFingerprint(store.dataDir) })
           }
 
           if (url.pathname === CLOUD_WS_ENDPOINT_PATH) {
