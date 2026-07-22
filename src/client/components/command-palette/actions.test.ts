@@ -3,8 +3,6 @@ import type { LocalProjectSummary, SidebarChatRow, SidebarData } from "../../../
 import {
   flattenPaletteProjects,
   flattenSidebarThreads,
-  getRecentThreads,
-  getReviewThreads,
   getSettingsPaletteEntries,
   scorePaletteItem,
   searchProjects,
@@ -60,71 +58,9 @@ function makeSidebarData(): SidebarData {
   }
 }
 
-describe("flattenSidebarThreads", () => {
-  test("includes active and archived chats with project metadata", () => {
-    const threads = flattenSidebarThreads(makeSidebarData())
-    expect(threads).toHaveLength(4)
-
-    const archived = threads.find((thread) => thread.chatId === "chat-3")
-    expect(archived?.archived).toBe(true)
-    expect(archived?.projectTitle).toBe("Kanna")
-
-    const active = threads.find((thread) => thread.chatId === "chat-4")
-    expect(active?.archived).toBe(false)
-    expect(active?.projectId).toBe("project-b")
-  })
-
-  test("falls back to creation time when lastMessageAt is missing", () => {
-    const data = makeSidebarData()
-    data.projectGroups[0].chats.push(makeChatRow({ chatId: "chat-5", title: "Draft" }))
-    const threads = flattenSidebarThreads(data)
-    expect(threads.find((thread) => thread.chatId === "chat-5")?.lastActivityAt).toBe(1_000)
-  })
-})
-
-describe("getRecentThreads", () => {
-  test("sorts by recency and excludes archived chats", () => {
-    const threads = flattenSidebarThreads(makeSidebarData())
-    const recent = getRecentThreads(threads, 3)
-    expect(recent.map((thread) => thread.chatId)).toEqual(["chat-2", "chat-4", "chat-1"])
-  })
-
-  test("excludes chatIds passed in the exclude set", () => {
-    const threads = flattenSidebarThreads(makeSidebarData())
-    const recent = getRecentThreads(threads, 3, new Set(["chat-2"]))
-    expect(recent.map((thread) => thread.chatId)).toEqual(["chat-4", "chat-1"])
-  })
-})
-
-describe("getReviewThreads", () => {
-  test("selects waiting_for_user / unread chats (sidebar dot), most recent first", () => {
-    const data: SidebarData = {
-      projectGroups: [
-        {
-          groupKey: "p",
-          title: "P",
-          realTitle: "P",
-          localPath: "/tmp/p",
-          chats: [
-            makeChatRow({ chatId: "waiting", title: "Waiting", status: "waiting_for_user", lastMessageAt: 300 }),
-            makeChatRow({ chatId: "unread", title: "Unread", unread: true, lastMessageAt: 600 }),
-            makeChatRow({ chatId: "idle", title: "Idle", lastMessageAt: 900 }),
-            makeChatRow({ chatId: "running", title: "Running", status: "running", lastMessageAt: 950 }),
-          ],
-          previewChats: [],
-          olderChats: [],
-          archivedChats: [
-            makeChatRow({ chatId: "archived-unread", title: "Archived", unread: true, lastMessageAt: 990 }),
-          ],
-          defaultCollapsed: false,
-        },
-      ],
-    }
-    const review = getReviewThreads(flattenSidebarThreads(data))
-    // unread (600) before waiting (300); idle, running, and archived excluded.
-    expect(review.map((thread) => thread.chatId)).toEqual(["unread", "waiting"])
-  })
-})
+// flattenSidebarThreads / getReviewThreads / getInProgressThreads /
+// getRecentThreads / computeThreadSections are covered in
+// lib/thread-sections.test.ts — actions.ts only re-exports them.
 
 describe("searchThreadsByTitle", () => {
   test("returns empty for an empty query", () => {
@@ -222,8 +158,8 @@ describe("searchProjects", () => {
 
 describe("scorePaletteItem", () => {
   test("matches on keywords when the title misses", () => {
-    expect(scorePaletteItem("kanban", "Go to Board", ["kanban", "navigate"])).toBeGreaterThan(0)
-    expect(scorePaletteItem("zzzz", "Go to Board", ["kanban"])).toBe(0)
+    expect(scorePaletteItem("home", "Go to Projects", ["home", "navigate"])).toBeGreaterThan(0)
+    expect(scorePaletteItem("zzzz", "Go to Projects", ["home"])).toBe(0)
   })
 
   test("empty query matches everything", () => {

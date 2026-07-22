@@ -14,7 +14,6 @@ import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
 import { playChatNotificationSound, shouldPlayChatSound } from "../lib/chatSounds"
 import { getBrowserWindowTitle, getChatSoundBurstCount } from "./chatNotifications"
 import { KannaSidebar } from "./KannaSidebar"
-import { BoardPage } from "./BoardPage"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
 import { SettingsPage } from "./SettingsPage"
@@ -399,7 +398,6 @@ export function App() {
         <Routes>
           <Route element={<KannaLayout />}>
             <Route path="/" element={<LocalProjectsPage />} />
-            <Route path="/board" element={<BoardPage />} />
             <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
             <Route path="/settings/:sectionId" element={<SettingsPage />} />
             <Route path="/chat/:chatId" element={<ChatPage />} />

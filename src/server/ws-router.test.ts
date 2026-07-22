@@ -120,8 +120,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       planMode: false,
     },
   },
-  boardAutoReturn: false,
-  boardViewEnabled: false,
+  showRecentChatsInSidebar: false,
   warning: null,
   filePathDisplay: "~/.kanna/data/settings.json",
 }

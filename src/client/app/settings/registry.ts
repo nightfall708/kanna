@@ -1,4 +1,4 @@
-import { BookText, Command, Gauge, MessageSquareQuote, Settings2, type LucideIcon } from "lucide-react"
+import { BookText, Command, FlaskConical, Gauge, MessageSquareQuote, Settings2, type LucideIcon } from "lucide-react"
 
 /**
  * Single source of truth for settings navigation targets.
@@ -40,6 +40,12 @@ export const SETTINGS_SECTIONS = [
     label: "Usage",
     icon: Gauge as LucideIcon,
     subtitle: "Subscription rate-limit utilization for each harness, with reset times and when each figure was recorded.",
+  },
+  {
+    id: "labs",
+    label: "Labs",
+    icon: FlaskConical as LucideIcon,
+    subtitle: "Experimental features that are still in progress and off by default.",
   },
   // always last
   {
@@ -97,18 +103,6 @@ export const SETTINGS_ROWS = defineRows({
     title: "Chat Sound",
     description: "The bundled sound used for chat notification playback and previews",
     keywords: ["notifications", "audio"],
-  },
-  boardView: {
-    sectionId: "general",
-    title: "Board View",
-    description: "Show the board view and its navbar button for tracking conversations across projects",
-    keywords: ["kanban", "board", "navbar"],
-  },
-  jumpBackToBoard: {
-    sectionId: "general",
-    title: "Jump Back to Board",
-    description: "After opening a chat from the board, return to the board automatically once the conversation starts running",
-    keywords: ["kanban", "auto return"],
   },
   defaultEditor: {
     sectionId: "general",
@@ -175,6 +169,14 @@ export const SETTINGS_ROWS = defineRows({
     title: "Default Models",
     description: "Models shown in Pi's model picker, with a display label and the model id sent to the Model Registry endpoint.",
     keywords: ["fave models", "pi"],
+  },
+
+  // Labs
+  recentChatsInSidebar: {
+    sectionId: "labs",
+    title: "Show recent chats in sidebar",
+    description: "Pin Review, In Progress, and Recents sections to the top of the sidebar.",
+    keywords: ["sidebar", "recents", "review", "in progress", "experimental"],
   },
 })
 

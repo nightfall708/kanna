@@ -14,6 +14,7 @@ import { cn } from "../lib/utils"
 import { ChangelogSection, useChangelog } from "./settings/ChangelogSection"
 import { GeneralSection } from "./settings/GeneralSection"
 import { KeybindingsSection } from "./settings/KeybindingsSection"
+import { LabsSection } from "./settings/LabsSection"
 import { ProvidersSection } from "./settings/ProvidersSection"
 import { SETTINGS_SECTIONS } from "./settings/registry"
 import { SkillsSection } from "./settings/SkillsSection"
@@ -298,6 +299,8 @@ export function SettingsPage() {
                   <SkillsSection state={state} />
                 ) : selectedPage === "usage" ? (
                   <UsageSection state={state} />
+                ) : selectedPage === "labs" ? (
+                  <LabsSection state={state} />
                 ) : (
                   <ChangelogSection
                     status={changelog.status}

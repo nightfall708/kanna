@@ -296,7 +296,7 @@ function createWorld(options?: { projectPath?: string }) {
   let appSettingsSnapshot: Record<string, unknown> = {
     analyticsEnabled: true,
     theme: "system",
-    boardAutoReturn: false,
+    showRecentChatsInSidebar: false,
   }
   const appSettings = {
     getSnapshot: () => appSettingsSnapshot,

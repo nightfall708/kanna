@@ -42,8 +42,7 @@ interface AppSettingsFile {
     cursor?: ProviderPreferenceInput
     pi?: ProviderPreferenceInput
   }
-  boardAutoReturn?: unknown
-  boardViewEnabled?: unknown
+  showRecentChatsInSidebar?: unknown
 }
 
 interface AppSettingsState extends AppSettingsSnapshot {
@@ -145,8 +144,7 @@ function toFilePayload(state: AppSettingsState) {
     editor: state.editor,
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
-    boardAutoReturn: state.boardAutoReturn,
-    boardViewEnabled: state.boardViewEnabled,
+    showRecentChatsInSidebar: state.showRecentChatsInSidebar,
   }
 }
 
@@ -161,8 +159,7 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     editor: state.editor,
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
-    boardAutoReturn: state.boardAutoReturn,
-    boardViewEnabled: state.boardViewEnabled,
+    showRecentChatsInSidebar: state.showRecentChatsInSidebar,
     warning: state.warning,
     filePathDisplay: state.filePathDisplay,
   }
@@ -195,14 +192,9 @@ function normalizeAppSettings(
     warnings.push("analyticsUserId must be a non-empty string")
   }
 
-  const boardAutoReturn = source?.boardAutoReturn === true
-  if (source?.boardAutoReturn !== undefined && typeof source.boardAutoReturn !== "boolean") {
-    warnings.push("boardAutoReturn must be a boolean")
-  }
-
-  const boardViewEnabled = source?.boardViewEnabled === true
-  if (source?.boardViewEnabled !== undefined && typeof source.boardViewEnabled !== "boolean") {
-    warnings.push("boardViewEnabled must be a boolean")
+  const showRecentChatsInSidebar = source?.showRecentChatsInSidebar === true
+  if (source?.showRecentChatsInSidebar !== undefined && typeof source.showRecentChatsInSidebar !== "boolean") {
+    warnings.push("showRecentChatsInSidebar must be a boolean")
   }
 
   const editorPreset = normalizeEditorPreset(source?.editor?.preset)
@@ -223,8 +215,7 @@ function normalizeAppSettings(
     },
     defaultProvider: normalizeDefaultProvider(source?.defaultProvider),
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
-    boardAutoReturn,
-    boardViewEnabled,
+    showRecentChatsInSidebar,
     warning: null,
     filePathDisplay: formatDisplayPath(filePath),
   }
@@ -253,8 +244,7 @@ function toComparablePayload(source: AppSettingsFile) {
     editor: source.editor,
     defaultProvider: source.defaultProvider,
     providerDefaults: source.providerDefaults,
-    boardAutoReturn: source.boardAutoReturn,
-    boardViewEnabled: source.boardViewEnabled,
+    showRecentChatsInSidebar: source.showRecentChatsInSidebar,
   }
 }
 

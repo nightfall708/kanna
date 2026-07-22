@@ -16,6 +16,3 @@ export const SIDEBAR_WIDTH_STORAGE_KEY = "kanna:sidebar-width"
 
 /** localStorage: last action chosen in the open-external menu. */
 export const OPEN_EXTERNAL_SELECT_STORAGE_KEY = "kanna:last-open-external"
-
-/** localStorage: project ids selected in the board's filter pills. */
-export const BOARD_PROJECT_FILTERS_STORAGE_KEY = "kanna:board-project-filters"

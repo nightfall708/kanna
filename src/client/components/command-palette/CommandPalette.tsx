@@ -7,6 +7,7 @@ import {
   Check,
   Copy,
   ExternalLink,
+  FlaskConical,
   Folder,
   Gauge,
   GitBranch,
@@ -15,20 +16,16 @@ import {
   History,
   House,
   ListTodo,
-  Loader2,
   LockOpen,
-  MessageCircle,
   Paperclip,
   Plus,
   Settings2,
   Share2,
-  SquareKanban,
   SquareMenu,
   SquarePen,
   SquareTerminal,
 } from "lucide-react"
-import type { ClaudeContextWindow, SidebarChatRow } from "../../../shared/types"
-import { cn } from "../../lib/utils"
+import type { ClaudeContextWindow } from "../../../shared/types"
 import { REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
 import type { KannaState } from "../../app/useKannaState"
 import { useComposer } from "../../hooks/useComposer"
@@ -37,8 +34,8 @@ import { formatPathWithTilde } from "../../lib/pathUtils"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
 import { useTerminalPreferencesStore } from "../../stores/terminalPreferencesStore"
-import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import { PROVIDER_ICONS } from "../chat-ui/ChatPreferenceControls"
+import { ThreadRowContent } from "../chat-ui/ThreadRowContent"
 import { UsageSection } from "../../app/settings/UsageSection"
 import { getOpenAppItems, openAppValue, OpenAppIcon } from "../open-external-menu"
 import {
@@ -51,17 +48,16 @@ import {
   CommandList,
 } from "../ui/command"
 import {
+  computeThreadSections,
   flattenPaletteProjects,
   flattenSidebarThreads,
-  getRecentThreads,
-  getReviewThreads,
   getSettingsPaletteEntries,
   scorePaletteItem,
   searchProjects,
   searchSettingsEntries,
   searchThreadsByTitle,
   type PaletteProject,
-  type PaletteThread,
+  type SidebarThread,
 } from "./actions"
 
 /** Window event that opens the command palette from anywhere (e.g. mobile nav). */
@@ -122,85 +118,19 @@ function ShortcutHint({ binding }: { binding: string }) {
   )
 }
 
-function statusDotClass(archived: boolean) {
-  return archived ? "text-muted-foreground/50" : "text-muted-foreground"
-}
-
-/**
- * Status glyph mirroring the sidebar chat rows: spinner while running, a
- * blue ping when waiting on the user, a green ping when unread. Returns null
- * for idle chats so callers can fall back to a default icon.
- */
-function renderChatStatusDot(chat: SidebarChatRow): ReactNode | null {
-  if (chat.status === "starting" || chat.status === "running") {
-    return <Loader2 className="size-3.5 shrink-0 animate-spin text-logo" />
-  }
-  const color = chat.status === "waiting_for_user" ? "blue" : chat.unread ? "emerald" : null
-  if (!color) return null
-  return (
-    <div className="relative flex size-4 shrink-0 items-center justify-center">
-      <div
-        className={cn(
-          "absolute size-2.5 rounded-full animate-ping",
-          color === "blue" ? "bg-blue-400/80" : "bg-emerald-400/80",
-        )}
-      />
-      <div
-        className={cn(
-          "size-2.5 rounded-full ring-2 ring-muted/20 dark:ring-muted/50",
-          color === "blue" ? "bg-blue-400" : "bg-emerald-400",
-        )}
-      />
-    </div>
-  )
-}
-
 function ThreadItem({
   thread,
-  nowMs,
   onSelect,
   showStatus = false,
 }: {
-  thread: PaletteThread
-  nowMs: number
-  onSelect: (thread: PaletteThread) => void
+  thread: SidebarThread
+  onSelect: (thread: SidebarThread) => void
   /** Use the sidebar status glyph (ping dots / spinner) instead of the chat icon. */
   showStatus?: boolean
 }) {
-  const statusDot = showStatus ? renderChatStatusDot(thread.row) : null
-  // Faint preview of the latest user prompt (already on the sidebar row). Fills
-  // the space between the title and the trailing project/time, truncating tail.
-  const previewText = thread.row.lastUserMessagePreview?.trim() || null
-  // No status dot → show the chat's harness icon (falls back to a chat bubble
-  // when the provider is unknown).
-  const HarnessIcon = thread.row.provider ? PROVIDER_ICONS[thread.row.provider] : null
   return (
     <CommandItem value={`thread-${thread.chatId}`} onSelect={() => onSelect(thread)}>
-      {statusDot ?? (HarnessIcon
-        ? <HarnessIcon className={`h-4 w-4 ${statusDotClass(thread.archived)}`} />
-        : <MessageCircle className={`h-4 w-4 ${statusDotClass(thread.archived)}`} />)}
-      {thread.row.status === "running" || thread.row.status === "starting" ? (
-        <AnimatedShinyText
-          className="!mx-0 min-w-0 shrink truncate"
-          animate={thread.row.status === "running"}
-          shimmerWidth={Math.max(20, thread.title.length * 3)}
-        >
-          {thread.title}
-        </AnimatedShinyText>
-      ) : (
-        <span className="min-w-0 shrink truncate">{thread.title}</span>
-      )}
-      {previewText ? (
-        // Grows to fill the middle and truncates its tail; -ml-1 offsets part
-        // of the parent gap so it hugs the title.
-        <span className="-ml-1 min-w-0 flex-1 truncate text-xs text-muted-foreground">{previewText}</span>
-      ) : null}
-      <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-3 text-xs">
-        {thread.archived ? (
-          <span className="rounded border border-border px-1 py-px text-[10px] uppercase tracking-wide text-muted-foreground">Archived</span>
-        ) : null}
-        <span className="max-w-[140px] truncate text-muted-foreground">{thread.projectTitle}</span>
-      </span>
+      <ThreadRowContent thread={thread} showStatus={showStatus} showPreview />
     </CommandItem>
   )
 }
@@ -248,8 +178,6 @@ export function CommandPalette({ state }: { state: KannaState }) {
     return null
   }, [state.activeChatId, state.sidebarData])
 
-  // Anchor for relative thread ages; refreshed each time the palette opens.
-  const nowMs = useMemo(() => Date.now(), [open])
   const threads = useMemo(() => flattenSidebarThreads(state.sidebarData), [state.sidebarData])
   const paletteProjects = useMemo(
     () => flattenPaletteProjects(state.sidebarData, state.localProjects?.projects ?? []),
@@ -308,7 +236,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
     setOpen(false)
   }, [openPalette])
 
-  const openThread = useCallback((thread: PaletteThread) => {
+  const openThread = useCallback((thread: SidebarThread) => {
     close()
     if (thread.archived) {
       void state.handleOpenArchivedChat(thread.chatId)
@@ -387,17 +315,6 @@ export function CommandPalette({ state }: { state: KannaState }) {
     })
 
     list.push({
-      id: "go-board",
-      title: "Go to Board",
-      keywords: ["kanban", "navigate", "tasks"],
-      icon: <SquareKanban className={ICON_CLASS} />,
-      run: () => {
-        close()
-        navigate("/board")
-      },
-    })
-
-    list.push({
       id: "go-home",
       title: "Go to Projects",
       keywords: ["home", "navigate", "local projects"],
@@ -422,6 +339,18 @@ export function CommandPalette({ state }: { state: KannaState }) {
       keywords: ["limits", "rate limit", "quota", "credits", "plan", "utilization", "claude", "codex"],
       icon: <Gauge className={ICON_CLASS} />,
       run: () => pushPage("usage"),
+    })
+
+    const recentChatsInSidebarOn = state.appSettings?.showRecentChatsInSidebar === true
+    list.push({
+      id: "toggle-recent-chats-sidebar",
+      title: recentChatsInSidebarOn ? "Hide Recent Chats in Sidebar" : "Show Recent Chats in Sidebar",
+      keywords: ["labs", "sidebar", "recents", "review", "in progress", "experimental", "toggle"],
+      icon: <FlaskConical className={ICON_CLASS} />,
+      run: () => {
+        close()
+        void state.handleWriteAppSettings({ showRecentChatsInSidebar: !recentChatsInSidebarOn })
+      },
     })
 
     if (onChatPage && projectId) {
@@ -703,12 +632,14 @@ export function CommandPalette({ state }: { state: KannaState }) {
     projectId,
     pushPage,
     state.activeChatId,
+    state.appSettings?.showRecentChatsInSidebar,
     state.availableProviders,
     state.handleArchiveChat,
     state.handleCopyPath,
     state.handleCreateChat,
     state.handleForkChat,
     state.handleShareChat,
+    state.handleWriteAppSettings,
     state.keybindings,
     state.navbarLocalPath,
     state.openAddProjectModal,
@@ -736,37 +667,28 @@ export function CommandPalette({ state }: { state: KannaState }) {
     return searchSettingsEntries(settingsEntries, trimmedQuery, settingsEntries.length)
   }, [page, settingsEntries, trimmedQuery])
 
-  // Empty-query root sections. "Review" (waiting on you / unread) leads and is
-  // uncapped; "In Progress" (running/starting, minus review) follows uncapped;
-  // "Recents" is the most-recent chats that are in neither — 3 normally, but 5
-  // when there's nothing in Review or In Progress.
-  const reviewResults = useMemo(
-    () => (trimmedQuery
-      ? []
-      : getReviewThreads(threads).map((thread) => ({ ...thread, score: 1 }))),
+  // Empty-query root sections — canonical logic shared with the sidebar's top
+  // sections (see lib/thread-sections). Mapped to score 1 so the memo types
+  // line up with the query path's scored results.
+  const sections = useMemo(
+    () => (trimmedQuery ? null : computeThreadSections(threads)),
     [threads, trimmedQuery]
   )
 
-  const inProgressResults = useMemo(() => {
-    if (trimmedQuery) return []
-    const reviewIds = new Set(reviewResults.map((thread) => thread.chatId))
-    return threads
-      .filter((thread) =>
-        !thread.archived
-        && !reviewIds.has(thread.chatId)
-        && (thread.row.status === "running" || thread.row.status === "starting"))
-      .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
-      .map((thread) => ({ ...thread, score: 1 }))
-  }, [threads, trimmedQuery, reviewResults])
+  const reviewResults = useMemo(
+    () => (sections?.review ?? []).map((thread) => ({ ...thread, score: 1 })),
+    [sections]
+  )
+
+  const inProgressResults = useMemo(
+    () => (sections?.inProgress ?? []).map((thread) => ({ ...thread, score: 1 })),
+    [sections]
+  )
 
   const threadResults = useMemo(() => {
     if (trimmedQuery) return searchThreadsByTitle(threads, trimmedQuery)
-    const excludeIds = new Set([...reviewResults, ...inProgressResults].map((thread) => thread.chatId))
-    const limit = reviewResults.length === 0 && inProgressResults.length === 0 ? 5 : 3
-    // Hide empty new chats (no messages yet → no lastMessageAt) from recents.
-    const withMessages = threads.filter((thread) => thread.row.lastMessageAt != null)
-    return getRecentThreads(withMessages, limit, excludeIds).map((thread) => ({ ...thread, score: 1 }))
-  }, [threads, trimmedQuery, reviewResults, inProgressResults])
+    return (sections?.recent ?? []).map((thread) => ({ ...thread, score: 1 }))
+  }, [threads, trimmedQuery, sections])
 
   const projectSearchResults = useMemo(
     () => (trimmedQuery ? searchProjects(paletteProjects, trimmedQuery) : []),
@@ -943,7 +865,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
             const reviewGroup = reviewResults.length > 0 ? (
               <CommandGroup key="review" heading="Review">
                 {reviewResults.map((thread) => (
-                  <ThreadItem key={thread.chatId} thread={thread} nowMs={nowMs} onSelect={openThread} showStatus />
+                  <ThreadItem key={thread.chatId} thread={thread} onSelect={openThread} showStatus />
                 ))}
               </CommandGroup>
             ) : null
@@ -951,7 +873,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
             const inProgressGroup = inProgressResults.length > 0 ? (
               <CommandGroup key="in-progress" heading="In Progress">
                 {inProgressResults.map((thread) => (
-                  <ThreadItem key={thread.chatId} thread={thread} nowMs={nowMs} onSelect={openThread} showStatus />
+                  <ThreadItem key={thread.chatId} thread={thread} onSelect={openThread} showStatus />
                 ))}
               </CommandGroup>
             ) : null
@@ -959,7 +881,7 @@ export function CommandPalette({ state }: { state: KannaState }) {
             const threadsGroup = threadResults.length > 0 ? (
               <CommandGroup key="threads" heading={trimmedQuery ? "Chats" : "Recents"}>
                 {threadResults.map((thread) => (
-                  <ThreadItem key={thread.chatId} thread={thread} nowMs={nowMs} onSelect={openThread} showStatus={!trimmedQuery} />
+                  <ThreadItem key={thread.chatId} thread={thread} onSelect={openThread} showStatus={!trimmedQuery} />
                 ))}
               </CommandGroup>
             ) : null

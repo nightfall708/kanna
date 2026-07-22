@@ -877,10 +877,8 @@ export interface AppSettingsSnapshot {
   }
   defaultProvider: DefaultProviderPreference
   providerDefaults: ChatProviderPreferences
-  /** Return to the board when a chat opened from it starts running. Off by default. */
-  boardAutoReturn: boolean
-  /** Show the board view and its navbar entry. Off by default. */
-  boardViewEnabled: boolean
+  /** Labs: show the Review / In Progress / Recents sections atop the sidebar. Off by default. */
+  showRecentChatsInSidebar: boolean
   warning: string | null
   filePathDisplay: string
 }
@@ -891,8 +889,7 @@ export interface AppSettingsPatch {
   theme?: AppThemePreference
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
-  boardAutoReturn?: boolean
-  boardViewEnabled?: boolean
+  showRecentChatsInSidebar?: boolean
   terminal?: Partial<AppSettingsSnapshot["terminal"]>
   editor?: Partial<AppSettingsSnapshot["editor"]>
   defaultProvider?: DefaultProviderPreference

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
-import { Flower, Loader2, PanelLeft, X, Menu, Plus, Settings, SquareKanban } from "lucide-react"
+import { Flower, Loader2, PanelLeft, X, Menu, Plus, Settings } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
 import { Button } from "../components/ui/button"
@@ -9,6 +9,7 @@ import { getSidebarChatTimestamp } from "../lib/sidebarChats"
 import { cn } from "../lib/utils"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
+import { ThreadSections } from "../components/chat-ui/sidebar/ThreadSections"
 import { MachineSwitcher } from "./MachineSwitcher"
 import { getResolvedKeybindings } from "../lib/keybindings"
 import { useIsStandalone } from "../hooks/useIsStandalone"
@@ -199,6 +200,11 @@ function KannaSidebarImpl({
     })
   }, [])
 
+  const selectChat = useCallback((chatId: string) => {
+    navigate(`/chat/${chatId}`)
+    onClose()
+  }, [navigate, onClose])
+
   const renderChatRow = useCallback((chat: SidebarChatRow) => {
     const visibleIndex = visibleIndexByChatId.get(chat.chatId)
 
@@ -210,10 +216,7 @@ function KannaSidebarImpl({
         nowMs={nowMs}
         shortcutHint={visibleIndex ? getSidebarNumberJumpHint(resolvedKeybindings, visibleIndex) : null}
         showShortcutHint={showNumberJumpHints}
-        onSelectChat={(chatId) => {
-          navigate(`/chat/${chatId}`)
-          onClose()
-        }}
+        onSelectChat={selectChat}
         onRenameChat={() => onRenameChat(chat)}
         onShareChat={() => onShareChat(chat.chatId)}
         onOpenInFinder={() => onOpenExternalPath("open_finder", chat.localPath)}
@@ -222,7 +225,7 @@ function KannaSidebarImpl({
         onDeleteChat={() => onDeleteChat(chat)}
       />
     )
-  }, [activeChatId, navigate, nowMs, onArchiveChat, onClose, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, onShareChat, resolvedKeybindings, showNumberJumpHints, visibleIndexByChatId])
+  }, [activeChatId, nowMs, onArchiveChat, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, onShareChat, resolvedKeybindings, selectChat, showNumberJumpHints, visibleIndexByChatId])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -347,10 +350,9 @@ function KannaSidebarImpl({
 
   const hasVisibleChats = activeVisibleCount > 0
   const isLocalProjectsActive = location.pathname === "/"
-  const isBoardActive = location.pathname === "/board"
-  const boardViewEnabled = useAppSettingsStore((s) => s.settings?.boardViewEnabled === true)
+  const showRecentChatsInSidebar = useAppSettingsStore((s) => s.settings?.showRecentChatsInSidebar === true)
   const isSettingsActive = location.pathname.startsWith("/settings")
-  const isUtilityPageActive = isLocalProjectsActive || isBoardActive || isSettingsActive
+  const isUtilityPageActive = isLocalProjectsActive || isSettingsActive
   const isConnecting = connectionStatus === "connecting" || !ready
   const statusLabel = isConnecting ? "Connecting" : connectionStatus === "connected" ? "Connected" : "Disconnected"
   const statusDotClass = connectionStatus === "connected" ? "bg-emerald-500" : "bg-amber-500"
@@ -425,20 +427,6 @@ function KannaSidebarImpl({
             <span className="font-logo text-base uppercase sm:text-md text-slate-600 dark:text-slate-100">{APP_NAME}</span>
           </div>
           <div className="flex items-center justify-self-end md:justify-self-auto">
-            {boardViewEnabled && (
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => {
-                  navigate("/board")
-                  onClose()
-                }}
-                className="size-10 rounded-lg hover:!border-border/0 md:hidden"
-                title="Board"
-              >
-                <SquareKanban className="h-5 w-5" />
-              </Button>
-            )}
             <Button
               variant="ghost"
               size="icon"
@@ -471,20 +459,6 @@ function KannaSidebarImpl({
                 UPDATE
               </Button>
             ) : null}
-            {boardViewEnabled && (
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => {
-                  navigate("/board")
-                  onClose()
-                }}
-                className="hidden md:inline-flex h-10 w-auto rounded-lg pl-3 pr-1.5 hover:!border-border/0"
-                title="Board"
-              >
-                <SquareKanban className="size-4" />
-              </Button>
-            )}
             <Button
               variant="ghost"
               size="icon"
@@ -534,6 +508,10 @@ function KannaSidebarImpl({
 
             {!hasVisibleChats && !isConnecting && data.projectGroups.length === 0 ? (
               <p className="text-sm text-slate-400 p-2 mt-6 text-center">No conversations yet</p>
+            ) : null}
+
+            {showRecentChatsInSidebar ? (
+              <ThreadSections data={data} activeChatId={activeChatId} onSelectChat={selectChat} />
             ) : null}
 
             <LocalProjectsSection
