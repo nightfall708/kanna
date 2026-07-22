@@ -33,11 +33,11 @@ function NavbarOverflowMenu({
           onClick={openContextMenuFromButton}
           title="More actions"
           className={cn(
-            "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent",
+            "border border-border/0 hover:!border-border/0 px-1.5 h-9 max-md:h-[45px] max-md:w-[45px] max-md:px-0 hover:!bg-transparent",
             showOnDesktop ? "flex" : "flex md:hidden"
           )}
         >
-          <MoreHorizontal strokeWidth={2} className="h-4.5" />
+          <MoreHorizontal strokeWidth={2} className="h-4.5 max-md:h-5.5" />
         </Button>
       </ContextMenuTrigger>
       <ContextMenuContent>
@@ -145,20 +145,20 @@ export function ChatNavbar({
   return (
     <CardHeader
       className={cn(
-        "absolute top-0 left-0 right-0 z-10 md:pt-[9px]  pl-1 pr-2 border-border/0 flex items-center justify-center",
+        "absolute top-0 left-0 right-0 z-10 md:pt-[9px] max-md:px-2 md:pl-1 md:pr-2 border-border/0 flex items-center justify-center",
         "bg-gradient-to-b from-background lg:from-background/0"
       )}
     >
       <div className="absolute top-0 left-0 right-0 z-0 h-[100px] bg-gradient-to-b from-background via-background/50 pointer-events-none block"></div>
       <div className="relative flex items-center gap-2 w-full">
-        <div className={`h-[30px] flex items-center gap-0 flex-shrink-0 border border-border/0 rounded-[9px] ${sidebarCollapsed ? 'px-1.5  border-border' : ''} px-[2px]`}>
+        <div className={`md:h-[30px] flex items-center gap-0 flex-shrink-0 border border-border/0 rounded-[9px] ${sidebarCollapsed ? 'px-1.5  border-border' : ''} md:px-[2px]`}>
           <Button
             variant="ghost"
             size="icon"
-            className="md:hidden !h-[auto] hover:!border-border/0 hover:!bg-transparent"
+            className="md:hidden h-[45px] w-[45px] hover:!border-border/0 hover:!bg-transparent"
             onClick={onOpenSidebar}
           >
-            <Menu className="size-4" />
+            <Menu className="size-5" />
           </Button>
           {sidebarCollapsed && (
             <>
@@ -179,11 +179,11 @@ export function ChatNavbar({
           <Button
             variant="ghost"
             size="icon"
-            className="hover:!border-border/0 hover:!bg-transparent"
+            className="max-md:h-[45px] max-md:w-[45px] hover:!border-border/0 hover:!bg-transparent"
             onClick={onNewChat}
             title="Compose"
           >
-            <SquarePen className="size-4" />
+            <SquarePen className="size-4 max-md:size-5" />
           </Button>
         </div>
 
@@ -262,10 +262,10 @@ export function ChatNavbar({
                     title="Browser"
                     aria-label="Browser"
                     className={cn(
-                      "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent"
+                      "border border-border/0 hover:!border-border/0 px-1.5 h-9 max-md:h-[45px] max-md:w-[45px] max-md:px-0 hover:!bg-transparent"
                     )}
                   >
-                    <Globe strokeWidth={2.25} className="h-4" />
+                    <Globe strokeWidth={2.25} className="h-4 max-md:h-5 max-md:w-5" />
                   </Button>
                 ) : null}
                 {onToggleGitPanel && showGitPanelButton ? (
@@ -276,11 +276,11 @@ export function ChatNavbar({
                         size="none"
                         onClick={onToggleGitPanel}
                         className={cn(
-                          "border flex flex-row items-center gap-1.5 h-9 border-border/0 hover:!border-border/0 hover:!bg-transparent",
+                          "border flex flex-row items-center gap-1.5 h-9 max-md:h-[45px] max-md:w-[45px] max-md:px-0 border-border/0 hover:!border-border/0 hover:!bg-transparent",
                           rightPanelVisible ? "w-[38px] justify-center px-0" : "pl-1.5 pr-2"
                         )}
                       >
-                        <GitBranch strokeWidth={2.25} className="h-4" />
+                        <GitBranch strokeWidth={2.25} className="h-4 max-md:h-5 max-md:w-5" />
                         {branchLabel && !rightPanelVisible ? <div className="font-[13px] max-w-[140px] truncate hidden md:block">{branchLabel}</div> : null}
                       </Button>
                     </HotkeyTooltipTrigger>
@@ -294,9 +294,9 @@ export function ChatNavbar({
                     onClick={handleCloseRightPanel}
                     title="Collapse sidebar"
                     aria-label="Collapse sidebar"
-                    className="border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent text-foreground"
+                    className="border border-border/0 hover:!border-border/0 px-1.5 h-9 max-md:h-[45px] max-md:w-[45px] max-md:px-0 hover:!bg-transparent text-foreground"
                   >
-                    <PanelRight strokeWidth={2.25} className="h-4" />
+                    <PanelRight strokeWidth={2.25} className="h-4 max-md:h-5 max-md:w-5" />
                   </Button>
                 ) : null}
               </div>

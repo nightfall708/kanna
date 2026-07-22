@@ -107,12 +107,19 @@ describe("shared model normalization", () => {
     expect(deriveModelLabel("claude-fable-5")).toBe("Fable 5")
     expect(deriveModelLabel("deepseek/deepseek-v4-pro")).toBe("Deepseek V4 Pro")
     expect(deriveModelLabel("z-ai/glm-5.2")).toBe("GLM 5.2")
+    // A dashed "4-8" reads as a dotted version, with or without a "[1m]" marker.
+    expect(deriveModelLabel("claude-opus-4-8[1m]")).toBe("Opus 4.8")
+    expect(deriveModelLabel("claude-opus-4-8")).toBe("Opus 4.8")
+    // A trailing build/date stamp is dropped rather than joined into the version.
+    expect(deriveModelLabel("claude-haiku-4-5-20251001")).toBe("Haiku 4.5")
   })
 
   test("resolves model labels via catalog id, alias, or derived fallback", () => {
     const claudeModels = PROVIDERS.find((provider) => provider.id === "claude")?.models
-    expect(resolveModelLabel(claudeModels, "claude-opus-4-8")).toBe("Opus")
-    expect(resolveModelLabel(claudeModels, "opus")).toBe("Opus")
+    expect(resolveModelLabel(claudeModels, "claude-opus-4-8")).toBe("Opus 4.8")
+    expect(resolveModelLabel(claudeModels, "opus")).toBe("Opus 4.8")
+    // The "[1m]" context-window variant resolves the same as the base id.
+    expect(resolveModelLabel(claudeModels, "claude-opus-4-8[1m]")).toBe("Opus 4.8")
     expect(resolveModelLabel(claudeModels, "some-new-model")).toBe("Some New Model")
     expect(resolveModelLabel(undefined, "gpt-5.6-sol")).toBe("GPT 5.6 Sol")
   })

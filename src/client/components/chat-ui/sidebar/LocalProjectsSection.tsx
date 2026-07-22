@@ -134,13 +134,13 @@ function EmptyProjectChatButton({
       disabled={disabled}
       title={!isConnected ? `Start ${APP_NAME} to connect` : "New Chat"}
       className={cn(
-        "group flex w-full items-center gap-2 pl-2.5 pr-0.5 py-0.5 rounded-lg text-left cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
+        "group flex w-full items-center gap-2 pl-2.5 pr-0.5 py-0.5 max-md:py-1.5 rounded-lg text-left cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
         "border-border/0 dark:hover:border-slate-400/10",
         disabled && "cursor-not-allowed opacity-50 active:scale-100"
       )}
       onClick={() => onNewLocalChat(localPath)}
     >
-      <span className="text-sm truncate flex-1 translate-y-[-0.5px] text-slate-500 dark:text-slate-400">
+      <span className="text-sm max-md:text-base truncate flex-1 translate-y-[-0.5px] text-slate-500 dark:text-slate-400">
         New Chat
       </span>
       <div className="h-7 w-6 mr-[2px] shrink-0" aria-hidden />
@@ -259,7 +259,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
         </span>
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="truncate max-w-[150px] whitespace-nowrap text-sm ">
+            <span className="truncate max-w-[150px] whitespace-nowrap text-sm max-md:text-base">
               {title || getPathBasename(localPath)}
             </span>
           </TooltipTrigger>

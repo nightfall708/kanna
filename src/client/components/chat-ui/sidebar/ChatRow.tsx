@@ -50,7 +50,7 @@ function ChatRowImpl({
       key={chat._id}
       data-chat-id={normalizedChatId}
       className={cn(
-        "group flex items-center gap-2 pl-[9px] pr-0.5 py-0.5 rounded-lg cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
+        "group flex items-center gap-2 pl-[9px] pr-0.5 py-0.5 max-md:py-1.5 rounded-lg cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
         activeChatId === normalizedChatId ? "bg-muted hover:bg-muted border-border" : "border-border/0 dark:hover:border-slate-400/10 "
       )}
       onClick={() => onSelectChat(chat.chatId)}
@@ -72,7 +72,7 @@ function ChatRowImpl({
           </div>
         </div>
       ) : null}
-      <span className="text-sm truncate flex-1 translate-y-[-0.5px]">
+      <span className="text-sm max-md:text-base truncate flex-1 translate-y-[-0.5px]">
         {chat.status !== "idle" && chat.status !== "waiting_for_user" ? (
           <AnimatedShinyText
             animate={chat.status === "running"}

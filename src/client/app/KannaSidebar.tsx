@@ -397,7 +397,7 @@ function KannaSidebarImpl({
         )}
         style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
       >
-        <div className="px-[5px] h-[47px] md:h-auto md:py-1 border-b grid grid-cols-[40px_minmax(0,1fr)_40px] items-center md:pl-3 md:pr-1 md:flex md:justify-between">
+        <div className="px-2.5 h-[63px] md:h-auto md:py-1 border-b grid grid-cols-[40px_minmax(0,1fr)_40px] items-center md:pl-3 md:pr-1 md:flex md:justify-between">
           <div className="md:hidden">
             <Button
               variant="ghost"

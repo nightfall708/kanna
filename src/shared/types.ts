@@ -365,24 +365,39 @@ const MODEL_LABEL_ACRONYMS = new Set(["gpt", "glm"])
 
 /**
  * Derive a display label from a bare model id when no catalog or fave record
- * names it: strip the vendor prefix and any `:variant` suffix, then title-case
- * the dash-separated words. A leading "Claude" is dropped — the id's family
- * name (Fable, Opus, Sonnet…) already identifies the model.
+ * names it. The id is stripped down (vendor prefix, a trailing context-window
+ * marker like `[1m]`, a `:variant` suffix) then title-cased word by word. A
+ * leading "claude" segment is dropped — the family name (Fable, Opus, Sonnet…)
+ * already identifies the model — and a trailing build/date stamp (a long run of
+ * digits) is dropped too. Consecutive bare integers collapse into a dotted
+ * version so `4-8` reads as `4.8`. Nothing is hardcoded per-model.
  *
- *   lab/kimi-k2.5:nitro → Kimi K2.5
- *   gpt-5.6-sol         → GPT 5.6 Sol
- *   openai/gpt-5.6      → GPT 5.6
- *   claude-fable-5      → Fable 5
+ *   lab/kimi-k2.5:nitro       → Kimi K2.5
+ *   gpt-5.6-sol               → GPT 5.6 Sol
+ *   openai/gpt-5.6            → GPT 5.6
+ *   claude-fable-5            → Fable 5
+ *   claude-opus-4-8[1m]       → Opus 4.8
+ *   claude-opus-4-8           → Opus 4.8
+ *   claude-haiku-4-5-20251001 → Haiku 4.5
  */
 export function deriveModelLabel(modelId: string): string {
   const base = modelId.split("/").pop() ?? modelId
-  const withoutVariant = base.split(":")[0] ?? base
-  const words = withoutVariant.split("-").filter(Boolean)
+  // Drop a trailing context-window marker like "[1m]" and any ":variant" suffix.
+  const withoutMarkers = (base.replace(/\[[^\]]*\]\s*$/, "").split(":")[0] ?? base)
+  const words = withoutMarkers.split("-").filter(Boolean)
+  // The provider column already names the family, so drop a leading "claude".
+  if (words[0]?.toLowerCase() === "claude") words.shift()
+  // Drop a trailing build/date stamp (a long run of digits, e.g. "20251001").
+  while (words.length > 1 && /^\d{5,}$/.test(words[words.length - 1] ?? "")) words.pop()
   if (words.length === 0) return modelId
-  const label = words
-    .map((word) => (MODEL_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : titleCaseWord(word)))
-    .join(" ")
-  return label.startsWith("Claude ") ? label.slice("Claude ".length) : label
+  const isVersionNumber = (word: string) => /^\d+$/.test(word)
+  return words.reduce((label, word, index) => {
+    const rendered = MODEL_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : titleCaseWord(word)
+    if (index === 0) return rendered
+    // Consecutive bare integers form a dotted version: "opus-4-8" → "Opus 4.8".
+    const joiner = isVersionNumber(word) && isVersionNumber(words[index - 1] ?? "") ? "." : " "
+    return label + joiner + rendered
+  }, "")
 }
 
 /**
@@ -465,7 +480,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     models: [
       {
         id: "fable",
-        label: deriveClaudeModelLabel("fable"),
+        label: deriveModelLabel("fable"),
         supportsEffort: true,
         // Fable runs a fixed 1M window (no 200k/1m selector). The SDK reports a
         // 2M window for it, so pin the meter to the real 1M ceiling here.
@@ -473,7 +488,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
       },
       {
         id: "claude-opus-4-8",
-        label: deriveClaudeModelLabel("claude-opus-4-8"),
+        label: deriveModelLabel("claude-opus-4-8"),
         supportsEffort: true,
         aliases: ["opus"],
         contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
@@ -485,14 +500,14 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
       },
       {
         id: "claude-sonnet-4-6",
-        label: deriveClaudeModelLabel("claude-sonnet-4-6"),
+        label: deriveModelLabel("claude-sonnet-4-6"),
         supportsEffort: true,
         aliases: ["sonnet"],
         contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
       },
       {
         id: "claude-haiku-4-5-20251001",
-        label: deriveClaudeModelLabel("claude-haiku-4-5-20251001"),
+        label: deriveModelLabel("claude-haiku-4-5-20251001"),
         supportsEffort: true,
         aliases: ["haiku"],
       },
