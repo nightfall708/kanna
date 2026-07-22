@@ -85,6 +85,22 @@ describe("buildServicePath", () => {
     )
   })
 
+  test("extraDirs (interactive-shell tool locations) come first and are probed", () => {
+    const existing = new Set([
+      `${HOME}/.nvm/versions/node/v22.20.0/bin`,
+      `${HOME}/.bun/bin`,
+    ])
+    const result = buildServicePath({
+      platform: "darwin",
+      home: HOME,
+      env: {},
+      existsSyncImpl: (candidate) => existing.has(candidate),
+      extraDirs: [`${HOME}/.nvm/versions/node/v22.20.0/bin`, "/does/not/exist"],
+    })
+    expect(result.startsWith(`${HOME}/.nvm/versions/node/v22.20.0/bin:`)).toBe(true)
+    expect(result).not.toContain("/does/not/exist")
+  })
+
   test("missing dirs are excluded; BUN_INSTALL is honored; no duplicates", () => {
     const existing = new Set(["/custom/bun/bin"])
     const result = buildServicePath({
@@ -171,6 +187,30 @@ describe("unit rendering", () => {
 })
 
 describe("installService (darwin)", () => {
+  test("nvm-installed agent CLIs land on the service PATH via install-time probing", async () => {
+    const fs = fakeFs()
+    const { execImpl } = fakeExec()
+    const nvmBin = `${HOME}/.nvm/versions/node/v22.20.0/bin`
+    const result = await installService(
+      darwinDeps({
+        execImpl,
+        ...fs,
+        existsSyncImpl: (candidate) => candidate === nvmBin || candidate === `${HOME}/.bun/bin`,
+        whichImpl: (command) => {
+          if (command === "kanna") return `${HOME}/.bun/bin/kanna`
+          if (command === "claude" || command === "codex" || command === "node") return `${nvmBin}/${command}`
+          return null
+        },
+      }),
+    )
+
+    expect(result.ok).toBe(true)
+    const plist = fs.written[0].content
+    const pathValue = plist.match(/<key>PATH<\/key>\s*<string>([^<]*)<\/string>/)?.[1] ?? ""
+    expect(pathValue.startsWith(`${nvmBin}:`)).toBe(true)
+    expect(pathValue).toContain(`${HOME}/.bun/bin`)
+  })
+
   test("writes the plist and bootstraps via launchctl", async () => {
     const fs = fakeFs()
     const { execImpl, calls } = fakeExec()

@@ -30,6 +30,13 @@ export const SYSTEMD_SERVICE_NAME = "kanna"
 /** Dev/self-host escape hatch: absolute path to the kanna entry script. */
 export const SERVICE_EXEC_ENV_VAR = "KANNA_SERVICE_EXEC"
 
+/**
+ * External tools kanna (or its agents) spawn. Resolved through the
+ * interactive shell at install time so their directories — including
+ * version-manager paths a static list can't know — land on the service PATH.
+ */
+export const AGENT_TOOL_PROBES = ["claude", "codex", "cursor-agent", "gemini", "git", "node"] as const
+
 export type ServicePlatform = "darwin" | "linux" | "unsupported"
 
 export interface ExecResult {
@@ -76,6 +83,15 @@ export function buildServicePath(args: {
   home: string
   env?: Record<string, string | undefined>
   existsSyncImpl?: (candidate: string) => boolean
+  /**
+   * Directories of agent CLIs resolved through the interactive shell at
+   * install time (e.g. nvm-installed claude/codex live under
+   * ~/.nvm/versions/node/<ver>/bin, which no static list can predict).
+   * Prepended so tools AND their `#!/usr/bin/env node` shebangs resolve to
+   * the same installation. These can go stale when the user switches node
+   * versions — re-running `kanna pair` or `kanna service install` refreshes.
+   */
+  extraDirs?: string[]
 }): string {
   const exists = args.existsSyncImpl ?? existsSync
   const env = args.env ?? {}
@@ -90,7 +106,11 @@ export function buildServicePath(args: {
     dirs.push(candidate)
   }
 
-  // User tool dirs first (bun, agent CLIs, npm globals) — probed so the PATH
+  for (const dir of args.extraDirs ?? []) {
+    addProbed(dir)
+  }
+
+  // User tool dirs next (bun, agent CLIs, npm globals) — probed so the PATH
   // only contains directories that exist on this machine.
   const bunInstall = env.BUN_INSTALL?.trim()
   addProbed(bunInstall ? `${bunInstall}/bin` : undefined)
@@ -297,12 +317,33 @@ export async function installService(deps: ServiceDeps = {}): Promise<ServiceAct
     return { ok: false, message: resolved.message }
   }
 
+  // Resolve the agent CLIs through the CURRENT (interactive) environment —
+  // this is the one moment we can see where nvm-style installs actually live.
+  const which = deps.whichImpl ?? defaultWhich
+  const extraDirs: string[] = []
+  for (const tool of AGENT_TOOL_PROBES) {
+    const resolvedTool = which(tool)
+    if (resolvedTool) {
+      extraDirs.push(path.dirname(resolvedTool))
+    }
+  }
+
   const servicePath = buildServicePath({
     platform,
     home,
     env,
     existsSyncImpl: deps.existsSyncImpl,
+    extraDirs,
   })
+
+  // Belt-and-braces: anything visible in this shell but not resolvable under
+  // the service PATH would fail silently inside the service — say so now.
+  for (const tool of AGENT_TOOL_PROBES) {
+    const inShell = which(tool)
+    if (inShell && !servicePath.split(":").some((dir) => inShell.startsWith(`${dir}/`))) {
+      deps.log?.(`warning: ${tool} (${inShell}) may not be reachable from the background service`)
+    }
+  }
   const paths = resolvePaths(platform, home)
   await mkdirImpl(paths.logsDir)
   await mkdirImpl(path.dirname(paths.unitPath))
