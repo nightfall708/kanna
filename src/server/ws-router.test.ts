@@ -121,7 +121,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
     },
   },
   transcriptAutoScroll: true,
-  boardAutoReturn: false,
+  showRecentChatsInSidebar: false,
   warning: null,
   filePathDisplay: "~/.kanna/data/settings.json",
 }

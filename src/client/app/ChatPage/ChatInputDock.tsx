@@ -15,6 +15,7 @@ interface ChatInputDockProps {
   runtimeStatus: string | null
   canCancel: boolean
   projectId: string | null
+  projectPath: string | null
   activeProvider: AgentProvider | null
   availableProviders: KannaState["availableProviders"]
   contextWindowSnapshot: ContextWindowSnapshot | null
@@ -35,6 +36,7 @@ export const ChatInputDock = memo(function ChatInputDock({
   runtimeStatus,
   canCancel,
   projectId,
+  projectPath,
   activeProvider,
   availableProviders,
   contextWindowSnapshot,
@@ -45,7 +47,7 @@ export const ChatInputDock = memo(function ChatInputDock({
 }: ChatInputDockProps) {
   return (
     <div className="absolute bottom-0 left-0 right-0 z-20 pointer-events-none">
-      <div className="bg-gradient-to-t from-background via-background pointer-events-auto" ref={inputRef}>
+      <div className="bg-gradient-to-t from-background via-background to-background/10 md:to-background/0 pointer-events-auto" ref={inputRef}>
         <ChatInput
           ref={chatInputRef}
           inputElementRef={chatInputElementRef}
@@ -57,6 +59,7 @@ export const ChatInputDock = memo(function ChatInputDock({
           canCancel={canCancel}
           chatId={activeChatId}
           projectId={projectId}
+          projectPath={projectPath}
           activeProvider={activeProvider}
           availableProviders={availableProviders}
           contextWindowSnapshot={contextWindowSnapshot}

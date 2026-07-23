@@ -43,7 +43,7 @@ interface AppSettingsFile {
     pi?: ProviderPreferenceInput
   }
   transcriptAutoScroll?: unknown
-  boardAutoReturn?: unknown
+  showRecentChatsInSidebar?: unknown
 }
 
 interface AppSettingsState extends AppSettingsSnapshot {
@@ -146,7 +146,7 @@ function toFilePayload(state: AppSettingsState) {
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
     transcriptAutoScroll: state.transcriptAutoScroll,
-    boardAutoReturn: state.boardAutoReturn,
+    showRecentChatsInSidebar: state.showRecentChatsInSidebar,
   }
 }
 
@@ -162,7 +162,7 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
     transcriptAutoScroll: state.transcriptAutoScroll,
-    boardAutoReturn: state.boardAutoReturn,
+    showRecentChatsInSidebar: state.showRecentChatsInSidebar,
     warning: state.warning,
     filePathDisplay: state.filePathDisplay,
   }
@@ -195,9 +195,9 @@ function normalizeAppSettings(
     warnings.push("analyticsUserId must be a non-empty string")
   }
 
-  const boardAutoReturn = source?.boardAutoReturn === true
-  if (source?.boardAutoReturn !== undefined && typeof source.boardAutoReturn !== "boolean") {
-    warnings.push("boardAutoReturn must be a boolean")
+  const showRecentChatsInSidebar = source?.showRecentChatsInSidebar === true
+  if (source?.showRecentChatsInSidebar !== undefined && typeof source.showRecentChatsInSidebar !== "boolean") {
+    warnings.push("showRecentChatsInSidebar must be a boolean")
   }
 
   const editorPreset = normalizeEditorPreset(source?.editor?.preset)
@@ -219,7 +219,7 @@ function normalizeAppSettings(
     defaultProvider: normalizeDefaultProvider(source?.defaultProvider),
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
     transcriptAutoScroll: typeof source?.transcriptAutoScroll === "boolean" ? source.transcriptAutoScroll : true,
-    boardAutoReturn,
+    showRecentChatsInSidebar,
     warning: null,
     filePathDisplay: formatDisplayPath(filePath),
   }
@@ -249,7 +249,7 @@ function toComparablePayload(source: AppSettingsFile) {
     defaultProvider: source.defaultProvider,
     providerDefaults: source.providerDefaults,
     transcriptAutoScroll: source.transcriptAutoScroll,
-    boardAutoReturn: source.boardAutoReturn,
+    showRecentChatsInSidebar: source.showRecentChatsInSidebar,
   }
 }
 

@@ -191,15 +191,6 @@ export function GeneralSection({
     }
   }
 
-  async function handleBoardAutoReturnChange(nextValue: "enabled" | "disabled") {
-    try {
-      setAppSettingsError(null)
-      await handleWriteAppSettings({ boardAutoReturn: nextValue === "enabled" })
-    } catch (error) {
-      setAppSettingsError(error instanceof Error ? error.message : "Unable to save board settings.")
-    }
-  }
-
   async function handleTranscriptAutoScrollChange(nextValue: "enabled" | "disabled") {
     try {
       setAppSettingsError(null)
@@ -214,7 +205,6 @@ export function GeneralSection({
     .replaceAll("{line}", "12")
     .replaceAll("{column}", "1")
   const analyticsSettingValue = appSettings?.analyticsEnabled === false ? "disabled" : "enabled"
-  const boardAutoReturnValue = appSettings?.boardAutoReturn === true ? "enabled" : "disabled"
   const transcriptAutoScrollValue = appSettings?.transcriptAutoScroll !== false ? "enabled" : "disabled"
 
   return (
@@ -306,17 +296,6 @@ export function GeneralSection({
             value={transcriptAutoScrollValue}
             onValueChange={(value) => {
               void handleTranscriptAutoScrollChange(value)
-            }}
-            options={ENABLED_DISABLED_OPTIONS}
-            size="sm"
-          />
-        </SettingsRow>
-
-        <SettingsRow def={SETTINGS_ROWS.jumpBackToBoard}>
-          <SegmentedControl
-            value={boardAutoReturnValue}
-            onValueChange={(value) => {
-              void handleBoardAutoReturnChange(value)
             }}
             options={ENABLED_DISABLED_OPTIONS}
             size="sm"

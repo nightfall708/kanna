@@ -365,24 +365,39 @@ const MODEL_LABEL_ACRONYMS = new Set(["gpt", "glm"])
 
 /**
  * Derive a display label from a bare model id when no catalog or fave record
- * names it: strip the vendor prefix and any `:variant` suffix, then title-case
- * the dash-separated words. A leading "Claude" is dropped — the id's family
- * name (Fable, Opus, Sonnet…) already identifies the model.
+ * names it. The id is stripped down (vendor prefix, a trailing context-window
+ * marker like `[1m]`, a `:variant` suffix) then title-cased word by word. A
+ * leading "claude" segment is dropped — the family name (Fable, Opus, Sonnet…)
+ * already identifies the model — and a trailing build/date stamp (a long run of
+ * digits) is dropped too. Consecutive bare integers collapse into a dotted
+ * version so `4-8` reads as `4.8`. Nothing is hardcoded per-model.
  *
- *   lab/kimi-k2.5:nitro → Kimi K2.5
- *   gpt-5.6-sol         → GPT 5.6 Sol
- *   openai/gpt-5.6      → GPT 5.6
- *   claude-fable-5      → Fable 5
+ *   lab/kimi-k2.5:nitro       → Kimi K2.5
+ *   gpt-5.6-sol               → GPT 5.6 Sol
+ *   openai/gpt-5.6            → GPT 5.6
+ *   claude-fable-5            → Fable 5
+ *   claude-opus-4-8[1m]       → Opus 4.8
+ *   claude-opus-4-8           → Opus 4.8
+ *   claude-haiku-4-5-20251001 → Haiku 4.5
  */
 export function deriveModelLabel(modelId: string): string {
   const base = modelId.split("/").pop() ?? modelId
-  const withoutVariant = base.split(":")[0] ?? base
-  const words = withoutVariant.split("-").filter(Boolean)
+  // Drop a trailing context-window marker like "[1m]" and any ":variant" suffix.
+  const withoutMarkers = (base.replace(/\[[^\]]*\]\s*$/, "").split(":")[0] ?? base)
+  const words = withoutMarkers.split("-").filter(Boolean)
+  // The provider column already names the family, so drop a leading "claude".
+  if (words[0]?.toLowerCase() === "claude") words.shift()
+  // Drop a trailing build/date stamp (a long run of digits, e.g. "20251001").
+  while (words.length > 1 && /^\d{5,}$/.test(words[words.length - 1] ?? "")) words.pop()
   if (words.length === 0) return modelId
-  const label = words
-    .map((word) => (MODEL_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : titleCaseWord(word)))
-    .join(" ")
-  return label.startsWith("Claude ") ? label.slice("Claude ".length) : label
+  const isVersionNumber = (word: string) => /^\d+$/.test(word)
+  return words.reduce((label, word, index) => {
+    const rendered = MODEL_LABEL_ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : titleCaseWord(word)
+    if (index === 0) return rendered
+    // Consecutive bare integers form a dotted version: "opus-4-8" → "Opus 4.8".
+    const joiner = isVersionNumber(word) && isVersionNumber(words[index - 1] ?? "") ? "." : " "
+    return label + joiner + rendered
+  }, "")
 }
 
 /**
@@ -465,7 +480,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     models: [
       {
         id: "fable",
-        label: deriveClaudeModelLabel("fable"),
+        label: deriveModelLabel("fable"),
         supportsEffort: true,
         // Fable runs a fixed 1M window (no 200k/1m selector). The SDK reports a
         // 2M window for it, so pin the meter to the real 1M ceiling here.
@@ -473,7 +488,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
       },
       {
         id: "claude-opus-4-8",
-        label: deriveClaudeModelLabel("claude-opus-4-8"),
+        label: deriveModelLabel("claude-opus-4-8"),
         supportsEffort: true,
         aliases: ["opus"],
         contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
@@ -485,14 +500,14 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
       },
       {
         id: "claude-sonnet-4-6",
-        label: deriveClaudeModelLabel("claude-sonnet-4-6"),
+        label: deriveModelLabel("claude-sonnet-4-6"),
         supportsEffort: true,
         aliases: ["sonnet"],
         contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
       },
       {
         id: "claude-haiku-4-5-20251001",
-        label: deriveClaudeModelLabel("claude-haiku-4-5-20251001"),
+        label: deriveModelLabel("claude-haiku-4-5-20251001"),
         supportsEffort: true,
         aliases: ["haiku"],
       },
@@ -863,8 +878,8 @@ export interface AppSettingsSnapshot {
   defaultProvider: DefaultProviderPreference
   providerDefaults: ChatProviderPreferences
   transcriptAutoScroll: boolean
-  /** Return to the board when a chat opened from it starts running. Off by default. */
-  boardAutoReturn: boolean
+  /** Labs: show the Review / In Progress / Recents sections atop the sidebar. Off by default. */
+  showRecentChatsInSidebar: boolean
   warning: string | null
   filePathDisplay: string
 }
@@ -875,7 +890,7 @@ export interface AppSettingsPatch {
   theme?: AppThemePreference
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
-  boardAutoReturn?: boolean
+  showRecentChatsInSidebar?: boolean
   terminal?: Partial<AppSettingsSnapshot["terminal"]>
   editor?: Partial<AppSettingsSnapshot["editor"]>
   defaultProvider?: DefaultProviderPreference
@@ -892,6 +907,82 @@ export interface AppSettingsPatch {
     }
   }
   transcriptAutoScroll?: boolean
+}
+
+// ---------------------------------------------------------------------------
+// Usage limits (subscription rate-limit utilization per harness)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a usage number came from, so the UI can show honest staleness:
+ * - `on_demand`: a fresh probe/read at page load or manual refresh
+ * - `turn_push`: piggybacked on a turn event (may only cover one window)
+ * - `cache`: loaded from the persisted last-known snapshot after a restart
+ */
+export type UsageLimitSource = "on_demand" | "turn_push" | "cache"
+
+/** One rolling rate-limit window (e.g. Claude 5-hour, Codex weekly). */
+export interface UsageLimitWindow {
+  /** Stable id within a provider (e.g. "five_hour", "seven_day_opus", "codex:primary"). */
+  id: string
+  /** Human label for the bar (e.g. "5-hour session", "Weekly · Opus"). */
+  label: string
+  /** Percentage of the window consumed, 0–100, or null when unknown. */
+  usedPercent: number | null
+  /** ISO 8601 timestamp when this window resets, or null when unknown. */
+  resetsAt: string | null
+  /** When this specific window value was recorded (ISO 8601). */
+  recordedAt: string
+  /** Source of this window's value. */
+  source: UsageLimitSource
+}
+
+/** Pay-per-use credit balance (Codex PAYG, Claude extra usage). */
+export interface UsageLimitCredits {
+  /** Human label (e.g. "Credits", "Extra usage"). */
+  label: string
+  /** Percentage consumed of a cap, 0–100, or null when there is no cap/unknown. */
+  usedPercent: number | null
+  /** Amount consumed in major currency units (dollars), or null when unknown. */
+  usedAmount: number | null
+  /** Spend cap in major currency units (dollars), or null when there is no cap. */
+  limitAmount: number | null
+  /** ISO 4217 currency code for the amounts (e.g. "USD"), or null when unknown. */
+  currency: string | null
+  /** Free-form fallback description when amounts aren't numeric (e.g. "Unlimited"). */
+  detail: string | null
+  recordedAt: string
+  source: UsageLimitSource
+}
+
+export type UsageLimitStatus =
+  // Windows present and meaningful.
+  | "ok"
+  // Provider auth doesn't expose limits (API key / Bedrock / Vertex, or logged out).
+  | "unavailable"
+  // Provider has no subscription limits by design (pi passthrough).
+  | "not_applicable"
+  // We haven't fetched anything yet for this provider.
+  | "unknown"
+
+/** Per-provider usage snapshot rendered as a card on the Usage page. */
+export interface ProviderUsageSnapshot {
+  provider: AgentProvider
+  status: UsageLimitStatus
+  /** Plan / subscription label when known (e.g. "max", "pro", "Ultra"). */
+  plan: string | null
+  /** Rate-limit windows to render as horizontal bars. */
+  windows: UsageLimitWindow[]
+  /** Optional credit balance row. */
+  credits: UsageLimitCredits | null
+  /** Human explanation shown when status !== "ok" (e.g. "Sign in to Codex to see limits"). */
+  detail: string | null
+  /** Latest recordedAt across all windows/credits, ISO 8601, or null when never fetched. */
+  updatedAt: string | null
+}
+
+export interface UsageLimitsSnapshot {
+  providers: ProviderUsageSnapshot[]
 }
 
 /** A user-curated model shortcut shown in Pi's model picker. */

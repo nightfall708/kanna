@@ -93,12 +93,13 @@ export function parseLocalFileLink(target: string | undefined | null): ParsedLoc
 /**
  * Contract the home directory prefix to "~" for display.
  * e.g., "/Users/jake/Projects/my-app" → "~/Projects/my-app"
- * e.g., "/home/jake" → "~"
+ * e.g., "/home/jake" → "/home/jake" (home root stays expanded — "~" is uninformative)
  */
 export function formatPathWithTilde(path: string) {
   const homeMatch = path.match(/^\/(?:Users|home)\/[^/]+(?=\/|$)/)
   const homePrefix = homeMatch?.[0]
-  if (homePrefix && path === homePrefix) return "~"
+  // At the home root itself, "~" is uninformative — show the expanded path.
+  if (homePrefix && path === homePrefix) return path
   if (homePrefix && path.startsWith(`${homePrefix}/`)) return `~/${path.slice(homePrefix.length + 1)}`
   return path
 }

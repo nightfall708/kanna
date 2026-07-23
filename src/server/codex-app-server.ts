@@ -16,9 +16,12 @@ import { AsyncQueue } from "./async-queue"
 import { asNumber, asRecord } from "../shared/json"
 import { timestamped } from "./transcript"
 import {
+  type AccountRateLimitsUpdatedNotification,
   type CollabAgentToolCallItem,
   type ContextCompactedNotification,
+  type CodexRateLimitSnapshot,
   type CodexRequestId,
+  type GetAccountRateLimitsResponse,
   type CodexSkillMetadata,
   type CodexUserInput,
   type CommandExecutionApprovalDecision,
@@ -691,6 +694,7 @@ function itemToToolResults(item: ThreadItem): TranscriptEntry[] {
 export class CodexAppServerManager {
   private readonly sessions = new Map<string, SessionContext>()
   private readonly spawnProcess: SpawnCodexAppServer
+  private onRateLimits: ((snapshot: CodexRateLimitSnapshot) => void) | null = null
 
   constructor(args: { spawnProcess?: SpawnCodexAppServer } = {}) {
     this.spawnProcess = args.spawnProcess ?? ((cwd) =>
@@ -699,6 +703,68 @@ export class CodexAppServerManager {
         stdio: ["pipe", "pipe", "pipe"],
         env: process.env,
       }) as unknown as CodexAppServerProcess)
+  }
+
+  /** Register a sink for pushed `account/rateLimits/updated` notifications. */
+  setRateLimitsListener(listener: ((snapshot: CodexRateLimitSnapshot) => void) | null) {
+    this.onRateLimits = listener
+  }
+
+  /**
+   * Read account rate limits on demand. Reuses a live session's app-server
+   * process when one exists; otherwise spawns a short-lived probe process and
+   * tears it down. Returns null only when Codex is unusable (binary missing).
+   * Throws on protocol errors (e.g. API-key auth → "chatgpt auth required").
+   */
+  async readAccountRateLimits(probeCwd: string): Promise<GetAccountRateLimitsResponse | null> {
+    for (const context of this.sessions.values()) {
+      if (context.closed) continue
+      return await this.sendRequest<GetAccountRateLimitsResponse>(
+        context,
+        "account/rateLimits/read",
+        {},
+      )
+    }
+    return await this.probeAccountRateLimits(probeCwd)
+  }
+
+  private async probeAccountRateLimits(cwd: string): Promise<GetAccountRateLimitsResponse | null> {
+    let child: CodexAppServerProcess
+    try {
+      child = this.spawnProcess(cwd)
+    } catch {
+      return null
+    }
+    const context: SessionContext = {
+      chatId: `usage-probe-${randomUUID()}`,
+      cwd,
+      child,
+      pendingRequests: new Map(),
+      pendingTurn: null,
+      sessionToken: null,
+      stderrLines: [],
+      closed: false,
+    }
+    this.attachListeners(context)
+    try {
+      await this.sendRequest(context, "initialize", {
+        clientInfo: { name: "kanna_desktop", title: "Kanna", version: "0.1.0" },
+        capabilities: { experimentalApi: true },
+      } satisfies InitializeParams)
+      this.writeMessage(context, { method: "initialized" })
+      return await this.sendRequest<GetAccountRateLimitsResponse>(
+        context,
+        "account/rateLimits/read",
+        {},
+      )
+    } finally {
+      context.closed = true
+      try {
+        child.kill("SIGKILL")
+      } catch {
+        // ignore
+      }
+    }
   }
 
   async startSession(args: StartCodexSessionArgs) {
@@ -1182,6 +1248,13 @@ export class CodexAppServerManager {
           sessionToken: notification.params.thread.id,
         })
       }
+      return
+    }
+
+    // Account rate limits arrive independent of any active turn.
+    if (notification.method === "account/rateLimits/updated") {
+      const params = notification.params as AccountRateLimitsUpdatedNotification
+      if (params?.rateLimits) this.onRateLimits?.(params.rateLimits)
       return
     }
 

@@ -1,5 +1,6 @@
 import commandScore from "command-score"
-import type { LocalProjectSummary, SidebarChatRow, SidebarData } from "../../../shared/types"
+import type { LocalProjectSummary, SidebarData } from "../../../shared/types"
+import type { SidebarThread } from "../../lib/thread-sections"
 import {
   listAllSettingsRowDefs,
   SETTINGS_SECTIONS,
@@ -9,48 +10,21 @@ import {
 
 /** Pure ranking/search helpers for the command palette (kept React-free for tests). */
 
-export interface PaletteThread {
-  chatId: string
-  title: string
-  projectId: string
-  projectTitle: string
-  archived: boolean
-  lastActivityAt: number
-  row: SidebarChatRow
-}
+// Thread flattening + section logic (Review / In Progress / Recents) lives in
+// the canonical lib/thread-sections module, shared with the sidebar.
+export {
+  computeThreadSections,
+  flattenSidebarThreads,
+  getInProgressThreads,
+  getRecentThreads,
+  getReviewThreads,
+  RECENT_THREADS_LIMIT,
+  type SidebarThread,
+  type ThreadSections,
+} from "../../lib/thread-sections"
 
-export interface ScoredThread extends PaletteThread {
+export interface ScoredThread extends SidebarThread {
   score: number
-}
-
-/** Flattens the sidebar snapshot into one searchable thread list (active + archived). */
-export function flattenSidebarThreads(data: SidebarData): PaletteThread[] {
-  const threads: PaletteThread[] = []
-  for (const group of data.projectGroups) {
-    const pushRows = (rows: SidebarChatRow[], archived: boolean) => {
-      for (const row of rows) {
-        threads.push({
-          chatId: row.chatId,
-          title: row.title,
-          projectId: group.groupKey,
-          projectTitle: group.title,
-          archived,
-          lastActivityAt: row.lastMessageAt ?? row._creationTime,
-          row,
-        })
-      }
-    }
-    pushRows(group.chats, false)
-    pushRows(group.archivedChats ?? [], true)
-  }
-  return threads
-}
-
-export function getRecentThreads(threads: PaletteThread[], limit = 7): PaletteThread[] {
-  return [...threads]
-    .filter((thread) => !thread.archived)
-    .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
-    .slice(0, limit)
 }
 
 /**
@@ -69,7 +43,7 @@ export function scorePaletteItem(query: string, title: string, keywords: string[
   return best
 }
 
-export function searchThreadsByTitle(threads: PaletteThread[], query: string, limit = 10): ScoredThread[] {
+export function searchThreadsByTitle(threads: SidebarThread[], query: string, limit = 10): ScoredThread[] {
   const trimmed = query.trim()
   if (!trimmed) return []
 

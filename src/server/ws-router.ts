@@ -19,10 +19,12 @@ import { installSkill, listGlobalSkillsWithSources, listInstalledSkills, searchS
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
+import type { UsageLimitsManager } from "./usage-limits"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 import type {
   LlmProviderSnapshot,
   LlmProviderValidationResult,
+  UsageLimitsSnapshot,
 } from "../shared/types"
 
 const DEFAULT_CHAT_RECENT_LIMIT = 200
@@ -51,6 +53,7 @@ interface CreateWsRouterArgs {
   getDiscoveredProjects: () => DiscoveredProject[]
   machineDisplayName: string
   updateManager: UpdateManager | null
+  usageLimits?: Pick<UsageLimitsManager, "getSnapshot" | "refresh" | "onChange"> | null
 }
 
 interface SnapshotBroadcastFilter {
@@ -59,6 +62,7 @@ interface SnapshotBroadcastFilter {
   includeUpdate?: boolean
   includeKeybindings?: boolean
   includeAppSettings?: boolean
+  includeUsageLimits?: boolean
   chatIds?: Set<string>
   projectIds?: Set<string>
   terminalIds?: Set<string>
@@ -108,6 +112,7 @@ export function createWsRouter({
   getDiscoveredProjects,
   machineDisplayName,
   updateManager,
+  usageLimits,
 }: CreateWsRouterArgs) {
   const sockets = new Set<ServerWebSocket<ClientState>>()
   let pendingBroadcastTimer: ReturnType<typeof setTimeout> | null = null
@@ -172,6 +177,9 @@ export function createWsRouter({
     }
     if (topic.type === "app-settings") {
       return Boolean(filter.includeAppSettings)
+    }
+    if (topic.type === "usage-limits") {
+      return Boolean(filter.includeUsageLimits)
     }
     if (topic.type === "chat") {
       return filter.chatIds?.has(topic.chatId) ?? false
@@ -274,6 +282,19 @@ export function createWsRouter({
         snapshot: {
           type: "app-settings",
           data: appSettings.getSnapshot(),
+        },
+      }
+    }
+
+    if (topic.type === "usage-limits") {
+      const data: UsageLimitsSnapshot = usageLimits?.getSnapshot() ?? { providers: [] }
+      return {
+        v: PROTOCOL_VERSION,
+        type: "snapshot",
+        id,
+        snapshot: {
+          type: "usage-limits",
+          data,
         },
       }
     }
@@ -567,6 +588,21 @@ export function createWsRouter({
     }
   }) ?? (() => {})
 
+  const disposeUsageLimitsEvents = usageLimits?.onChange(() => {
+    for (const ws of sockets) {
+      const snapshotSignatures = ensureSnapshotSignatures(ws)
+      for (const [id, topic] of ws.data.subscriptions.entries()) {
+        if (topic.type !== "usage-limits") continue
+        const envelope = createEnvelope(id, topic)
+        if (envelope.type !== "snapshot") continue
+        const signature = JSON.stringify(envelope.snapshot)
+        if (snapshotSignatures.get(id) === signature) continue
+        snapshotSignatures.set(id, signature)
+        send(ws, envelope)
+      }
+    }
+  }) ?? (() => {})
+
   agent.setBackgroundErrorReporter?.(broadcastError)
 
   function resolveChatProject(chatId: string) {
@@ -691,6 +727,17 @@ export function createWsRouter({
         }
         case "settings.readAppSettings": {
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: appSettings.getSnapshot() })
+          return
+        }
+        case "usage.refresh": {
+          if (usageLimits) {
+            // Auto-refresh (page/palette open) respects the read TTL; the
+            // manual Refresh button forces past it.
+            await usageLimits.refresh({ force: command.force ?? false })
+            send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: usageLimits.getSnapshot() })
+          } else {
+            send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { providers: [] } satisfies UsageLimitsSnapshot })
+          }
           return
         }
         case "settings.writeAppSettings": {
@@ -1211,6 +1258,11 @@ export function createWsRouter({
           return
         }
         await pushSnapshots(ws, { skipPrune: true })
+        // Kick a fresh usage read on subscribe so the page opens accurate;
+        // the onChange fanout delivers the result to all subscribers.
+        if (parsed.topic.type === "usage-limits" && usageLimits) {
+          void usageLimits.refresh().catch(() => undefined)
+        }
         return
       }
 
@@ -1233,6 +1285,7 @@ export function createWsRouter({
       disposeKeybindingEvents()
       disposeAppSettingsEvents()
       disposeUpdateEvents()
+      disposeUsageLimitsEvents()
     },
   }
 }

@@ -485,6 +485,30 @@ export interface ErrorNotification {
   turnId?: string
 }
 
+export interface CodexRateLimitWindow {
+  usedPercent?: number
+  windowDurationMins?: number | null
+  resetsAt?: number | null
+}
+
+export interface CodexRateLimitSnapshot {
+  limitId?: string | null
+  limitName?: string | null
+  primary?: CodexRateLimitWindow | null
+  secondary?: CodexRateLimitWindow | null
+  credits?: { hasCredits?: boolean; unlimited?: boolean; balance?: string | null } | null
+  planType?: string | null
+}
+
+export interface AccountRateLimitsUpdatedNotification {
+  rateLimits: CodexRateLimitSnapshot
+}
+
+export interface GetAccountRateLimitsResponse {
+  rateLimits: CodexRateLimitSnapshot
+  rateLimitsByLimitId?: Record<string, CodexRateLimitSnapshot | null | undefined> | null
+}
+
 export type ServerNotification =
   | { method: "thread/started"; params: ThreadStartedNotification }
   | { method: "thread/tokenUsage/updated"; params: ThreadTokenUsageUpdatedNotification }
@@ -495,6 +519,7 @@ export type ServerNotification =
   | { method: "item/completed"; params: ItemCompletedNotification }
   | { method: "item/plan/delta"; params: PlanDeltaNotification }
   | { method: "thread/compacted"; params: ContextCompactedNotification }
+  | { method: "account/rateLimits/updated"; params: AccountRateLimitsUpdatedNotification }
   | { method: "error"; params: ErrorNotification }
 
 export function isJsonRpcResponse(value: unknown): value is JsonRpcResponse {
@@ -526,5 +551,6 @@ export function isServerNotification(value: unknown): value is ServerNotificatio
     || candidate.method === "item/completed"
     || candidate.method === "item/plan/delta"
     || candidate.method === "thread/compacted"
+    || candidate.method === "account/rateLimits/updated"
     || candidate.method === "error"
 }

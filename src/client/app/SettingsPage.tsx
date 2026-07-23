@@ -14,9 +14,11 @@ import { cn } from "../lib/utils"
 import { ChangelogSection, useChangelog } from "./settings/ChangelogSection"
 import { GeneralSection } from "./settings/GeneralSection"
 import { KeybindingsSection } from "./settings/KeybindingsSection"
+import { LabsSection } from "./settings/LabsSection"
 import { ProvidersSection } from "./settings/ProvidersSection"
 import { SETTINGS_SECTIONS } from "./settings/registry"
 import { SkillsSection } from "./settings/SkillsSection"
+import { UsageSection } from "./settings/UsageSection"
 import { getKeybindingsSubtitle } from "./settings/shared"
 import type { KannaState } from "./useKannaState"
 
@@ -197,10 +199,10 @@ export function SettingsPage() {
         </aside>
 
         <div className="min-w-0 flex-1 overflow-y-auto">
-          <div className="border-b border-border py-2 md:hidden">
+          <div className="border-b border-border py-2 md:hidden h-[63px] pl-1 md:h-auto">
             <div className="overflow-x-auto pr-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <div className="flex min-w-max items-center gap-2">
-                <div className=" sticky left-0 bg-gradient-to-r from-background via-background/80 to-transparent px-2  py-1">
+                <div className=" sticky left-0 bg-gradient-to-r from-background via-background/90 to-background/10 pl-2 pr-1 py-1">
                 <button
                   type="button"
                   onClick={state.openSidebar}
@@ -208,7 +210,7 @@ export function SettingsPage() {
                   aria-label="Open sidebar"
                   title="Open sidebar"
                 >
-                  <Menu className="h-4 w-4 shrink-0" />
+                  <Menu className="h-[20px] w-[20px] shrink-0" />
                 </button>
                 </div>
                 {sidebarItems.map((item) => (
@@ -295,6 +297,10 @@ export function SettingsPage() {
                   <KeybindingsSection state={state} />
                 ) : selectedPage === "skills" ? (
                   <SkillsSection state={state} />
+                ) : selectedPage === "usage" ? (
+                  <UsageSection state={state} />
+                ) : selectedPage === "labs" ? (
+                  <LabsSection state={state} />
                 ) : (
                   <ChangelogSection
                     status={changelog.status}

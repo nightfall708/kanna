@@ -16,6 +16,7 @@ import type {
   StandaloneTranscriptAttachmentMode,
   StandaloneTranscriptExportResult,
   UpdateSnapshot,
+  UsageLimitsSnapshot,
   EditorPreset,
 } from "./types"
 
@@ -48,6 +49,7 @@ export type SubscriptionTopic =
   | { type: "update" }
   | { type: "keybindings" }
   | { type: "app-settings" }
+  | { type: "usage-limits" }
   | { type: "chat"; chatId: string; recentLimit?: number }
   | { type: "project-git"; projectId: string }
   | { type: "terminal"; terminalId: string }
@@ -92,6 +94,7 @@ export type ClientCommand =
   | { type: "settings.writeAppSettings"; analyticsEnabled: boolean }
   | { type: "settings.writeAppSettingsPatch"; patch: AppSettingsPatch }
   | { type: "settings.readLlmProvider" }
+  | { type: "usage.refresh"; force?: boolean }
   | { type: "chat.listSkills"; provider: AgentProvider; chatId?: string; projectId?: string }
   | { type: "skills.search"; query: string; limit?: number }
   | { type: "skills.install"; source: string; skillId: string }
@@ -225,6 +228,7 @@ export type ServerSnapshot =
   | { type: "update"; data: UpdateSnapshot }
   | { type: "keybindings"; data: KeybindingsSnapshot }
   | { type: "app-settings"; data: AppSettingsSnapshot }
+  | { type: "usage-limits"; data: UsageLimitsSnapshot }
   | { type: "llm-provider"; data: LlmProviderSnapshot }
   | { type: "chat"; data: ChatSnapshot | null }
   | { type: "project-git"; data: ChatDiffSnapshot | null }

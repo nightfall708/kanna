@@ -24,6 +24,7 @@ import { CodexAppServerManager } from "./codex-app-server"
 import { CursorCliManager } from "./cursor-cli"
 import { PiAgentManager, resolvePiConnection } from "./pi-agent"
 import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
+import type { ClaudeRateLimitInfoRaw, ClaudeUsageRaw } from "./usage-limits"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import {
   appendSystemMessageBlock,
@@ -107,6 +108,7 @@ interface ClaudeSessionHandle {
   provider: "claude"
   stream: AsyncIterable<HarnessEvent>
   getAccountInfo?: () => Promise<any>
+  getUsage?: () => Promise<ClaudeUsageRaw | null>
   interrupt: () => Promise<void>
   close: () => void
   sendPrompt: (content: string) => Promise<void>
@@ -166,6 +168,7 @@ interface AgentCoordinatorArgs {
     sessionToken: string | null
     forkSession: boolean
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+    onRateLimitEvent?: (info: ClaudeRateLimitInfoRaw) => void
   }) => Promise<ClaudeSessionHandle>
 }
 
@@ -492,7 +495,10 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
 
 async function* createClaudeHarnessStream(
   q: Query,
-  hooks?: { onCommandsChanged?: (commands: SlashCommand[]) => void }
+  hooks?: {
+    onCommandsChanged?: (commands: SlashCommand[]) => void
+    onRateLimitEvent?: (info: ClaudeRateLimitInfoRaw) => void
+  }
 ): AsyncGenerator<HarnessEvent> {
   let seenAssistantUsageIds = new Set<string>()
   let latestUsageSnapshot: ContextWindowUsageSnapshot | null = null
@@ -509,6 +515,11 @@ async function* createClaudeHarnessStream(
     // re-fetch would return the stale initialize-time list).
     if (sdkMessage?.type === "system" && sdkMessage.subtype === "commands_changed" && Array.isArray(sdkMessage.commands)) {
       hooks?.onCommandsChanged?.(sdkMessage.commands as SlashCommand[])
+    }
+
+    // Subscription rate-limit utilization pushed on turns (claude.ai plans).
+    if (sdkMessage?.type === "rate_limit_event" && sdkMessage.rate_limit_info) {
+      hooks?.onRateLimitEvent?.(sdkMessage.rate_limit_info as ClaudeRateLimitInfoRaw)
     }
 
     // Per-step usage lives on the nested API message (`sdkMessage.message.usage`);
@@ -611,6 +622,7 @@ async function startClaudeSession(args: {
   sessionToken: string | null
   forkSession: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  onRateLimitEvent?: (info: ClaudeRateLimitInfoRaw) => void
 }): Promise<ClaudeSessionHandle> {
   const canUseTool: CanUseTool = async (toolName, input, options) => {
     if (toolName !== "AskUserQuestion" && toolName !== "ExitPlanMode") {
@@ -702,10 +714,27 @@ async function startClaudeSession(args: {
       onCommandsChanged: (commands) => {
         commandsRef.current = commands
       },
+      onRateLimitEvent: args.onRateLimitEvent,
     }),
     getAccountInfo: async () => {
       try {
         return await q.accountInfo()
+      } catch {
+        return null
+      }
+    },
+    getUsage: async () => {
+      try {
+        const anyQ = q as unknown as {
+          usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET?: () => Promise<ClaudeUsageRaw>
+        }
+        if (typeof anyQ.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET !== "function") {
+          return null
+        }
+        return await Promise.race([
+          anyQ.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
+        ])
       } catch {
         return null
       }
@@ -757,6 +786,7 @@ export class AgentCoordinator {
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private reportBackgroundError: ((message: string) => void) | null = null
+  private onClaudeRateLimit: ((info: ClaudeRateLimitInfoRaw) => void) | null = null
   private cursorModelCatalogApplied = false
   readonly activeTurns = new Map<string, ActiveTurn>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
@@ -776,6 +806,51 @@ export class AgentCoordinator {
 
   setBackgroundErrorReporter(report: ((message: string) => void) | null) {
     this.reportBackgroundError = report
+  }
+
+  /** Register a sink for pushed Claude rate-limit events (usage page). */
+  setClaudeRateLimitListener(listener: ((info: ClaudeRateLimitInfoRaw) => void) | null) {
+    this.onClaudeRateLimit = listener
+  }
+
+  /**
+   * Read Claude subscription usage on demand. Reuses a live session's query
+   * when one exists; otherwise spawns a short-lived probe. Returns null when
+   * unavailable (no method / timeout / not a subscription session).
+   */
+  async fetchClaudeUsage(): Promise<ClaudeUsageRaw | null> {
+    for (const state of this.claudeSessions.values()) {
+      if (state.session.getUsage) {
+        const usage = await state.session.getUsage()
+        if (usage) return usage
+      }
+    }
+    let probe: ClaudeSessionHandle | null = null
+    try {
+      probe = await this.startClaudeSessionFn({
+        localPath: homedir(),
+        // Model choice is irrelevant for the usage read; use the catalog default.
+        model: "claude-sonnet-4-6",
+        planMode: false,
+        sessionToken: null,
+        forkSession: false,
+        onToolRequest: async () => ({}),
+      })
+      return (await probe.getUsage?.()) ?? null
+    } catch {
+      return null
+    } finally {
+      probe?.close()
+    }
+  }
+
+  /** Read Codex account rate limits on demand (reuses a live app-server or probes). */
+  async fetchCodexRateLimits() {
+    return await this.codexManager.readAccountRateLimits(homedir())
+  }
+
+  getCodexManager() {
+    return this.codexManager
   }
 
   getActiveStatuses() {
@@ -1292,6 +1367,7 @@ export class AgentCoordinator {
         sessionToken: args.sessionToken,
         forkSession: args.forkSession,
         onToolRequest: args.onToolRequest,
+        onRateLimitEvent: (info) => this.onClaudeRateLimit?.(info),
       })
       this.refreshClaudeModelCatalog(started)
 

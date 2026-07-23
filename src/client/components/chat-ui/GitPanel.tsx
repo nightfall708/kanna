@@ -483,7 +483,7 @@ function GitPanelImpl({
           ) : null}
         </div>
         <div className="relative min-h-0 flex-1">
-          <div className="sticky top-0 z-30 pl-[14px] pr-[12px] pt-[6px] bg-gradient-to-b from-background to-transparent">
+          <div className="sticky top-0 z-30 pl-[14px] pr-[12px] pt-[6px] bg-gradient-to-b from-background to-background/10 md:to-background/0">
             <div className="relative h-[40px]  flex min-w-0 items-center justify-center gap-[13px]">
               <div className="flex min-w-0 flex-1 items-center justify-between gap-[13px] relative">
                 {viewMode === "changes" ? (
@@ -620,7 +620,7 @@ function GitPanelImpl({
 
                 {viewMode === "changes" ? (
                   <div className="pointer-events-none sticky inset-x-0 bottom-11 py-1 pb-6 z-30 overflow-y-auto">
-                  <div className="absolute inset-x-0 bottom-0 top-0 bg-gradient-to-t from-background to-transparent" />
+                  <div className="absolute inset-x-0 bottom-0 top-0 bg-gradient-to-t from-background to-background/10 md:to-background/0" />
                   <div className="pointer-events-auto relative">
                     <div className="space-y-0 rounded-xl  backdrop-blur-md mx-auto max-w-[700px]">
                       <div className="relative">

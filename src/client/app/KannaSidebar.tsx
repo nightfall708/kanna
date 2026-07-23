@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
-import { Flower, Loader2, PanelLeft, X, Menu, Plus, Settings, SquareKanban } from "lucide-react"
+import { Flower, Loader2, PanelLeft, X, Menu, Plus, Settings } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
 import { Button } from "../components/ui/button"
@@ -9,8 +9,10 @@ import { getSidebarChatTimestamp } from "../lib/sidebarChats"
 import { cn } from "../lib/utils"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
+import { ThreadSections } from "../components/chat-ui/sidebar/ThreadSections"
 import { MachineSwitcher } from "./MachineSwitcher"
 import { getResolvedKeybindings } from "../lib/keybindings"
+import { useIsStandalone } from "../hooks/useIsStandalone"
 import type { KeybindingsSnapshot, SidebarData, SidebarChatRow, UpdateSnapshot } from "../../shared/types"
 import type { SocketStatus } from "./socket"
 import {
@@ -21,6 +23,7 @@ import {
   shouldShowSidebarNumberJumpHints,
 } from "./sidebarNumberJump"
 import { SIDEBAR_WIDTH_STORAGE_KEY } from "../lib/storageKeys"
+import { useAppSettingsStore } from "../stores/appSettingsStore"
 
 export const DEFAULT_SIDEBAR_WIDTH = 275
 export const MIN_SIDEBAR_WIDTH = 220
@@ -107,6 +110,7 @@ function KannaSidebarImpl({
 }: KannaSidebarProps) {
   const location = useLocation()
   const navigate = useNavigate()
+  const isStandalone = useIsStandalone()
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const resizeStartRef = useRef<{ pointerX: number; width: number } | null>(null)
   const initializedCollapsedGroupKeysRef = useRef<Set<string>>(new Set())
@@ -196,6 +200,11 @@ function KannaSidebarImpl({
     })
   }, [])
 
+  const selectChat = useCallback((chatId: string) => {
+    navigate(`/chat/${chatId}`)
+    onClose()
+  }, [navigate, onClose])
+
   const renderChatRow = useCallback((chat: SidebarChatRow) => {
     const visibleIndex = visibleIndexByChatId.get(chat.chatId)
 
@@ -207,10 +216,7 @@ function KannaSidebarImpl({
         nowMs={nowMs}
         shortcutHint={visibleIndex ? getSidebarNumberJumpHint(resolvedKeybindings, visibleIndex) : null}
         showShortcutHint={showNumberJumpHints}
-        onSelectChat={(chatId) => {
-          navigate(`/chat/${chatId}`)
-          onClose()
-        }}
+        onSelectChat={selectChat}
         onRenameChat={() => onRenameChat(chat)}
         onShareChat={() => onShareChat(chat.chatId)}
         onOpenInFinder={() => onOpenExternalPath("open_finder", chat.localPath)}
@@ -219,7 +225,7 @@ function KannaSidebarImpl({
         onDeleteChat={() => onDeleteChat(chat)}
       />
     )
-  }, [activeChatId, navigate, nowMs, onArchiveChat, onClose, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, onShareChat, resolvedKeybindings, showNumberJumpHints, visibleIndexByChatId])
+  }, [activeChatId, nowMs, onArchiveChat, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, onShareChat, resolvedKeybindings, selectChat, showNumberJumpHints, visibleIndexByChatId])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -344,9 +350,9 @@ function KannaSidebarImpl({
 
   const hasVisibleChats = activeVisibleCount > 0
   const isLocalProjectsActive = location.pathname === "/"
-  const isBoardActive = location.pathname === "/board"
+  const showRecentChatsInSidebar = useAppSettingsStore((s) => s.settings?.showRecentChatsInSidebar === true)
   const isSettingsActive = location.pathname.startsWith("/settings")
-  const isUtilityPageActive = isLocalProjectsActive || isBoardActive || isSettingsActive
+  const isUtilityPageActive = isLocalProjectsActive || isSettingsActive
   const isConnecting = connectionStatus === "connecting" || !ready
   const statusLabel = isConnecting ? "Connecting" : connectionStatus === "connected" ? "Connected" : "Disconnected"
   const statusDotClass = connectionStatus === "connected" ? "bg-emerald-500" : "bg-amber-500"
@@ -395,7 +401,7 @@ function KannaSidebarImpl({
         )}
         style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
       >
-        <div className="px-[5px] h-[47px] md:h-auto md:py-1 border-b grid grid-cols-[40px_minmax(0,1fr)_40px] items-center md:pl-3 md:pr-1 md:flex md:justify-between">
+        <div className="px-2.5 h-[63px] md:h-auto md:py-1 border-b grid grid-cols-[40px_minmax(0,1fr)_40px] items-center md:pl-3 md:pr-1 md:flex md:justify-between">
           <div className="md:hidden">
             <Button
               variant="ghost"
@@ -421,18 +427,6 @@ function KannaSidebarImpl({
             <span className="font-logo text-base uppercase sm:text-md text-slate-600 dark:text-slate-100">{APP_NAME}</span>
           </div>
           <div className="flex items-center justify-self-end md:justify-self-auto">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => {
-                navigate("/board")
-                onClose()
-              }}
-              className="size-10 rounded-lg hover:!border-border/0 md:hidden"
-              title="Board"
-            >
-              <SquareKanban className="h-5 w-5" />
-            </Button>
             <Button
               variant="ghost"
               size="icon"
@@ -469,18 +463,6 @@ function KannaSidebarImpl({
               variant="ghost"
               size="icon"
               onClick={() => {
-                navigate("/board")
-                onClose()
-              }}
-              className="hidden md:inline-flex h-10 w-auto rounded-lg pl-3 pr-1.5 hover:!border-border/0"
-              title="Board"
-            >
-              <SquareKanban className="size-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => {
                 navigate("/")
                 onClose()
               }}
@@ -501,8 +483,6 @@ function KannaSidebarImpl({
           }}
         >
           <div className="p-[7px]">
-            <MachineSwitcher />
-
             {!hasVisibleChats && isConnecting ? (
               <div className="space-y-5 px-1 pt-3">
                 {[0, 1, 2].map((section) => (
@@ -530,6 +510,10 @@ function KannaSidebarImpl({
               <p className="text-sm text-slate-400 p-2 mt-6 text-center">No conversations yet</p>
             ) : null}
 
+            {showRecentChatsInSidebar ? (
+              <ThreadSections data={data} activeChatId={activeChatId} onSelectChat={selectChat} />
+            ) : null}
+
             <LocalProjectsSection
               projectGroups={data.projectGroups}
               editorLabel={editorLabel}
@@ -555,8 +539,9 @@ function KannaSidebarImpl({
           </div>
         </div>
 
-        <div className="border-t border-border p-2">
-            <button
+          <MachineSwitcher />
+        <div className={cn("border-t border-border p-2", isStandalone && "pb-[55px]")}>
+          <button
             type="button"
             onClick={() => {
               navigate("/settings/general")

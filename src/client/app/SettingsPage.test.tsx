@@ -148,7 +148,7 @@ describe("resolveSettingsSectionId", () => {
 })
 
 describe("SkillsSection", () => {
-  test("renders installed section and search input", () => {
+  test("renders the skills.sh search box and installed section", () => {
     const html = renderToStaticMarkup(
       <SkillsSection
         state={{
@@ -162,6 +162,7 @@ describe("SkillsSection", () => {
 
     expect(html).toContain("Installed")
     expect(html).toContain("Add skills from skills.sh")
+    expect(html).toContain("searchbox")
   })
 })
 

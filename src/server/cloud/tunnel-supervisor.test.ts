@@ -127,9 +127,15 @@ function okPing(): typeof fetch {
 }
 
 describe("restartDelayMs", () => {
-  test("backs off 1s→2s→4s→10s then holds at 30s", () => {
-    expect([1, 2, 3, 4, 5, 9].map(restartDelayMs)).toEqual([
-      1_000, 2_000, 4_000, 10_000, 30_000, 30_000,
+  test("retries every 1s inside the 60s fast window", () => {
+    expect(restartDelayMs(0, 0)).toBe(1_000)
+    expect(restartDelayMs(30_000, 0)).toBe(1_000)
+    expect(restartDelayMs(59_999, 0)).toBe(1_000)
+  })
+
+  test("past the window, backs off 2s→4s→10s then holds at 30s", () => {
+    expect([1, 2, 3, 4, 9].map((count) => restartDelayMs(60_000, count))).toEqual([
+      2_000, 4_000, 10_000, 30_000, 30_000,
     ])
   })
 })
@@ -258,9 +264,10 @@ describe("tunnel supervisor (named tunnel)", () => {
     supervisor.stop()
   })
 
-  test("repeated connector startup failures escalate the backoff", async () => {
+  test("repeated connector startup failures retry at 1s, then escalate past the fast window", async () => {
     const sleep = createManualSleep()
     const api = createFakeApi()
+    let now = 0
     let attempts = 0
     const startTunnelImpl = async (): Promise<StartedShareTunnel> => {
       attempts += 1
@@ -271,14 +278,77 @@ describe("tunnel supervisor (named tunnel)", () => {
       localUrl: "http://localhost:3210",
       identity: IDENTITY,
       apiClient: api.client,
-      deps: { startTunnelImpl, fetchImpl: okPing(), sleepImpl: sleep.sleepImpl },
+      deps: { startTunnelImpl, fetchImpl: okPing(), sleepImpl: sleep.sleepImpl, nowImpl: () => now },
     })
 
+    // Inside the 60s fast window: every retry is 1s.
+    await waitFor(() => sleep.requestedMs.length >= 1)
+    now = 59_999
+    await sleep.releaseNext()
+    await waitFor(() => sleep.requestedMs.length >= 2)
+    expect(sleep.requestedMs.slice(0, 2)).toEqual([1_000, 1_000])
+
+    // Past the window: escalates 2s → 4s → 10s → 30s and holds.
+    now = 60_000
     for (let index = 0; index < 5; index += 1) {
       await sleep.releaseNext()
     }
-    await waitFor(() => sleep.requestedMs.length >= 5)
-    expect(sleep.requestedMs.slice(0, 5)).toEqual([1_000, 2_000, 4_000, 10_000, 30_000])
+    await waitFor(() => sleep.requestedMs.length >= 7)
+    expect(sleep.requestedMs.slice(2, 7)).toEqual([2_000, 4_000, 10_000, 30_000, 30_000])
+
+    supervisor.stop()
+  })
+
+  test("a successful reconnect resets the failure streak to the fast window", async () => {
+    const sleep = createManualSleep()
+    const connectors = createFakeConnectors()
+    const api = createFakeApi()
+    let now = 0
+
+    let failuresRemaining = 0
+    const fetchImpl = (async () => {
+      if (failuresRemaining > 0) {
+        failuresRemaining -= 1
+        throw new Error("tunnel gone")
+      }
+      return new Response("ok")
+    }) as unknown as typeof fetch
+
+    const supervisor = startCloudTunnelSupervisor({
+      localUrl: "http://localhost:3210",
+      identity: IDENTITY,
+      apiClient: api.client,
+      deps: {
+        startTunnelImpl: connectors.startTunnelImpl,
+        fetchImpl,
+        sleepImpl: sleep.sleepImpl,
+        nowImpl: () => now,
+      },
+    })
+    await waitFor(() => api.heartbeats.length === 1)
+
+    // Drive a failure streak long enough to escalate past the fast window…
+    now = 60_000
+    connectors.failNextStart()
+    failuresRemaining = 3
+    await sleep.releaseNext() // ping 1 fails
+    await sleep.releaseNext() // ping 2 fails
+    await sleep.releaseNext() // ping 3 fails → streak starts → backoff sleep (1s)
+    await waitFor(() => sleep.requestedMs.includes(1_000))
+    now = 120_000 // 60s into the streak
+    await sleep.releaseNext() // retry → startup fails → escalated backoff (2s)
+    await waitFor(() => sleep.requestedMs.includes(2_000))
+    await sleep.releaseNext() // backoff sleep (2s) → reconnects fine
+    await waitFor(() => api.heartbeats.length === 2)
+
+    // …then a later failure starts a fresh streak back at 1s, not 4s.
+    now = 300_000
+    failuresRemaining = 3
+    await sleep.releaseNext() // ping 1 fails
+    await sleep.releaseNext() // ping 2 fails
+    await sleep.releaseNext() // ping 3 fails → restart cycle
+    await waitFor(() => sleep.requestedMs.filter((ms) => ms === 1_000).length >= 2)
+    expect(sleep.requestedMs.at(-1)).toBe(1_000)
 
     supervisor.stop()
   })
