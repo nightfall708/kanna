@@ -791,6 +791,8 @@ export interface SidebarChatRow {
   localPath: string
   provider: AgentProvider | null
   lastMessageAt?: number
+  /** When the last turn ended (agent response received). Drives Review/In Progress ordering. */
+  lastTurnEndedAt?: number
   /** One-line preview of the latest user prompt. */
   lastUserMessagePreview?: string
   /** One-line preview of the latest agent text message. */

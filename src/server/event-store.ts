@@ -632,6 +632,7 @@ export class EventStore {
         chat.updatedAt = event.timestamp
         chat.unread = true
         chat.lastTurnOutcome = "success"
+        chat.lastTurnEndedAt = event.timestamp
         break
       }
       case "turn_failed": {
@@ -640,6 +641,7 @@ export class EventStore {
         chat.updatedAt = event.timestamp
         chat.unread = true
         chat.lastTurnOutcome = "failed"
+        chat.lastTurnEndedAt = event.timestamp
         break
       }
       case "turn_cancelled": {
@@ -647,6 +649,7 @@ export class EventStore {
         if (!chat) break
         chat.updatedAt = event.timestamp
         chat.lastTurnOutcome = "cancelled"
+        chat.lastTurnEndedAt = event.timestamp
         break
       }
       case "session_token_set": {

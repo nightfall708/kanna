@@ -133,6 +133,7 @@ export function deriveSidebarData(
           localPath: project.localPath,
           provider: chat.provider,
           lastMessageAt: chat.lastMessageAt,
+          ...(chat.lastTurnEndedAt != null ? { lastTurnEndedAt: chat.lastTurnEndedAt } : {}),
           ...(chat.lastUserMessagePreview ? { lastUserMessagePreview: chat.lastUserMessagePreview } : {}),
           ...(chat.lastAgentMessagePreview ? { lastAgentMessagePreview: chat.lastAgentMessagePreview } : {}),
           ...(pendingToolKind ? { pendingToolKind } : {}),

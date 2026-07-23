@@ -129,6 +129,23 @@ describe("getReviewThreads", () => {
     // Oldest first: waiting (300) before unread (600); idle, running, and archived excluded.
     expect(review.map((thread) => thread.chatId)).toEqual(["waiting", "unread"])
   })
+
+  test("orders by turn-end time (response received), not send time", () => {
+    const data = makeData([
+      // Sent long ago but the turn only just came back → freshest, goes last.
+      makeChatRow({ chatId: "sent-early-finished-late", title: "A", unread: true, lastMessageAt: 100, lastTurnEndedAt: 900 }),
+      // Sent recently but finished a while ago → waiting on you longest, leads.
+      makeChatRow({ chatId: "sent-late-finished-early", title: "B", unread: true, lastMessageAt: 800, lastTurnEndedAt: 400 }),
+      // No completed turn yet → falls back to send-time activity (600).
+      makeChatRow({ chatId: "no-turn-end", title: "C", unread: true, lastMessageAt: 600 }),
+    ])
+    const review = getReviewThreads(flattenSidebarThreads(data))
+    expect(review.map((thread) => thread.chatId)).toEqual([
+      "sent-late-finished-early", // 400
+      "no-turn-end",              // 600 (fallback)
+      "sent-early-finished-late", // 900
+    ])
+  })
 })
 
 describe("getInProgressThreads", () => {
