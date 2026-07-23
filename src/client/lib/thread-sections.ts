@@ -42,17 +42,28 @@ export function flattenSidebarThreads(data: SidebarData): SidebarThread[] {
  * Chats "ready for review" — exactly the ones that would show a status dot in
  * the sidebar as needing you: waiting on the user (plan/question) or unread.
  * Running chats (spinner, still in progress) and archived chats are excluded.
- * Sorted most-recent first so Cmd+K → Enter jumps to the freshest one.
+ * Special case: sorted OLDEST first (unlike every other section) — the chat
+ * that's been waiting on you longest leads, so Cmd+K → Enter clears the
+ * backlog in FIFO order.
  */
 export function getReviewThreads(threads: SidebarThread[]): SidebarThread[] {
   return threads
-    .filter((thread) => !thread.archived && (thread.row.status === "waiting_for_user" || thread.row.unread))
-    .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
+    .filter((thread) =>
+      !thread.archived
+      // A running/starting chat belongs in "In Progress", never "Review" —
+      // even if it's still flagged unread (e.g. a follow-up sent while the
+      // previous turn's unread badge is still showing).
+      && thread.row.status !== "running"
+      && thread.row.status !== "starting"
+      && (thread.row.status === "waiting_for_user" || thread.row.unread))
+    .sort((left, right) => left.lastActivityAt - right.lastActivityAt)
 }
 
 /**
  * Chats still working (running/starting), minus any already surfaced in the
- * exclude set (typically the review section). Sorted most-recent first.
+ * exclude set (typically the review section). Special case: sorted OLDEST
+ * first (unlike every other section) — the longest-running chat leads since
+ * it's the most likely to finish (or need a check-in) next.
  */
 export function getInProgressThreads(
   threads: SidebarThread[],
@@ -63,7 +74,7 @@ export function getInProgressThreads(
       !thread.archived
       && !(exclude?.has(thread.chatId))
       && (thread.row.status === "running" || thread.row.status === "starting"))
-    .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
+    .sort((left, right) => left.lastActivityAt - right.lastActivityAt)
 }
 
 /** How many chats the "Recents" section shows. */

@@ -115,7 +115,7 @@ describe("getRecentThreads", () => {
 })
 
 describe("getReviewThreads", () => {
-  test("selects waiting_for_user / unread chats (sidebar dot), most recent first", () => {
+  test("selects waiting_for_user / unread chats (sidebar dot), oldest first", () => {
     const data = makeData(
       [
         makeChatRow({ chatId: "waiting", title: "Waiting", status: "waiting_for_user", lastMessageAt: 300 }),
@@ -126,13 +126,13 @@ describe("getReviewThreads", () => {
       [makeChatRow({ chatId: "archived-unread", title: "Archived", unread: true, lastMessageAt: 990 })],
     )
     const review = getReviewThreads(flattenSidebarThreads(data))
-    // unread (600) before waiting (300); idle, running, and archived excluded.
-    expect(review.map((thread) => thread.chatId)).toEqual(["unread", "waiting"])
+    // Oldest first: waiting (300) before unread (600); idle, running, and archived excluded.
+    expect(review.map((thread) => thread.chatId)).toEqual(["waiting", "unread"])
   })
 })
 
 describe("getInProgressThreads", () => {
-  test("selects running/starting chats, most recent first, excluding archived", () => {
+  test("selects running/starting chats, oldest first, excluding archived", () => {
     const data = makeData(
       [
         makeChatRow({ chatId: "running", title: "Running", status: "running", lastMessageAt: 300 }),
@@ -142,7 +142,8 @@ describe("getInProgressThreads", () => {
       [makeChatRow({ chatId: "archived-running", title: "Archived", status: "running", lastMessageAt: 990 })],
     )
     const inProgress = getInProgressThreads(flattenSidebarThreads(data))
-    expect(inProgress.map((thread) => thread.chatId)).toEqual(["starting", "running"])
+    // Oldest first: running (300) before starting (600).
+    expect(inProgress.map((thread) => thread.chatId)).toEqual(["running", "starting"])
   })
 
   test("excludes chatIds passed in the exclude set", () => {
@@ -156,14 +157,15 @@ describe("getInProgressThreads", () => {
 })
 
 describe("computeThreadSections", () => {
-  test("a running unread chat lands in review, not in progress", () => {
+  test("a running unread chat lands in progress, not review", () => {
     const data = makeData([
       makeChatRow({ chatId: "running-unread", title: "Both", status: "running", unread: true, lastMessageAt: 300 }),
       makeChatRow({ chatId: "running", title: "Running", status: "running", lastMessageAt: 600 }),
     ])
     const sections = computeThreadSections(flattenSidebarThreads(data))
-    expect(sections.review.map((thread) => thread.chatId)).toEqual(["running-unread"])
-    expect(sections.inProgress.map((thread) => thread.chatId)).toEqual(["running"])
+    expect(sections.review).toHaveLength(0)
+    // Oldest first; running/starting always win the In Progress section.
+    expect(sections.inProgress.map((thread) => thread.chatId)).toEqual(["running-unread", "running"])
   })
 
   test("recents excludes review and in-progress chats and hides empty new chats", () => {
