@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { SidebarChatRow, SidebarData } from "../../shared/types"
 import {
+  computeSidebarThreadSections,
+  computeThreadDateBuckets,
   computeThreadSections,
   flattenSidebarThreads,
   getInProgressThreads,
@@ -113,7 +115,7 @@ describe("getRecentThreads", () => {
 })
 
 describe("getReviewThreads", () => {
-  test("selects waiting_for_user / unread chats (sidebar dot), most recent first", () => {
+  test("selects waiting_for_user / unread chats (sidebar dot), oldest first", () => {
     const data = makeData(
       [
         makeChatRow({ chatId: "waiting", title: "Waiting", status: "waiting_for_user", lastMessageAt: 300 }),
@@ -124,13 +126,46 @@ describe("getReviewThreads", () => {
       [makeChatRow({ chatId: "archived-unread", title: "Archived", unread: true, lastMessageAt: 990 })],
     )
     const review = getReviewThreads(flattenSidebarThreads(data))
-    // unread (600) before waiting (300); idle, running, and archived excluded.
-    expect(review.map((thread) => thread.chatId)).toEqual(["unread", "waiting"])
+    // Oldest first: waiting (300) before unread (600); idle, running, and archived excluded.
+    expect(review.map((thread) => thread.chatId)).toEqual(["waiting", "unread"])
+  })
+
+  test("activity time is the later of send-time and turn-end-time (oldest first here)", () => {
+    const data = makeData([
+      // Sent long ago but the turn only just came back → fresh (900), sorts last.
+      makeChatRow({ chatId: "sent-early-finished-late", title: "A", unread: true, lastMessageAt: 100, lastTurnEndedAt: 900 }),
+      // Sent recently, older turn end → send-time wins (800).
+      makeChatRow({ chatId: "sent-late-finished-early", title: "B", unread: true, lastMessageAt: 800, lastTurnEndedAt: 400 }),
+      // No completed turn yet → falls back to send-time activity (600).
+      makeChatRow({ chatId: "no-turn-end", title: "C", unread: true, lastMessageAt: 600 }),
+    ])
+    const review = getReviewThreads(flattenSidebarThreads(data))
+    expect(review.map((thread) => thread.chatId)).toEqual([
+      "no-turn-end",              // 600
+      "sent-late-finished-early", // 800
+      "sent-early-finished-late", // 900
+    ])
+  })
+})
+
+describe("flattenSidebarThreads", () => {
+  test("lastActivityAt = max(lastMessageAt, lastTurnEndedAt), else creation time", () => {
+    const data = makeData([
+      makeChatRow({ chatId: "finished-after-send", title: "A", lastMessageAt: 100, lastTurnEndedAt: 900 }),
+      makeChatRow({ chatId: "sent-after-finish", title: "B", lastMessageAt: 800, lastTurnEndedAt: 400 }),
+      makeChatRow({ chatId: "send-only", title: "C", lastMessageAt: 600 }),
+      makeChatRow({ chatId: "empty", title: "D", _creationTime: 50 }),
+    ])
+    const byId = new Map(flattenSidebarThreads(data).map((thread) => [thread.chatId, thread.lastActivityAt]))
+    expect(byId.get("finished-after-send")).toBe(900)
+    expect(byId.get("sent-after-finish")).toBe(800)
+    expect(byId.get("send-only")).toBe(600)
+    expect(byId.get("empty")).toBe(50)
   })
 })
 
 describe("getInProgressThreads", () => {
-  test("selects running/starting chats, most recent first, excluding archived", () => {
+  test("selects running/starting chats, oldest first, excluding archived", () => {
     const data = makeData(
       [
         makeChatRow({ chatId: "running", title: "Running", status: "running", lastMessageAt: 300 }),
@@ -140,7 +175,8 @@ describe("getInProgressThreads", () => {
       [makeChatRow({ chatId: "archived-running", title: "Archived", status: "running", lastMessageAt: 990 })],
     )
     const inProgress = getInProgressThreads(flattenSidebarThreads(data))
-    expect(inProgress.map((thread) => thread.chatId)).toEqual(["starting", "running"])
+    // Oldest first: running (300) before starting (600).
+    expect(inProgress.map((thread) => thread.chatId)).toEqual(["running", "starting"])
   })
 
   test("excludes chatIds passed in the exclude set", () => {
@@ -154,14 +190,15 @@ describe("getInProgressThreads", () => {
 })
 
 describe("computeThreadSections", () => {
-  test("a running unread chat lands in review, not in progress", () => {
+  test("a running unread chat lands in progress, not review", () => {
     const data = makeData([
       makeChatRow({ chatId: "running-unread", title: "Both", status: "running", unread: true, lastMessageAt: 300 }),
       makeChatRow({ chatId: "running", title: "Running", status: "running", lastMessageAt: 600 }),
     ])
     const sections = computeThreadSections(flattenSidebarThreads(data))
-    expect(sections.review.map((thread) => thread.chatId)).toEqual(["running-unread"])
-    expect(sections.inProgress.map((thread) => thread.chatId)).toEqual(["running"])
+    expect(sections.review).toHaveLength(0)
+    // Oldest first; running/starting always win the In Progress section.
+    expect(sections.inProgress.map((thread) => thread.chatId)).toEqual(["running-unread", "running"])
   })
 
   test("recents excludes review and in-progress chats and hides empty new chats", () => {
@@ -190,5 +227,103 @@ describe("computeThreadSections", () => {
       makeChatRow({ chatId: "running", title: "Running", status: "running", lastMessageAt: 800 }),
     ])))
     expect(withOthers.recent).toHaveLength(RECENT_THREADS_LIMIT)
+  })
+})
+
+// Wednesday, July 15 2026 at noon local — the reference date from the spec.
+const NOW = new Date(2026, 6, 15, 12).getTime()
+
+function at(year: number, month: number, day: number, hour = 10): number {
+  return new Date(year, month - 1, day, hour).getTime()
+}
+
+function bucketThreads(rows: SidebarChatRow[]) {
+  return computeThreadDateBuckets(
+    flattenSidebarThreads(makeData(rows)).filter((thread) => thread.row.lastMessageAt != null),
+    NOW,
+  )
+}
+
+describe("computeThreadDateBuckets", () => {
+  // Reference: Wed Jul 15 2026. This week = Mon Jul 13; last week = Mon Jul 6 – Sun Jul 12.
+  test("two most recent activity days lead as Today/Yesterday, then This Week, Last Week, Last 30 Days", () => {
+    const buckets = bucketThreads([
+      makeChatRow({ chatId: "today", title: "t", lastMessageAt: at(2026, 7, 15) }),
+      makeChatRow({ chatId: "yesterday", title: "y", lastMessageAt: at(2026, 7, 14) }),
+      makeChatRow({ chatId: "monday", title: "m", lastMessageAt: at(2026, 7, 13) }),
+      makeChatRow({ chatId: "last-week", title: "lw", lastMessageAt: at(2026, 7, 8) }),
+      makeChatRow({ chatId: "older", title: "o", lastMessageAt: at(2026, 6, 20) }),
+    ])
+    expect(buckets.map((bucket) => [bucket.label, bucket.defaultExpanded])).toEqual([
+      ["Today", true],
+      ["Yesterday", true],
+      ["This Week", false],
+      ["Last Week", false],
+      ["Last 30 Days", false],
+    ])
+    // Monday's chats fall through to This Week — the day sections took the 2 newest days.
+    expect(buckets[2].threads.map((thread) => thread.chatId)).toEqual(["monday"])
+  })
+
+  test("walks timestamps: a gap yields Today and Last <weekday>", () => {
+    const buckets = bucketThreads([
+      makeChatRow({ chatId: "today", title: "t", lastMessageAt: at(2026, 7, 15) }),
+      makeChatRow({ chatId: "friday", title: "f", lastMessageAt: at(2026, 7, 10) }), // Fri, 5 days back
+    ])
+    expect(buckets.map((bucket) => bucket.label)).toEqual(["Today", "Last Friday"])
+  })
+
+  test("after idle weeks the day sections carry full dates, with the rest in Last 30 Days", () => {
+    const buckets = bucketThreads([
+      makeChatRow({ chatId: "mon", title: "a", lastMessageAt: at(2026, 6, 29) }), // Monday
+      makeChatRow({ chatId: "fri", title: "b", lastMessageAt: at(2026, 6, 26) }), // Friday
+      makeChatRow({ chatId: "older", title: "c", lastMessageAt: at(2026, 6, 20) }),
+    ])
+    expect(buckets.map((bucket) => [bucket.label, bucket.defaultExpanded])).toEqual([
+      ["Monday Jun 29th", true],
+      ["Friday Jun 26th", true],
+      ["Last 30 Days", false],
+    ])
+  })
+
+  test("has no client-side age cutoff — server GC bounds the list", () => {
+    const buckets = bucketThreads([
+      makeChatRow({ chatId: "recent", title: "a", lastMessageAt: at(2026, 7, 15) }),
+      makeChatRow({ chatId: "ancient", title: "b", lastMessageAt: at(2026, 5, 1) }),
+    ])
+    expect(buckets.map((bucket) => bucket.label)).toEqual(["Today", "Friday May 1st"])
+  })
+
+  test("empty buckets are never emitted and threads sort newest-first within a bucket", () => {
+    const buckets = bucketThreads([
+      makeChatRow({ chatId: "late", title: "a", lastMessageAt: at(2026, 7, 15, 11) }),
+      makeChatRow({ chatId: "early", title: "b", lastMessageAt: at(2026, 7, 15, 9) }),
+    ])
+    expect(buckets).toHaveLength(1)
+    expect(buckets[0].label).toBe("Today")
+    expect(buckets[0].threads.map((thread) => thread.chatId)).toEqual(["late", "early"])
+  })
+})
+
+describe("computeSidebarThreadSections", () => {
+  test("buckets exclude review/in-progress chats and empty new chats; archived get their own list", () => {
+    const data = makeData(
+      [
+        makeChatRow({ chatId: "unread", title: "u", unread: true, lastMessageAt: at(2026, 7, 15) }),
+        makeChatRow({ chatId: "running", title: "r", status: "running", lastMessageAt: at(2026, 7, 15) }),
+        makeChatRow({ chatId: "idle", title: "i", lastMessageAt: at(2026, 7, 15) }),
+        makeChatRow({ chatId: "empty-draft", title: "d" }), // no lastMessageAt
+      ],
+      [
+        makeChatRow({ chatId: "archived-new", title: "x", lastMessageAt: at(2026, 7, 15) }),
+        makeChatRow({ chatId: "archived-old", title: "y", lastMessageAt: at(2026, 7, 10) }),
+      ],
+    )
+    const sections = computeSidebarThreadSections(flattenSidebarThreads(data), NOW)
+    expect(sections.review.map((thread) => thread.chatId)).toEqual(["unread"])
+    expect(sections.inProgress.map((thread) => thread.chatId)).toEqual(["running"])
+    expect(sections.buckets).toHaveLength(1)
+    expect(sections.buckets[0].threads.map((thread) => thread.chatId)).toEqual(["idle"])
+    expect(sections.archived.map((thread) => thread.chatId)).toEqual(["archived-new", "archived-old"])
   })
 })

@@ -68,7 +68,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
       },
     },
     transcriptAutoScroll: true,
-    showRecentChatsInSidebar: false,
+    newSidebarEnabled: true,
     warning: null,
     filePathDisplay: filePath,
     ...overrides,

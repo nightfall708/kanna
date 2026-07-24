@@ -43,7 +43,7 @@ interface AppSettingsFile {
     pi?: ProviderPreferenceInput
   }
   transcriptAutoScroll?: unknown
-  showRecentChatsInSidebar?: unknown
+  newSidebarEnabled?: unknown
 }
 
 interface AppSettingsState extends AppSettingsSnapshot {
@@ -146,7 +146,7 @@ function toFilePayload(state: AppSettingsState) {
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
     transcriptAutoScroll: state.transcriptAutoScroll,
-    showRecentChatsInSidebar: state.showRecentChatsInSidebar,
+    newSidebarEnabled: state.newSidebarEnabled,
   }
 }
 
@@ -162,7 +162,7 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
     transcriptAutoScroll: state.transcriptAutoScroll,
-    showRecentChatsInSidebar: state.showRecentChatsInSidebar,
+    newSidebarEnabled: state.newSidebarEnabled,
     warning: state.warning,
     filePathDisplay: state.filePathDisplay,
   }
@@ -195,9 +195,12 @@ function normalizeAppSettings(
     warnings.push("analyticsUserId must be a non-empty string")
   }
 
-  const showRecentChatsInSidebar = source?.showRecentChatsInSidebar === true
-  if (source?.showRecentChatsInSidebar !== undefined && typeof source.showRecentChatsInSidebar !== "boolean") {
-    warnings.push("showRecentChatsInSidebar must be a boolean")
+  // New Sidebar ships enabled; an explicit false opts back into the legacy sidebar.
+  const newSidebarEnabled = typeof source?.newSidebarEnabled === "boolean"
+    ? source.newSidebarEnabled
+    : true
+  if (source?.newSidebarEnabled !== undefined && typeof source.newSidebarEnabled !== "boolean") {
+    warnings.push("newSidebarEnabled must be a boolean")
   }
 
   const editorPreset = normalizeEditorPreset(source?.editor?.preset)
@@ -219,7 +222,7 @@ function normalizeAppSettings(
     defaultProvider: normalizeDefaultProvider(source?.defaultProvider),
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
     transcriptAutoScroll: typeof source?.transcriptAutoScroll === "boolean" ? source.transcriptAutoScroll : true,
-    showRecentChatsInSidebar,
+    newSidebarEnabled,
     warning: null,
     filePathDisplay: formatDisplayPath(filePath),
   }
@@ -249,7 +252,7 @@ function toComparablePayload(source: AppSettingsFile) {
     defaultProvider: source.defaultProvider,
     providerDefaults: source.providerDefaults,
     transcriptAutoScroll: source.transcriptAutoScroll,
-    showRecentChatsInSidebar: source.showRecentChatsInSidebar,
+    newSidebarEnabled: source.newSidebarEnabled,
   }
 }
 

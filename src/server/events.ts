@@ -22,6 +22,8 @@ export interface ChatRecord {
   pendingForkSessionToken?: string | null
   hasMessages?: boolean
   lastMessageAt?: number
+  /** When the last turn ended (finished/failed/cancelled) — i.e. when the last agent response was received. */
+  lastTurnEndedAt?: number
   lastUserMessagePreview?: string
   lastAgentMessagePreview?: string
   lastTurnOutcome: "success" | "failed" | "cancelled" | null

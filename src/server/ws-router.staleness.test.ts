@@ -297,7 +297,7 @@ function createWorld(options?: { projectPath?: string }) {
     analyticsEnabled: true,
     theme: "system",
     transcriptAutoScroll: true,
-    showRecentChatsInSidebar: false,
+    newSidebarEnabled: false,
   }
   const appSettings = {
     getSnapshot: () => appSettingsSnapshot,
