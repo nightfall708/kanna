@@ -12,9 +12,11 @@ import type {
   ServiceTier,
 } from "../shared/types"
 import {
+  CLAUDE_CONTEXT_WINDOW_OPTIONS,
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CURSOR_MODEL_OPTIONS,
   PROVIDERS,
+  deriveModelLabel,
   withPiFaveModels,
   normalizeClaudeContextWindow,
   normalizeClaudeFastMode,
@@ -24,11 +26,14 @@ import {
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
   isPiReasoningEffort,
+  modelIdFamily,
   supportsProviderFastMode,
 } from "../shared/types"
 
 export interface ClaudeSdkModelInfo {
   value: string
+  /** Canonical wire id the row's value resolves to (e.g. "sonnet" → "claude-sonnet-5"). */
+  resolvedModel?: string
   displayName?: string
   description?: string
   supportsEffort?: boolean
@@ -47,61 +52,80 @@ export function resetServerProvidersForTests() {
   SERVER_PROVIDERS.splice(0, SERVER_PROVIDERS.length, ...createServerProviders())
 }
 
-// The Agent SDK annotates some display names with their window, e.g.
-// "Opus 4.8 (1M context)". Kanna surfaces the window separately, so drop the
-// trailing parenthetical rather than duplicating it in the model label.
-function sanitizeSdkDisplayName(displayName: string): string {
-  return displayName.replace(/\s*\([^)]*context[^)]*\)\s*$/i, "").trim()
-}
-
-function modelFamily(value: string) {
-  const match = value.match(/^(?:claude-)?([a-z]+)(?:-|$)/i)
-  return match?.[1]?.toLowerCase() ?? value.toLowerCase()
-}
-
-function sdkModelMatchScore(model: ClaudeSdkModelInfo, option: ProviderModelOption) {
-  const modelValue = model.value.toLowerCase()
-  if (modelValue === option.id.toLowerCase()) return 3
-  if (option.aliases?.some((alias) => alias.toLowerCase() === modelValue)) return 2
-  const optionKeys = [option.id, ...(option.aliases ?? [])].map(modelFamily)
-  return optionKeys.includes(modelFamily(model.value)) ? 1 : 0
-}
-
-function findSdkModelForOption(models: readonly ClaudeSdkModelInfo[], option: ProviderModelOption) {
-  let bestModel: ClaudeSdkModelInfo | undefined
-  let bestScore = 0
-  for (const model of models) {
-    const score = sdkModelMatchScore(model, option)
-    if (score > bestScore) {
-      bestModel = model
-      bestScore = score
-    }
-  }
-  return bestModel
-}
-
+/**
+ * Rebuild the Claude picker from the SDK's supportedModels() list — the Claude
+ * analog of applyCursorModels. Rows group by the family of the model they
+ * resolve to, so role rows ("default" → claude-sonnet-5) and "[1m]" window
+ * variants fold into their family's entry instead of appearing as their own.
+ * One entry per family, keyed by the family alias (what Kanna stores and
+ * spawns with) and labeled from the resolved wire id ("Sonnet 5") — the SDK's
+ * display names ("Default (recommended)", versionless "Opus") are ignored.
+ * Static catalog entries seed per-family metadata the SDK doesn't report
+ * (context window options, max-effort support, fable's fixed 1M window).
+ * Returns true when the catalog changed (callers should broadcast).
+ */
 export function applyClaudeSdkModels(models: readonly ClaudeSdkModelInfo[]) {
   const claudeIndex = SERVER_PROVIDERS.findIndex((provider) => provider.id === "claude")
   const claudeProvider = SERVER_PROVIDERS[claudeIndex]
   if (!claudeProvider) return false
 
-  const nextModels = claudeProvider.models.map((option) => {
-    const sdkModel = findSdkModelForOption(models, option)
-    if (!sdkModel) return option
+  const staticModels = PROVIDERS.find((provider) => provider.id === "claude")?.models ?? []
+
+  const familyGroups = new Map<string, { rows: ClaudeSdkModelInfo[]; has1m: boolean }>()
+  for (const row of models) {
+    const wireId = row.resolvedModel ?? row.value
+    const family = modelIdFamily(wireId)
+    const group = familyGroups.get(family) ?? { rows: [], has1m: false }
+    group.rows.push(row)
+    if (row.value.includes("[1m]") || wireId.includes("[1m]")) group.has1m = true
+    familyGroups.set(family, group)
+  }
+  if (familyGroups.size === 0) return false
+
+  // Known families keep the static catalog's order; new ones append in SDK order.
+  const orderedFamilies = [
+    ...staticModels.map((option) => option.id).filter((id) => familyGroups.has(id)),
+    ...[...familyGroups.keys()].filter((family) => !staticModels.some((option) => option.id === family)),
+  ]
+
+  const nextModels: ProviderModelOption[] = orderedFamilies.map((family) => {
+    const group = familyGroups.get(family)!
+    // Prefer the row named after the family over role rows ("default").
+    const row = group.rows.find((candidate) => modelIdFamily(candidate.value) === family) ?? group.rows[0]!
+    const staticOption = staticModels.find((option) => option.id === family)
+    const contextWindowOptions = group.has1m
+      ? [...CLAUDE_CONTEXT_WINDOW_OPTIONS]
+      : staticOption?.contextWindowOptions
     return {
-      ...option,
-      label: (sdkModel.displayName ? sanitizeSdkDisplayName(sdkModel.displayName) : "") || option.label,
-      supportsEffort: sdkModel.supportsEffort ?? option.supportsEffort,
-      supportsFastMode: sdkModel.supportsFastMode ?? option.supportsFastMode,
+      id: family,
+      label: deriveModelLabel(row.resolvedModel ?? row.value),
+      supportsEffort: row.supportsEffort ?? staticOption?.supportsEffort ?? true,
+      ...(contextWindowOptions ? { contextWindowOptions: [...contextWindowOptions] } : {}),
+      ...(staticOption?.contextWindowTokens ? { contextWindowTokens: staticOption.contextWindowTokens } : {}),
+      ...(staticOption?.supportsMaxReasoningEffort ? { supportsMaxReasoningEffort: true } : {}),
+      ...((row.supportsFastMode ?? staticOption?.supportsFastMode) !== undefined
+        ? { supportsFastMode: row.supportsFastMode ?? staticOption?.supportsFastMode }
+        : {}),
     }
   })
 
-  if (JSON.stringify(nextModels) === JSON.stringify(claudeProvider.models)) {
+  // The "default" role row marks the harness's recommended model.
+  const defaultRow = models.find((row) => row.value === "default")
+  const defaultFamily = defaultRow ? modelIdFamily(defaultRow.resolvedModel ?? defaultRow.value) : undefined
+  const defaultModel = defaultFamily && familyGroups.has(defaultFamily) && defaultFamily !== "default"
+    ? defaultFamily
+    : claudeProvider.defaultModel
+
+  if (
+    defaultModel === claudeProvider.defaultModel
+    && JSON.stringify(nextModels) === JSON.stringify(claudeProvider.models)
+  ) {
     return false
   }
 
   SERVER_PROVIDERS.splice(claudeIndex, 1, {
     ...claudeProvider,
+    defaultModel,
     models: nextModels,
   })
   return true
@@ -223,10 +247,11 @@ export function getServerProviderCatalog(provider: AgentProvider): ProviderCatal
 export function normalizeServerModel(provider: AgentProvider, model?: string): string {
   const catalog = getServerProviderCatalog(provider)
   const normalizedModel = normalizeProviderModelId(provider, model, catalog.defaultModel)
-  // Pi accepts arbitrary OpenRouter model ids, and Cursor's valid ids are
-  // whatever the CLI reports (applyCursorModels) — for both, the catalog is
-  // only a picker, so unknown ids pass through for the provider to validate.
-  if (provider === "pi" || provider === "cursor") {
+  // Pi accepts arbitrary OpenRouter model ids; Cursor's and Claude's valid ids
+  // are whatever the harness reports at runtime (applyCursorModels /
+  // applyClaudeSdkModels) — for all three, the catalog is only a picker, so
+  // unknown ids pass through for the provider to validate.
+  if (provider === "pi" || provider === "cursor" || provider === "claude") {
     return normalizedModel
   }
   if (catalog.models.some((candidate) => candidate.id === normalizedModel)) {

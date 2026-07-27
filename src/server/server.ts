@@ -18,14 +18,19 @@ import { KannaAnalyticsReporter } from "./analytics"
 import { AppSettingsManager } from "./app-settings"
 import { UsageLimitsManager } from "./usage-limits"
 import { DiffStore } from "./diff-store"
+import { WorktreeProbe } from "./worktree-probe"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
+import { clearGitHubRepoCache } from "./github"
 import { readLlmProviderSnapshot, validateLlmProviderCredentials, writeLlmProviderSnapshot } from "./llm-provider"
 import { applyPiFaveModels } from "./provider-catalog"
+import { createProcessAuthDeps, ProviderAuthManager } from "./provider-auth"
+import { fetchLatestPackageVersion } from "./cli-runtime"
 import { getMachineDisplayName } from "./machine-name"
 import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
+import type { NightlyInstallResult } from "./nightly"
 import { createWsRouter, type ClientState } from "./ws-router"
 import { instanceFingerprint } from "./instance"
 import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload } from "./uploads"
@@ -94,11 +99,17 @@ export interface StartKannaServerOptions {
    * /ws upgrade.
    */
   cloud?: CloudRuntime | null
+  /**
+   * This machine is a cloud dev-box (`kanna --cloud`). Surfaced to the client
+   * through the app-settings snapshot to unlock dev-box-only UI.
+   */
+  directCloud?: boolean
   onMigrationProgress?: (message: string) => void
   update?: {
     version: string
     fetchLatestVersion: (packageName: string) => Promise<string>
     installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
+    installNightly?: () => Promise<NightlyInstallResult>
   }
 }
 
@@ -125,9 +136,32 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
 
   let server: ReturnType<typeof Bun.serve<ClientState>>
   let router: ReturnType<typeof createWsRouter>
+  // Feeds the sidebar's muted "relevant to uncommitted work" dot. Derived and
+  // in-memory; see worktree-probe.ts for why there's no `git status` sweep.
+  const worktreeProbe = new WorktreeProbe(
+    () => store.state,
+    () => {
+      void router.broadcastSidebar()
+    }
+  )
+  // Free updates: `performRefresh` already stats every dirty file, so the
+  // client's active project stays current at no extra git cost — and the dot
+  // clears the instant a commit goes through Kanna's git panel.
+  diffStore.onWorkingTreeProbe = (projectId, probe) => {
+    worktreeProbe.recordExternalProbe(projectId, probe)
+  }
+  // A finished turn is the only event that can newly qualify a chat for the
+  // dot, so probe that one project then.
+  store.onTurnEnded = (chatId) => {
+    void worktreeProbe.refreshForChat(chatId)
+  }
   const terminals = new TerminalManager()
   const keybindings = new KeybindingsManager()
-  const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"))
+  // Dev-box UI flag: the real thing is `kanna --cloud`; KANNA_DEVBOX_UI=1 is
+  // the dev-mode override (`bun run dev:cloud`) so the UI is developable
+  // without a cloud identity.
+  const devboxUi = Boolean(options.directCloud) || process.env.KANNA_DEVBOX_UI === "1"
+  const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"), { devbox: devboxUi })
   await appSettings.initialize()
   await keybindings.initialize()
   const analytics = new KannaAnalyticsReporter({
@@ -140,6 +174,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       currentVersion: options.update.version,
       fetchLatestVersion: options.update.fetchLatestVersion,
       installVersion: options.update.installVersion,
+      installNightly: options.update.installNightly,
       devMode: runtimeProfile === "dev",
       trackEvent: analytics.track.bind(analytics),
     })
@@ -169,9 +204,31 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   agent.setClaudeRateLimitListener((info) => usageLimits.recordClaudeRateLimitPush(info))
   codexManager.setRateLimitsListener((snapshot) => usageLimits.recordCodexRateLimitPush(snapshot))
 
+  const providerAuth = new ProviderAuthManager({
+    ...createProcessAuthDeps(),
+    readLlmProvider: readLlmProviderSnapshot,
+    writeLlmProvider: writeLlmProviderSnapshot,
+    fetchLatestNpmVersion: fetchLatestPackageVersion,
+    trackEvent: analytics.track.bind(analytics),
+    onSignedIn: (service) => {
+      // A fresh sign-in unlocks usage limits (claude/codex empty-state cards
+      // flip from auth → usage) and the live Cursor model catalog.
+      void usageLimits.refresh({ force: true }).catch(() => undefined)
+      if (service === "cursor") {
+        void agent.refreshCursorModelCatalog()
+      }
+      if (service === "gh") {
+        // Never let a cached "unauthenticated" repo list outlive the sign-in
+        // (clone palette / home repos section fetch through this cache).
+        clearGitHubRepoCache()
+      }
+    },
+  })
+
   router = createWsRouter({
     store,
     diffStore,
+    worktreeProbe,
     agent,
     terminals,
     keybindings,
@@ -187,6 +244,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     getDiscoveredProjects: () => discoveredProjects,
     machineDisplayName,
     updateManager,
+    providerAuth,
   })
   // Overlay the account's live Cursor model list on the static catalog
   // (no-op when cursor-agent is missing or logged out); broadcasts on change.
@@ -248,6 +306,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const staleEmptyChatPruneInterval = setInterval(runPruneStaleEmptyChats, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
   const staleChatAutoArchiveInterval = setInterval(runAutoArchiveStaleChats, STALE_CHAT_AUTO_ARCHIVE_INTERVAL_MS)
   const staleChatDeleteInterval = setInterval(runDeleteStaleChats, STALE_CHAT_DELETE_INTERVAL_MS)
+  worktreeProbe.start()
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
 
@@ -446,10 +505,12 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
     clearInterval(staleEmptyChatPruneInterval)
     clearInterval(staleChatAutoArchiveInterval)
     clearInterval(staleChatDeleteInterval)
+    worktreeProbe.stop()
     for (const chatId of [...agent.activeTurns.keys()]) {
       await agent.cancel(chatId)
     }
     router.dispose()
+    providerAuth.dispose()
     usageLimits.dispose()
     appSettings.dispose()
     keybindings.dispose()

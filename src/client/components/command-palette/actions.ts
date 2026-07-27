@@ -1,5 +1,5 @@
 import commandScore from "command-score"
-import type { LocalProjectSummary, SidebarData } from "../../../shared/types"
+import type { LocalProjectSummary, SidebarProjectGroup } from "../../../shared/types"
 import type { SidebarThread } from "../../lib/thread-sections"
 import {
   listAllSettingsRowDefs,
@@ -13,6 +13,7 @@ import {
 // Thread flattening + section logic (Review / In Progress / Recents) lives in
 // the canonical lib/thread-sections module, shared with the sidebar.
 export {
+  computeSidebarThreadSections,
   computeThreadSections,
   flattenSidebarThreads,
   getInProgressThreads,
@@ -20,6 +21,8 @@ export {
   getReviewThreads,
   RECENT_THREADS_LIMIT,
   type SidebarThread,
+  type SidebarThreadSections,
+  type ThreadDateBucket,
   type ThreadSections,
 } from "../../lib/thread-sections"
 
@@ -49,7 +52,10 @@ export function searchThreadsByTitle(threads: SidebarThread[], query: string, li
 
   const scored: ScoredThread[] = []
   for (const thread of threads) {
-    const score = scorePaletteItem(trimmed, thread.title, [thread.projectTitle])
+    // Both project names: `projectTitle` is what the project is called,
+    // `projectLabel` is what the row actually shows — so typing a branch you can
+    // see on screen finds the chat.
+    const score = scorePaletteItem(trimmed, thread.title, [thread.projectTitle, thread.projectLabel])
     if (score > 0) {
       scored.push({ ...thread, score })
     }
@@ -65,8 +71,8 @@ export function searchThreadsByTitle(threads: SidebarThread[], query: string, li
 }
 
 export interface PaletteProject {
-  /** Sidebar project id; null when the project hasn't been opened yet. */
-  projectId: string | null
+  /** Sidebar project id. */
+  projectId: string
   title: string
   localPath: string
   /** Most recent active chat to jump to; null means selecting starts a new chat. */
@@ -75,19 +81,17 @@ export interface PaletteProject {
 }
 
 /**
- * All openable projects: sidebar project groups first (jump to their most
- * recent chat), then local projects that aren't in the sidebar yet
- * (selecting opens the project with a fresh chat).
+ * Projects to show in the command palette — an exact mirror of the new
+ * sidebar's Projects section: only groups with at least one unarchived chat,
+ * sorted by most-recent chat activity (descending). Tombstoned/removed
+ * projects never reach here because the server drops them from the sidebar
+ * snapshot. Kept in lockstep with `projectActivity` in LocalProjectsSection.
  */
-export function flattenPaletteProjects(
-  data: SidebarData,
-  localProjects: LocalProjectSummary[]
-): PaletteProject[] {
+export function flattenVisibleProjectGroups(groups: SidebarProjectGroup[]): PaletteProject[] {
   const projects: PaletteProject[] = []
-  const seenPaths = new Set<string>()
 
-  for (const group of data.projectGroups) {
-    seenPaths.add(group.localPath)
+  for (const group of groups) {
+    if (group.chats.length === 0) continue
     let mostRecentChatId: string | null = null
     let lastActivityAt = 0
     for (const chat of group.chats) {
@@ -106,19 +110,7 @@ export function flattenPaletteProjects(
     })
   }
 
-  for (const project of localProjects) {
-    if (seenPaths.has(project.localPath)) continue
-    seenPaths.add(project.localPath)
-    projects.push({
-      projectId: null,
-      title: project.title,
-      localPath: project.localPath,
-      mostRecentChatId: null,
-      lastActivityAt: project.lastOpenedAt ?? project.folderModifiedAt ?? 0,
-    })
-  }
-
-  return projects
+  return projects.sort((left, right) => right.lastActivityAt - left.lastActivityAt)
 }
 
 export interface ScoredProject extends PaletteProject {
@@ -136,6 +128,51 @@ export function searchProjects(projects: PaletteProject[], query: string, limit 
       right.score !== left.score
         ? right.score - left.score
         : right.lastActivityAt - left.lastActivityAt
+    ))
+    .slice(0, limit)
+}
+
+export interface ScoredLocalProject {
+  localPath: string
+  title: string
+  score: number
+  /** Recency tiebreaker: last opened, else folder mtime. */
+  sortAt: number
+}
+
+/**
+ * The "All Projects" search group: every project the "/" route lists (saved +
+ * discovered, including ones with no chats yet), minus whatever the
+ * sidebar-backed Projects group already shows. Search-only — this never
+ * renders on the empty-query quick switcher.
+ */
+export function searchLocalProjects(
+  projects: LocalProjectSummary[],
+  query: string,
+  excludePaths: ReadonlySet<string> = new Set(),
+  limit = 6
+): ScoredLocalProject[] {
+  const trimmed = query.trim()
+  if (!trimmed) return []
+
+  const scored: ScoredLocalProject[] = []
+  for (const project of projects) {
+    if (excludePaths.has(project.localPath)) continue
+    const score = scorePaletteItem(trimmed, project.title, [project.localPath])
+    if (score <= 0) continue
+    scored.push({
+      localPath: project.localPath,
+      title: project.title,
+      score,
+      sortAt: project.lastOpenedAt ?? project.folderModifiedAt ?? 0,
+    })
+  }
+
+  return scored
+    .sort((left, right) => (
+      right.score !== left.score
+        ? right.score - left.score
+        : right.sortAt - left.sortAt
     ))
     .slice(0, limit)
 }

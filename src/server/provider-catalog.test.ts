@@ -224,31 +224,86 @@ describe("provider catalog normalization", () => {
   test("normalizes server model ids through the shared alias catalog", () => {
     expect(normalizeServerModel("codex")).toBe("gpt-5.6-sol")
     expect(normalizeServerModel("claude", "fable")).toBe("fable")
-    expect(normalizeServerModel("claude", "opus")).toBe("claude-opus-4-8")
+    expect(normalizeServerModel("claude", "opus")).toBe("opus")
+    // Version-pinned ids persisted by older Kanna versions fold into the alias.
+    expect(normalizeServerModel("claude", "claude-opus-4-8")).toBe("opus")
+    expect(normalizeServerModel("claude", "claude-haiku-4-5-20251001")).toBe("haiku")
     expect(normalizeServerModel("codex", "gpt-5-codex")).toBe("gpt-5.3-codex")
     expect(normalizeServerModel("codex", "gpt-5.6")).toBe("gpt-5.6-sol")
   })
 
   test("resolves Claude API model ids for 1m context window", () => {
-    expect(resolveClaudeApiModelId("claude-opus-4-8", "1m")).toBe("claude-opus-4-8[1m]")
+    expect(resolveClaudeApiModelId("opus", "1m")).toBe("opus[1m]")
     expect(resolveClaudeApiModelId("fable", "200k")).toBe("fable")
-    expect(resolveClaudeApiModelId("claude-sonnet-4-6", "200k")).toBe("claude-sonnet-4-6")
+    expect(resolveClaudeApiModelId("sonnet", "200k")).toBe("sonnet")
+    // Version-pinned ids still resolve their window via the family alias.
+    expect(resolveClaudeApiModelId("claude-opus-4-8", "1m")).toBe("claude-opus-4-8[1m]")
 
     // A stored "1m" preference never leaks a [1m] suffix onto models without
     // context window options — it's clamped at resolution time.
     expect(resolveClaudeApiModelId("fable", "1m")).toBe("fable")
-    expect(resolveClaudeApiModelId("claude-haiku-4-5-20251001", "1m")).toBe("claude-haiku-4-5-20251001")
+    expect(resolveClaudeApiModelId("haiku", "1m")).toBe("haiku")
   })
 
-  test("overlays Claude model labels from the Agent SDK model catalog", () => {
+  test("rebuilds the Claude picker from the SDK model list, labeled by resolved model", () => {
+    // A real supportedModels() shape: a "default" role row sharing its
+    // resolved model with the "sonnet" row, versionless display names, no
+    // fable row on this account.
     expect(applyClaudeSdkModels([
-      { value: "claude-fable-5[1m]", displayName: "Fable from SDK", supportsEffort: true },
-      { value: "claude-opus-4-7", displayName: "Opus 4.7", supportsEffort: true },
-      { value: "claude-opus-4-8", displayName: "Opus from SDK", supportsEffort: true },
+      { value: "default", resolvedModel: "claude-sonnet-5", displayName: "Default (recommended)", supportsEffort: true },
+      { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet", supportsEffort: true },
+      { value: "opus", resolvedModel: "claude-opus-5", displayName: "Opus", supportsEffort: true, supportsFastMode: true },
+      { value: "haiku", resolvedModel: "claude-haiku-4-5-20251001", displayName: "Haiku" },
     ])).toBe(true)
 
     const claude = SERVER_PROVIDERS.find((provider) => provider.id === "claude")
-    expect(claude?.models.find((model) => model.id === "fable")?.label).toBe("Fable from SDK")
-    expect(claude?.models.find((model) => model.id === "claude-opus-4-8")?.label).toBe("Opus from SDK")
+    // One entry per family in static-catalog order; the "default" role row
+    // folds into sonnet instead of appearing as its own entry, and fable is
+    // absent because the account has no fable row.
+    expect(claude?.models.map((model) => [model.id, model.label])).toEqual([
+      ["opus", "Opus 5"],
+      ["sonnet", "Sonnet 5"],
+      ["haiku", "Haiku 4.5"],
+    ])
+    // The recommended ("default") row drives the default model.
+    expect(claude?.defaultModel).toBe("sonnet")
+    // Static per-family metadata the SDK doesn't report is preserved.
+    const opus = claude?.models.find((model) => model.id === "opus")
+    expect(opus?.supportsMaxReasoningEffort).toBe(true)
+    expect(opus?.supportsFastMode).toBe(true)
+    expect(opus?.contextWindowOptions?.map((option) => option.id)).toEqual(["1m", "200k"])
+    expect(claude?.models.find((model) => model.id === "haiku")?.contextWindowOptions).toBeUndefined()
+  })
+
+  test("Claude rebuild keeps fable's fixed window, folds [1m] rows, and admits new families", () => {
+    expect(applyClaudeSdkModels([
+      { value: "fable", resolvedModel: "claude-fable-5", displayName: "Fable" },
+      { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet", supportsEffort: true },
+      { value: "sonnet[1m]", resolvedModel: "claude-sonnet-5[1m]", displayName: "Sonnet (1M context)", supportsEffort: true },
+      // A family Kanna has never heard of still gets a picker entry.
+      { value: "nova", resolvedModel: "claude-nova-2", displayName: "Nova" },
+    ])).toBe(true)
+
+    const claude = SERVER_PROVIDERS.find((provider) => provider.id === "claude")
+    expect(claude?.models.map((model) => [model.id, model.label])).toEqual([
+      ["fable", "Fable 5"],
+      ["sonnet", "Sonnet 5"],
+      ["nova", "Nova 2"],
+    ])
+    // Fable keeps its pinned fixed window; the [1m] variant row collapses
+    // into sonnet's context window selector rather than its own entry.
+    expect(claude?.models.find((model) => model.id === "fable")?.contextWindowTokens).toBe(1_000_000)
+    expect(claude?.models.find((model) => model.id === "sonnet")?.contextWindowOptions?.map((option) => option.id))
+      .toEqual(["1m", "200k"])
+    // No "default" row → the default model is left alone.
+    expect(claude?.defaultModel).toBe("sonnet")
+
+    // Re-applying the same list reports no change.
+    expect(applyClaudeSdkModels([
+      { value: "fable", resolvedModel: "claude-fable-5", displayName: "Fable" },
+      { value: "sonnet", resolvedModel: "claude-sonnet-5", displayName: "Sonnet", supportsEffort: true },
+      { value: "sonnet[1m]", resolvedModel: "claude-sonnet-5[1m]", displayName: "Sonnet (1M context)", supportsEffort: true },
+      { value: "nova", resolvedModel: "claude-nova-2", displayName: "Nova" },
+    ])).toBe(false)
   })
 })

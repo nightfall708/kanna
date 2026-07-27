@@ -9,6 +9,8 @@ import type {
   SidebarData,
   SidebarProjectGroup,
 } from "../shared/types"
+import type { WorkingTreeProbe } from "./diff-store"
+import type { ProjectRepoLabel } from "./worktree-probe"
 import type { ChatRecord, StoreState } from "./events"
 import { resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
@@ -82,6 +84,10 @@ export function deriveSidebarData(
     sidebarProjectOrder?: string[]
     drainingChatIds?: Set<string>
     pendingToolKinds?: Map<string, string>
+    /** Per-project working-tree state, from `WorktreeProbe.getStates()`. */
+    workingTrees?: ReadonlyMap<string, WorkingTreeProbe>
+    /** Per-project repo/branch identity, from `WorktreeProbe.getRepoLabels()`. */
+    repoLabels?: ReadonlyMap<string, ProjectRepoLabel>
   }
 ): SidebarData {
   const nowMs = options?.nowMs ?? Date.now()
@@ -118,10 +124,17 @@ export function deriveSidebarData(
   ]
 
   function toSidebarChatRows(project: NonNullable<typeof projects[number]>, projectChats: ChatRecord[]) {
+    const workingTree = options?.workingTrees?.get(project.id)
+    // Project-scoped by nature: every chat that finished a turn after the tree
+    // got dirty is flagged, not just whichever one caused the dirt.
+    const dirtySinceMs = workingTree?.dirty ? workingTree.dirtySinceMs : undefined
     return projectChats
       .sort((a, b) => getSidebarChatSortTimestamp(b) - getSidebarChatSortTimestamp(a))
       .map((chat) => {
         const pendingToolKind = options?.pendingToolKinds?.get(chat.id)
+        const uncommittedWork = dirtySinceMs != null
+          && chat.lastTurnEndedAt != null
+          && chat.lastTurnEndedAt > dirtySinceMs
         return {
           _id: chat.id,
           _creationTime: chat.createdAt,
@@ -137,6 +150,7 @@ export function deriveSidebarData(
           ...(chat.lastUserMessagePreview ? { lastUserMessagePreview: chat.lastUserMessagePreview } : {}),
           ...(chat.lastAgentMessagePreview ? { lastAgentMessagePreview: chat.lastAgentMessagePreview } : {}),
           ...(pendingToolKind ? { pendingToolKind } : {}),
+          ...(uncommittedWork ? { uncommittedWork: true } : {}),
           hasAutomation: false,
           canFork: canForkChat(chat, activeStatuses, drainingChatIds) || undefined,
         }
@@ -144,6 +158,7 @@ export function deriveSidebarData(
   }
 
   const projectGroups: SidebarProjectGroup[] = projects.map((project) => {
+    const repoLabel = options?.repoLabels?.get(project.id)
     const chats = toSidebarChatRows(project, chatsByProjectId.get(project.id) ?? [])
     const archivedChats = toSidebarChatRows(project, archivedChatsByProjectId.get(project.id) ?? [])
     const { previewChats, olderChats } = getSidebarChatBuckets(chats, nowMs)
@@ -153,6 +168,8 @@ export function deriveSidebarData(
       title: project.sidebarTitle ?? project.title,
       realTitle: project.title,
       ...(project.sidebarTitle ? { sidebarTitle: project.sidebarTitle } : {}),
+      ...(repoLabel ? { repoName: repoLabel.repoName } : {}),
+      ...(repoLabel?.branchName ? { branchName: repoLabel.branchName } : {}),
       localPath: project.localPath,
       chats,
       previewChats,
@@ -165,6 +182,38 @@ export function deriveSidebarData(
   return { projectGroups }
 }
 
+/**
+ * Hidden projects: any dot-directory in the path (~/.claude/foo,
+ * ~/dotfiles/.config). Agent histories discover them, but they're noise on
+ * the home page — saved projects are exempt (the user opted in explicitly).
+ */
+export function hasHiddenPathSegment(localPath: string) {
+  return localPath
+    .split("/")
+    .some((segment) => segment.startsWith(".") && segment !== "." && segment !== "..")
+}
+
+const DATE_FOLDER_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * Codex scratch workspaces: the Codex desktop app puts every projectless
+ * ("start from scratch") thread in `<Documents>/Codex/<YYYY-MM-DD>/<slug>`, so
+ * a week of throwaway chats buries the real projects on the home page.
+ *
+ * Matched structurally (a `Codex` segment followed by a date segment) rather
+ * than against a fixed `~/Documents/Codex`: the root moves with the platform
+ * and with a relocated/localized Documents folder, and the app exposes no
+ * setting for it — see openai/codex#19913, #22875, #24734. The root itself is
+ * left alone; only its dated children are Codex's, and a plain folder named
+ * `Codex` may well be the user's own.
+ */
+export function isCodexScratchWorkspacePath(localPath: string) {
+  const segments = localPath.split("/")
+  return segments.some(
+    (segment, index) => segment.toLowerCase() === "codex" && DATE_FOLDER_PATTERN.test(segments[index + 1] ?? "")
+  )
+}
+
 export function deriveLocalProjectsSnapshot(
   state: StoreState,
   discoveredProjects: Array<{ localPath: string; title: string; modifiedAt: number }>,
@@ -174,6 +223,8 @@ export function deriveLocalProjectsSnapshot(
 
   for (const project of discoveredProjects) {
     const normalizedPath = resolveLocalPath(project.localPath)
+    if (hasHiddenPathSegment(normalizedPath)) continue
+    if (isCodexScratchWorkspacePath(normalizedPath)) continue
     projects.set(normalizedPath, {
       localPath: normalizedPath,
       title: project.title,
@@ -232,6 +283,7 @@ export function deriveChatSnapshot(
     isDraining: drainingChatIds.has(chat.id),
     provider: chat.provider,
     planMode: chat.planMode,
+    autoPlan: chat.autoPlan,
     sessionToken: chat.sessionToken,
   }
 

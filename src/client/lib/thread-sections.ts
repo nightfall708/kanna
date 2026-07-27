@@ -1,4 +1,5 @@
 import type { SidebarChatRow, SidebarData } from "../../shared/types"
+import { formatProjectSidebarLabel } from "./project-label"
 
 /**
  * Canonical thread-section logic shared by the command palette (empty-query
@@ -10,6 +11,12 @@ export interface SidebarThread {
   title: string
   projectId: string
   projectTitle: string
+  /**
+   * The New Sidebar's project name — see `formatProjectSidebarLabel`. Separate
+   * from `projectTitle` because the command palette still wants the plain
+   * project name; only the sidebar shows the branch.
+   */
+  projectLabel: string
   archived: boolean
   lastActivityAt: number
   row: SidebarChatRow
@@ -30,6 +37,7 @@ function activityAt(row: SidebarChatRow): number {
 export function flattenSidebarThreads(data: SidebarData): SidebarThread[] {
   const threads: SidebarThread[] = []
   for (const group of data.projectGroups) {
+    const projectLabel = formatProjectSidebarLabel(group)
     const pushRows = (rows: SidebarChatRow[], archived: boolean) => {
       for (const row of rows) {
         threads.push({
@@ -37,6 +45,7 @@ export function flattenSidebarThreads(data: SidebarData): SidebarThread[] {
           title: row.title,
           projectId: group.groupKey,
           projectTitle: group.title,
+          projectLabel,
           archived,
           lastActivityAt: activityAt(row),
           row,
@@ -88,6 +97,34 @@ export function getInProgressThreads(
     .sort((left, right) => left.lastActivityAt - right.lastActivityAt)
 }
 
+/**
+ * Chats whose work is sitting in their project's dirty tree — the same
+ * `uncommittedWork` flag that keeps the row's title at full contrast. Pulled out of the
+ * date buckets so everything bearing on the current diff sits together instead
+ * of scattered across Today / This Week / Last 30 Days.
+ *
+ * Sorted NEWEST first, like the date buckets below it rather than the
+ * oldest-first Review / In Progress sections above: those two are queues you
+ * drain from the bottom, while this is a view of the diff you're in the middle
+ * of, where the chat you just touched is the one you want back.
+ *
+ * Archived chats never qualify, even when flagged — archiving is an explicit
+ * "done here", and promoting one back to the top would fight that.
+ */
+export function getRelevantThreads(
+  threads: SidebarThread[],
+  exclude?: ReadonlySet<string>,
+): SidebarThread[] {
+  return threads
+    .filter((thread) =>
+      !thread.archived
+      && !(exclude?.has(thread.chatId))
+      // Empty new chats are hidden everywhere else; don't let the flag resurface one.
+      && thread.row.lastMessageAt != null
+      && Boolean(thread.row.uncommittedWork))
+    .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
+}
+
 /** How many chats the "Recents" section shows. */
 export const RECENT_THREADS_LIMIT = 5
 
@@ -132,12 +169,12 @@ export function computeThreadSections(threads: SidebarThread[]): ThreadSections 
 // ---------------------------------------------------------------------------
 
 /** How many of the most recent distinct activity days get their own section. */
-export const RECENT_ACTIVITY_DAY_BUCKETS = 2
+export const RECENT_ACTIVITY_DAY_BUCKETS = 3
 
 export interface ThreadDateBucket {
   /** Stable key: "day-2026-7-15" | "this-week" | "last-week" | "last-30-days". */
   key: string
-  /** "Today" | "Yesterday" | "Last Friday" | "Monday Jun 7th" | "This Week" | "Last Week" | "Last 30 Days". */
+  /** "Today" | "Yesterday" | "Friday" | "Last Friday" | "Monday Jun 7th" | "This Week" | "Last Week" | "Last 30 Days". */
   label: string
   threads: SidebarThread[]
   /** Only the recent-activity day buckets start expanded. */
@@ -147,6 +184,8 @@ export interface ThreadDateBucket {
 export interface SidebarThreadSections {
   inProgress: SidebarThread[]
   review: SidebarThread[]
+  /** Chats bearing on the project's uncommitted work — sits above the buckets. */
+  relevant: SidebarThread[]
   buckets: ThreadDateBucket[]
   /** Archived chats, most recent first — rendered as the trailing collapsed section. */
   archived: SidebarThread[]
@@ -178,16 +217,24 @@ function ordinal(day: number): string {
 }
 
 /**
- * Label for a recent-activity day: "Today" / "Yesterday", "Last <weekday>"
- * within the past week, then "Monday Jun 7th" (with the year appended when it
- * isn't the current one).
+ * Label for a recent-activity day: "Today" / "Yesterday", then the weekday
+ * qualified by *which* week it belongs to — "Friday" this week, "Last Friday"
+ * the week before, "Monday Jun 7th" older still (with the year appended when
+ * it isn't the current one).
+ *
+ * The week boundary here is deliberately the same Monday-start one the This
+ * Week / Last Week buckets use, not a rolling 6-day window. With a rolling
+ * window a Sunday would call its own Friday "Last Friday" while Monday through
+ * Wednesday of that same week sat under "This Week" — two names for one week.
  */
 function dayBucketLabel(dayStart: number, todayStart: number): string {
   if (dayStart === todayStart) return "Today"
   if (dayStart === addDays(todayStart, -1)) return "Yesterday"
   const date = new Date(dayStart)
   const weekday = date.toLocaleDateString(undefined, { weekday: "long" })
-  if (dayStart >= addDays(todayStart, -6)) return `Last ${weekday}`
+  const thisWeekStart = mondayOfWeek(todayStart)
+  if (dayStart >= thisWeekStart) return weekday
+  if (dayStart >= addDays(thisWeekStart, -7)) return `Last ${weekday}`
   const label = `${weekday} ${date.toLocaleDateString(undefined, { month: "short" })} ${ordinal(date.getDate())}`
   return date.getFullYear() === new Date(todayStart).getFullYear() ? label : `${label}, ${date.getFullYear()}`
 }
@@ -195,10 +242,12 @@ function dayBucketLabel(dayStart: number, todayStart: number): string {
 /**
  * Buckets threads (already filtered) by walking the timestamps: the
  * RECENT_ACTIVITY_DAY_BUCKETS most recent distinct days of activity each get
- * their own expanded section, labeled by what the day actually is — "Today"
- * and "Yesterday" when activity is fresh, "Today" and "Last Friday" after a
- * long weekend, "Monday Jun 7th" and "Friday Jun 4th" after two idle weeks.
- * Everything older falls through to This Week (Monday–now), Last Week (the
+ * their own expanded section, labeled by what the day actually is — "Today",
+ * "Yesterday" and "Monday" when activity is fresh, "Today" and "Last Friday"
+ * after a long weekend, "Monday Jun 7th" and "Friday Jun 4th" after two idle
+ * weeks. Day labels and bucket labels agree on the week boundary, so a day
+ * section is always named for the same week its leftovers land in. Everything
+ * older falls through to This Week (Monday–now), Last Week (the
  * prior Mon–Sun), and Last 30 Days. No client-side age cutoff — server
  * garbage collection (auto-archive 30 days behind the latest activity,
  * delete at 90) bounds the list. Empty buckets are never emitted.
@@ -252,15 +301,22 @@ export function computeThreadDateBuckets(threads: SidebarThread[], nowMs: number
 
 /**
  * The New Sidebar's Chats tab: In Progress and Review lead (same membership
- * as the palette sections), then everything else bucketed by date, with
- * archived chats trailing as their own section. Same exclusions as
- * computeThreadSections — empty new chats hidden, nothing appears both up
- * top and in a bucket.
+ * as the palette sections), then Relevant (bearing on the current diff), then
+ * everything else bucketed by date, with archived chats trailing as their own
+ * section. Same exclusions as computeThreadSections — empty new chats hidden,
+ * nothing appears both up top and in a bucket.
+ *
+ * Relevant deliberately sits *below* Review and In Progress in that cascade: a
+ * chat waiting on you or still running is asking for something now, which
+ * outranks "this touches the current diff". So it only claims chats that would
+ * otherwise have fallen through to a date bucket.
  */
 export function computeSidebarThreadSections(threads: SidebarThread[], nowMs: number): SidebarThreadSections {
   const review = getReviewThreads(threads)
   const inProgress = getInProgressThreads(threads, new Set(review.map((thread) => thread.chatId)))
-  const excludeIds = new Set([...review, ...inProgress].map((thread) => thread.chatId))
+  const pinnedIds = new Set([...review, ...inProgress].map((thread) => thread.chatId))
+  const relevant = getRelevantThreads(threads, pinnedIds)
+  const excludeIds = new Set([...pinnedIds, ...relevant.map((thread) => thread.chatId)])
   const rest = threads.filter((thread) =>
     !thread.archived
     && thread.row.lastMessageAt != null
@@ -270,5 +326,5 @@ export function computeSidebarThreadSections(threads: SidebarThread[], nowMs: nu
     // server also filters them out of the snapshot; this is defense in depth).
     .filter((thread) => thread.archived && thread.row.lastMessageAt != null)
     .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
-  return { inProgress, review, buckets: computeThreadDateBuckets(rest, nowMs), archived }
+  return { inProgress, review, relevant, buckets: computeThreadDateBuckets(rest, nowMs), archived }
 }

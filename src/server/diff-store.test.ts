@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { appendGitIgnoreEntry, DiffStore, extractGitHubRepoSlug, fetchGitHubPullRequests } from "./diff-store"
+import { appendGitIgnoreEntry, DiffStore, extractGitHubRepoSlug, fetchGitHubPullRequests, probeWorkingTree, resolveWorkingTreeLocation } from "./diff-store"
 
 async function run(command: string[], cwd: string) {
   const process = Bun.spawn(command, {
@@ -25,6 +25,9 @@ async function run(command: string[], cwd: string) {
 
 async function createRepo() {
   const root = await mkdtemp(path.join(tmpdir(), "kanna-diff-store-"))
+  // -b main pins the initial branch: git only defaults to "main" when the host
+  // sets init.defaultBranch, so on a stock config (git's built-in default is
+  // still "master") every assertion below that names "main" would fail.
   await run(["git", "init", "-b", "main"], root)
   await run(["git", "config", "user.email", "kanna@example.com"], root)
   await run(["git", "config", "user.name", "Kanna"], root)
@@ -115,6 +118,41 @@ describe("DiffStore", () => {
 
     const lastMessage = (await run(["git", "log", "-1", "--pretty=%B"], repoRoot)).trim()
     expect(lastMessage).toBe("Update app\n\nOnly app changes")
+  })
+
+  test("commits a deletion that is already staged (e.g. an agent ran git rm)", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
+    await writeFile(path.join(repoRoot, "gone.txt"), "delete me\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+
+    // Stage the deletion out-of-band, the way a coding agent would.
+    await run(["git", "rm", "--quiet", "gone.txt"], repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("project-1", repoRoot)
+
+    const result = await store.commitFiles({
+      projectId: "project-1",
+      projectPath: repoRoot,
+      paths: ["app.txt", "gone.txt"],
+      summary: "Commit staged deletion",
+      mode: "commit_only",
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      mode: "commit_only",
+    })
+    expect((await run(["git", "log", "-1", "--pretty=%s"], repoRoot)).trim()).toBe("Commit staged deletion")
+    expect((await run(["git", "status", "--porcelain"], repoRoot)).trim()).toBe("")
+
+    const snapshot = store.getProjectSnapshot("project-1")
+    expect(snapshot.files).toHaveLength(0)
   })
 
   test("commit_and_push publishes an unpublished branch", async () => {
@@ -973,5 +1011,104 @@ describe("DiffStore", () => {
     })
     expect((await run(["git", "branch", "--show-current"], repoRoot)).trim()).toBe("main")
     expect((await run(["git", "log", "--format=%s", "-1"], repoRoot)).trim()).toBe("feature")
+  })
+})
+
+describe("probeWorkingTree", () => {
+  afterEach(async () => {
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
+  })
+
+  async function createCommittedRepo() {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
+    await run(["git", "add", "."], repoRoot)
+    await run(["git", "commit", "-m", "init"], repoRoot)
+    return repoRoot
+  }
+
+  test("reports a clean tree as not dirty", async () => {
+    const repoRoot = await createCommittedRepo()
+
+    expect(await probeWorkingTree(repoRoot)).toEqual({ dirty: false, files: [] })
+  })
+
+  test("reports a modified file with its current mtime", async () => {
+    const repoRoot = await createCommittedRepo()
+    const before = Date.now()
+    await writeFile(path.join(repoRoot, "app.txt"), "changed\n", "utf8")
+
+    const scan = await probeWorkingTree(repoRoot)
+
+    expect(scan.dirty).toBe(true)
+    expect(scan.files.map((file) => file.path)).toEqual(["app.txt"])
+    expect(scan.files[0]!.mtimeMs).toBeGreaterThanOrEqual(before - 2_000)
+  })
+
+  test("reports untracked files too", async () => {
+    const repoRoot = await createCommittedRepo()
+    await writeFile(path.join(repoRoot, "scratch.txt"), "new\n", "utf8")
+
+    const scan = await probeWorkingTree(repoRoot)
+
+    expect(scan.files.map((file) => file.path)).toEqual(["scratch.txt"])
+  })
+
+  test("reports every dirty file, not just the oldest", async () => {
+    // Picking a winner is the ledger's job in WorktreeProbe — this layer just
+    // reports readings, because a raw mtime can't say when a file *became* dirty.
+    const repoRoot = await createCommittedRepo()
+    await writeFile(path.join(repoRoot, "old.txt"), "old\n", "utf8")
+    const oldMs = Date.now() - 60 * 60 * 1000
+    await utimes(path.join(repoRoot, "old.txt"), new Date(oldMs), new Date(oldMs))
+    await writeFile(path.join(repoRoot, "new.txt"), "new\n", "utf8")
+
+    const scan = await probeWorkingTree(repoRoot)
+
+    expect(scan.files.map((file) => file.path).sort()).toEqual(["new.txt", "old.txt"])
+    const old = scan.files.find((file) => file.path === "old.txt")!
+    expect(old.mtimeMs).toBeLessThanOrEqual(oldMs + 2_000)
+  })
+
+  test("reports dirty with no files for a deletion-only tree", async () => {
+    const repoRoot = await createCommittedRepo()
+    await rm(path.join(repoRoot, "app.txt"))
+
+    // The tree is dirty, but there is nothing left on disk to stat.
+    expect(await probeWorkingTree(repoRoot)).toEqual({ dirty: true, files: [] })
+  })
+
+  test("reports not dirty outside a repo instead of throwing", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "kanna-probe-no-repo-"))
+    tempDirs.push(root)
+
+    expect(await probeWorkingTree(root)).toEqual({ dirty: false, files: [] })
+  })
+})
+
+describe("resolveWorkingTreeLocation", () => {
+  afterEach(async () => {
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
+  })
+
+  test("resolves the repo root and git dir", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await mkdir(path.join(repoRoot, "nested", "deep"), { recursive: true })
+
+    const location = await resolveWorkingTreeLocation(path.join(repoRoot, "nested", "deep"))
+
+    // macOS hands out /var/folders symlinks for tmpdir; compare resolved paths.
+    expect(location).not.toBeNull()
+    expect(path.basename(location!.gitDir)).toBe(".git")
+    expect(location!.gitDir).toBe(path.join(location!.repoRoot, ".git"))
+  })
+
+  test("returns null outside a repo", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "kanna-probe-loc-"))
+    tempDirs.push(root)
+
+    expect(await resolveWorkingTreeLocation(root)).toBeNull()
   })
 })

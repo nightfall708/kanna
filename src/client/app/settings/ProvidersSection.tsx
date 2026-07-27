@@ -1,11 +1,15 @@
 import { useEffect, useState } from "react"
 import {
+  chatModeFromFlags,
+  chatModeToFlags,
   DEFAULT_OPENAI_SDK_MODEL,
   DEFAULT_OPENROUTER_SDK_MODEL,
   PROVIDERS,
   type AgentProvider,
+  type ChatMode,
   type LlmProviderKind,
 } from "../../../shared/types"
+import { AuthCard } from "../../components/auth/AuthCard"
 import { ChatPreferenceControls } from "../../components/chat-ui/ChatPreferenceControls"
 import { DefaultModelsDialog } from "../../components/DefaultModelsDialog"
 import { Button } from "../../components/ui/button"
@@ -21,6 +25,7 @@ import {
 } from "../../components/ui/select"
 import { cn } from "../../lib/utils"
 import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
+import { useProviderAuthStore } from "../../stores/providerAuthStore"
 import type { KannaState } from "../useKannaState"
 import { handleSettingsInputKeyDown, SettingsErrorBanner, SettingsRow } from "./shared"
 import { SETTINGS_ROWS } from "./registry"
@@ -36,6 +41,7 @@ export function ProvidersSection({
 }: {
   state: Pick<
     KannaState,
+    | "socket"
     | "availableProviders"
     | "llmProvider"
     | "handleReadLlmProvider"
@@ -51,12 +57,13 @@ export function ProvidersSection({
   const handleValidateLlmProvider = state.handleValidateLlmProvider
   const handleWriteAppSettings = state.handleWriteAppSettings
 
+  const providerAuthSnapshot = useProviderAuthStore((store) => store.snapshot)
   const defaultProvider = useChatPreferencesStore((store) => store.defaultProvider)
   const providerDefaults = useChatPreferencesStore((store) => store.providerDefaults)
   const setDefaultProvider = useChatPreferencesStore((store) => store.setDefaultProvider)
   const setProviderDefaultModel = useChatPreferencesStore((store) => store.setProviderDefaultModel)
   const setProviderDefaultModelOptions = useChatPreferencesStore((store) => store.setProviderDefaultModelOptions)
-  const setProviderDefaultPlanMode = useChatPreferencesStore((store) => store.setProviderDefaultPlanMode)
+  const setProviderDefaultMode = useChatPreferencesStore((store) => store.setProviderDefaultMode)
 
   const [providersError, setProvidersError] = useState<string | null>(null)
   const [llmProviderDraft, setLlmProviderDraft] = useState({
@@ -116,9 +123,10 @@ export function ProvidersSection({
     })
   }
 
-  function handleProviderDefaultPlanModeChange(provider: AgentProvider, planMode: boolean) {
-    setProviderDefaultPlanMode(provider, planMode)
-    void handleWriteAppSettings({ providerDefaults: { [provider]: { planMode } } }).catch((error) => {
+  function handleProviderDefaultModeChange(provider: AgentProvider, mode: ChatMode) {
+    setProviderDefaultMode(provider, mode)
+    const flags = chatModeToFlags(mode, providerDefaults[provider].autoPlan)
+    void handleWriteAppSettings({ providerDefaults: { [provider]: flags } }).catch((error) => {
       setProvidersError(error instanceof Error ? error.message : "Unable to save provider settings.")
     })
   }
@@ -198,6 +206,17 @@ export function ProvidersSection({
   return (
     <>
       {providersError ? <SettingsErrorBanner message={providersError} /> : null}
+      <div className="space-y-3 pb-6">
+        {providerAuthSnapshot ? (
+          providerAuthSnapshot.services.map((service) => (
+            <AuthCard key={service.service} service={service} socket={state.socket} />
+          ))
+        ) : (
+          <div className="rounded-2xl border border-border bg-card/40 px-5 py-6 text-sm text-muted-foreground">
+            Checking provider sign-in status…
+          </div>
+        )}
+      </div>
       <div className="border-b border-border">
         <SettingsRow def={SETTINGS_ROWS.defaultProvider} bordered={false}>
           <Select
@@ -223,7 +242,7 @@ export function ProvidersSection({
         </SettingsRow>
 
         <SettingsRow def={SETTINGS_ROWS.claudeDefaults} alignStart>
-          <div className="max-w-[420px]">
+          <div className="">
             <ChatPreferenceControls
               availableProviders={state.availableProviders}
               selectedProvider="claude"
@@ -243,16 +262,16 @@ export function ProvidersSection({
                   handleProviderDefaultModelOptionsChange("claude", { fastMode: change.fastMode })
                 }
               }}
-              planMode={providerDefaults.claude.planMode}
-              onPlanModeChange={(planMode) => handleProviderDefaultPlanModeChange("claude", planMode)}
-              includePlanMode
+              mode={chatModeFromFlags(providerDefaults.claude.planMode, providerDefaults.claude.autoPlan)}
+              onModeChange={(mode) => handleProviderDefaultModeChange("claude", mode)}
+              includeMode
               className="justify-start flex-wrap"
             />
           </div>
         </SettingsRow>
 
         <SettingsRow def={SETTINGS_ROWS.codexDefaults} alignStart>
-          <div className="max-w-[420px]">
+          <div className="">
             <ChatPreferenceControls
               availableProviders={state.availableProviders}
               selectedProvider="codex"
@@ -270,16 +289,16 @@ export function ProvidersSection({
                   handleProviderDefaultModelOptionsChange("codex", { fastMode: change.fastMode })
                 }
               }}
-              planMode={providerDefaults.codex.planMode}
-              onPlanModeChange={(planMode) => handleProviderDefaultPlanModeChange("codex", planMode)}
-              includePlanMode
+              mode={chatModeFromFlags(providerDefaults.codex.planMode, providerDefaults.codex.autoPlan)}
+              onModeChange={(mode) => handleProviderDefaultModeChange("codex", mode)}
+              includeMode
               className="justify-start flex-wrap"
             />
           </div>
         </SettingsRow>
 
         <SettingsRow def={SETTINGS_ROWS.cursorDefaults} alignStart>
-          <div className="max-w-[420px]">
+          <div className="">
             <ChatPreferenceControls
               availableProviders={state.availableProviders}
               selectedProvider="cursor"
@@ -295,14 +314,14 @@ export function ProvidersSection({
                   handleProviderDefaultModelOptionsChange("cursor", { fastMode: change.fastMode })
                 }
               }}
-              planMode={providerDefaults.cursor.planMode}
+              mode={chatModeFromFlags(providerDefaults.cursor.planMode, providerDefaults.cursor.autoPlan)}
               className="justify-start flex-wrap"
             />
           </div>
         </SettingsRow>
 
         <SettingsRow def={SETTINGS_ROWS.piDefaults} alignStart>
-          <div className="max-w-[420px]">
+          <div className="">
             <ChatPreferenceControls
               availableProviders={state.availableProviders}
               selectedProvider="pi"
@@ -319,14 +338,14 @@ export function ProvidersSection({
                 }
               }}
               onEditModels={() => setDefaultModelsDialogOpen(true)}
-              planMode={providerDefaults.pi.planMode}
+              mode={chatModeFromFlags(providerDefaults.pi.planMode, providerDefaults.pi.autoPlan)}
               className="justify-start flex-wrap"
             />
           </div>
         </SettingsRow>
 
         <SettingsRow def={SETTINGS_ROWS.modelRegistry} description={llmValidationDescription} alignStart>
-          <div className="flex w-full max-w-[420px] flex-col gap-3">
+          <div className="flex w-full  flex-col gap-3">
             {llmProviderError ? (
               <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
                 {llmProviderError}

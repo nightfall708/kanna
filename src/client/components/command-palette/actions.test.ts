@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import type { LocalProjectSummary, SidebarChatRow, SidebarData } from "../../../shared/types"
 import {
-  flattenPaletteProjects,
+  flattenVisibleProjectGroups,
   flattenSidebarThreads,
   getSettingsPaletteEntries,
   scorePaletteItem,
+  searchLocalProjects,
   searchProjects,
   searchSettingsEntries,
   searchThreadsByTitle,
@@ -104,55 +105,63 @@ describe("searchThreadsByTitle", () => {
   })
 })
 
-describe("flattenPaletteProjects", () => {
-  const localProjects: LocalProjectSummary[] = [
-    {
-      localPath: "/Users/jake/Projects/kanna",
-      title: "Kanna (saved)",
-      source: "saved",
-      chatCount: 3,
-    },
-    {
-      localPath: "/Users/jake/Projects/fresh",
-      title: "Fresh",
-      source: "discovered",
-      lastOpenedAt: 50,
-      chatCount: 0,
-    },
-  ]
-
+describe("flattenVisibleProjectGroups", () => {
   test("sidebar projects point at their most recent chat", () => {
-    const projects = flattenPaletteProjects(makeSidebarData(), localProjects)
+    const projects = flattenVisibleProjectGroups(makeSidebarData().projectGroups)
     const kanna = projects.find((project) => project.projectId === "project-a")
     expect(kanna?.mostRecentChatId).toBe("chat-2")
     expect(kanna?.title).toBe("Kanna")
   })
 
-  test("sidebar projects with no active chats have no target chat", () => {
+  test("excludes projects with no unarchived chats (archived-only or empty)", () => {
     const data = makeSidebarData()
     data.projectGroups[0].chats = []
-    const projects = flattenPaletteProjects(data, [])
-    const kanna = projects.find((project) => project.projectId === "project-a")
-    expect(kanna?.mostRecentChatId).toBeNull()
+    const projects = flattenVisibleProjectGroups(data.projectGroups)
+    // project-a has only archived chats now → dropped entirely, mirroring the sidebar.
+    expect(projects.map((project) => project.projectId)).toEqual(["project-b"])
   })
 
-  test("local projects are included once, deduped against sidebar paths", () => {
-    const projects = flattenPaletteProjects(makeSidebarData(), localProjects)
-    // /Projects/kanna already exists as a sidebar group — the local copy is skipped.
-    expect(projects.filter((project) => project.localPath.endsWith("/kanna"))).toHaveLength(1)
-
-    const fresh = projects.find((project) => project.localPath.endsWith("/fresh"))
-    expect(fresh?.projectId).toBeNull()
-    expect(fresh?.mostRecentChatId).toBeNull()
+  test("sorts by most recent chat activity, descending", () => {
+    // project-a's newest chat is at 900, project-b's at 600.
+    const projects = flattenVisibleProjectGroups(makeSidebarData().projectGroups)
+    expect(projects.map((project) => project.projectId)).toEqual(["project-a", "project-b"])
   })
 })
 
 describe("searchProjects", () => {
   test("matches by title and path, empty query returns nothing", () => {
-    const projects = flattenPaletteProjects(makeSidebarData(), [])
+    const projects = flattenVisibleProjectGroups(makeSidebarData().projectGroups)
     expect(searchProjects(projects, "")).toEqual([])
     expect(searchProjects(projects, "kanna").map((project) => project.projectId)).toEqual(["project-a"])
     expect(searchProjects(projects, "superwall").map((project) => project.projectId)).toEqual(["project-b"])
+  })
+})
+
+describe("searchLocalProjects", () => {
+  const localProjects: LocalProjectSummary[] = [
+    { localPath: "/Users/j/Projects/kanna", title: "kanna", source: "saved", lastOpenedAt: 3_000, chatCount: 2 },
+    { localPath: "/Users/j/Projects/kanna-site", title: "kanna-site", source: "discovered", folderModifiedAt: 2_000, chatCount: 0 },
+    { localPath: "/Users/j/Projects/other", title: "other", source: "discovered", folderModifiedAt: 1_000, chatCount: 0 },
+  ]
+
+  test("empty query returns nothing", () => {
+    expect(searchLocalProjects(localProjects, "  ")).toEqual([])
+  })
+
+  test("matches title and path, and skips excluded paths", () => {
+    expect(searchLocalProjects(localProjects, "kanna").map((project) => project.localPath))
+      .toEqual(["/Users/j/Projects/kanna", "/Users/j/Projects/kanna-site"])
+
+    const excluded = new Set(["/Users/j/Projects/kanna"])
+    expect(searchLocalProjects(localProjects, "kanna", excluded).map((project) => project.localPath))
+      .toEqual(["/Users/j/Projects/kanna-site"])
+
+    expect(searchLocalProjects(localProjects, "Projects/other").map((project) => project.localPath))
+      .toEqual(["/Users/j/Projects/other"])
+  })
+
+  test("respects the limit", () => {
+    expect(searchLocalProjects(localProjects, "kanna", new Set(), 1)).toHaveLength(1)
   })
 })
 

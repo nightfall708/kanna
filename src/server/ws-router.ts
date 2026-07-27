@@ -1,4 +1,5 @@
 import type { ServerWebSocket } from "bun"
+import { homedir } from "node:os"
 import { PROTOCOL_VERSION } from "../shared/types"
 import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
 import { isClientEnvelope } from "../shared/protocol"
@@ -12,12 +13,15 @@ import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
 import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
-import { cloneRepository, createDirectory, ensureProjectDirectory, listDirectory, resolveClonePath, resolveLocalPath } from "./paths"
+import { cloneRepository, createDirectory, ensureProjectDirectory, initializeProjectDirectory, listDirectory, resolveClonePath, resolveLocalPath } from "./paths"
+import { listRecentGitHubRepos } from "./github"
 import { applyPiFaveModels } from "./provider-catalog"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
 import { installSkill, listGlobalSkillsWithSources, listInstalledSkills, searchSkills, uninstallSkill } from "./skills"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
+import type { WorktreeProbe } from "./worktree-probe"
+import type { ProviderAuthManager } from "./provider-auth"
 import type { UpdateManager } from "./update-manager"
 import type { UsageLimitsManager } from "./usage-limits"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
@@ -39,6 +43,7 @@ export interface ClientState {
 interface CreateWsRouterArgs {
   store: EventStore
   diffStore: Pick<DiffStore, "getProjectSnapshot" | "getSnapshotVersion" | "refreshSnapshot" | "initializeGit" | "getGitHubPublishInfo" | "checkGitHubRepoAvailability" | "publishToGitHub" | "listBranches" | "previewMergeBranch" | "mergeBranch" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile" | "readPatch">
+  worktreeProbe: Pick<WorktreeProbe, "getStates" | "getRepoLabels">
   agent: AgentCoordinator
   terminals: TerminalManager
   keybindings: KeybindingsManager
@@ -54,6 +59,19 @@ interface CreateWsRouterArgs {
   machineDisplayName: string
   updateManager: UpdateManager | null
   usageLimits?: Pick<UsageLimitsManager, "getSnapshot" | "refresh" | "onChange"> | null
+  providerAuth?: Pick<
+    ProviderAuthManager,
+    | "getSnapshot"
+    | "refresh"
+    | "probeService"
+    | "install"
+    | "startLogin"
+    | "submitLoginCode"
+    | "cancelLogin"
+    | "startOpenRouterAuth"
+    | "exchangeOpenRouterCode"
+    | "onChange"
+  > | null
 }
 
 interface SnapshotBroadcastFilter {
@@ -63,6 +81,7 @@ interface SnapshotBroadcastFilter {
   includeKeybindings?: boolean
   includeAppSettings?: boolean
   includeUsageLimits?: boolean
+  includeProviderAuth?: boolean
   chatIds?: Set<string>
   projectIds?: Set<string>
   terminalIds?: Set<string>
@@ -102,6 +121,7 @@ function ensureSnapshotSignatures(ws: ServerWebSocket<ClientState>) {
 export function createWsRouter({
   store,
   diffStore,
+  worktreeProbe,
   agent,
   terminals,
   keybindings,
@@ -113,6 +133,7 @@ export function createWsRouter({
   machineDisplayName,
   updateManager,
   usageLimits,
+  providerAuth,
 }: CreateWsRouterArgs) {
   const sockets = new Set<ServerWebSocket<ClientState>>()
   let pendingBroadcastTimer: ReturnType<typeof setTimeout> | null = null
@@ -199,6 +220,9 @@ export function createWsRouter({
     if (topic.type === "usage-limits") {
       return Boolean(filter.includeUsageLimits)
     }
+    if (topic.type === "provider-auth") {
+      return Boolean(filter.includeProviderAuth)
+    }
     if (topic.type === "chat") {
       return filter.chatIds?.has(topic.chatId) ?? false
     }
@@ -228,6 +252,8 @@ export function createWsRouter({
       sidebarProjectOrder: store.getSidebarProjectOrder(),
       drainingChatIds: agent.getDrainingChatIds(),
       pendingToolKinds,
+      workingTrees: worktreeProbe.getStates(),
+      repoLabels: worktreeProbe.getRepoLabels(),
     })
 
     const sidebar = {
@@ -313,6 +339,18 @@ export function createWsRouter({
         snapshot: {
           type: "usage-limits",
           data,
+        },
+      }
+    }
+
+    if (topic.type === "provider-auth") {
+      return {
+        v: PROTOCOL_VERSION,
+        type: "snapshot",
+        id,
+        snapshot: {
+          type: "provider-auth",
+          data: providerAuth?.getSnapshot() ?? { services: [] },
         },
       }
     }
@@ -528,7 +566,14 @@ export function createWsRouter({
     }
   }
 
-  function pushTerminalSnapshot(terminalId: string) {
+  /**
+   * `force` skips the dedupe compare (the new signature is still recorded).
+   * Needed on explicit close: a pane that subscribed before its session
+   * existed has signature "null" from that first push, and the post-close
+   * snapshot is "null" again — without force the "session gone" push would
+   * be swallowed and the pane would never recreate.
+   */
+  function pushTerminalSnapshot(terminalId: string, options?: { force?: boolean }) {
     for (const ws of sockets) {
       const snapshotSignatures = ensureSnapshotSignatures(ws)
       for (const [id, topic] of ws.data.subscriptions.entries()) {
@@ -536,7 +581,7 @@ export function createWsRouter({
         const envelope = createEnvelope(id, topic)
         if (envelope.type !== "snapshot") continue
         const signature = JSON.stringify(envelope.snapshot)
-        if (snapshotSignatures.get(id) === signature) continue
+        if (!options?.force && snapshotSignatures.get(id) === signature) continue
         snapshotSignatures.set(id, signature)
         send(ws, envelope)
       }
@@ -611,6 +656,21 @@ export function createWsRouter({
       const snapshotSignatures = ensureSnapshotSignatures(ws)
       for (const [id, topic] of ws.data.subscriptions.entries()) {
         if (topic.type !== "usage-limits") continue
+        const envelope = createEnvelope(id, topic)
+        if (envelope.type !== "snapshot") continue
+        const signature = JSON.stringify(envelope.snapshot)
+        if (snapshotSignatures.get(id) === signature) continue
+        snapshotSignatures.set(id, signature)
+        send(ws, envelope)
+      }
+    }
+  }) ?? (() => {})
+
+  const disposeProviderAuthEvents = providerAuth?.onChange(() => {
+    for (const ws of sockets) {
+      const snapshotSignatures = ensureSnapshotSignatures(ws)
+      for (const [id, topic] of ws.data.subscriptions.entries()) {
+        if (topic.type !== "provider-auth") continue
         const envelope = createEnvelope(id, topic)
         if (envelope.type !== "snapshot") continue
         const signature = JSON.stringify(envelope.snapshot)
@@ -721,6 +781,22 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
         }
+        case "update.installNightly": {
+          if (!updateManager) {
+            throw new Error("Update manager unavailable.")
+          }
+          const result = await updateManager.installNightly()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "update.installStable": {
+          if (!updateManager) {
+            throw new Error("Update manager unavailable.")
+          }
+          const result = await updateManager.installStable()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
         case "update.install": {
           if (!updateManager) {
             throw new Error("Update manager unavailable.")
@@ -756,6 +832,57 @@ export function createWsRouter({
           } else {
             send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { providers: [] } satisfies UsageLimitsSnapshot })
           }
+          return
+        }
+        case "auth.refresh": {
+          if (providerAuth) {
+            await providerAuth.refresh({ force: command.force ?? false })
+            send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: providerAuth.getSnapshot() })
+          } else {
+            send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { services: [] } })
+          }
+          return
+        }
+        case "auth.install": {
+          if (!providerAuth) throw new Error("Provider auth unavailable.")
+          // Fire-and-forget: progress travels via provider-auth snapshots.
+          void providerAuth.install(command.service)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
+        case "auth.login.start": {
+          if (!providerAuth) throw new Error("Provider auth unavailable.")
+          providerAuth.startLogin(command.service)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
+        case "auth.login.submitCode": {
+          if (!providerAuth) throw new Error("Provider auth unavailable.")
+          providerAuth.submitLoginCode(command.service, command.code)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
+        case "auth.login.cancel": {
+          if (!providerAuth) throw new Error("Provider auth unavailable.")
+          providerAuth.cancelLogin(command.service)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
+        case "auth.openrouter.start": {
+          if (!providerAuth) throw new Error("Provider auth unavailable.")
+          const result = providerAuth.startOpenRouterAuth(command.callbackUrl)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "auth.openrouter.exchange": {
+          if (!providerAuth) throw new Error("Provider auth unavailable.")
+          const snapshot = await providerAuth.exchangeOpenRouterCode(command.code)
+          // The exchanged key is a full Model Registry write — refresh the pi
+          // model picker exactly like settings.writeLlmProvider does.
+          if (applyPiFaveModels(snapshot.faveModels)) {
+            void broadcastSnapshots()
+          }
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
         }
         case "settings.writeAppSettings": {
@@ -800,6 +927,8 @@ export function createWsRouter({
           if (applyPiFaveModels(snapshot.faveModels)) {
             void broadcastSnapshots()
           }
+          // Manually entering/clearing an OpenRouter key changes the auth card.
+          void providerAuth?.probeService("openrouter").catch(() => undefined)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
         }
@@ -854,6 +983,23 @@ export function createWsRouter({
             resolvedAnalytics.track("project_opened")
           }
           await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
+          return
+        }
+        case "project.create": {
+          const resolved = await initializeProjectDirectory(command.localPath)
+          const existingProjectId = store.state.projectIdsByPath.get(resolved)
+          const project = await store.openProject(resolved, command.title)
+          await refreshDiscovery()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { projectId: project.id, localPath: resolved } })
+          if (!existingProjectId) {
+            resolvedAnalytics.track("project_opened")
+          }
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
+          return
+        }
+        case "github.listRecentRepos": {
+          const result = await listRecentGitHubRepos()
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "project.rename": {
@@ -988,6 +1134,19 @@ export function createWsRouter({
           await store.setChatDoneState(command.chatId, command.done)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "chat.setReadAnchor": {
+          // No broadcast on purpose. The anchor is not part of any snapshot,
+          // so scrolling stays free of fan-out, and a device sitting on an
+          // open chat never gets its viewport yanked by another device.
+          await store.setChatReadAnchor(command.chatId, command.messageId, command.atEnd)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          return
+        }
+        case "chat.getReadAnchor": {
+          const result = store.getChatReadAnchor(command.chatId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "chat.setDraftProtection": {
@@ -1210,12 +1369,20 @@ export function createWsRouter({
           return
         }
         case "terminal.create": {
-          const project = store.getProject(command.projectId)
-          if (!project) {
-            throw new Error("Project not found")
+          // projectId null → the dev-box home terminal (full-screen Terminal
+          // page): a shell at $HOME instead of a project directory.
+          let projectPath: string
+          if (command.projectId === null) {
+            projectPath = homedir()
+          } else {
+            const project = store.getProject(command.projectId)
+            if (!project) {
+              throw new Error("Project not found")
+            }
+            projectPath = project.localPath
           }
           const snapshot = terminals.createTerminal({
-            projectPath: project.localPath,
+            projectPath,
             terminalId: command.terminalId,
             cols: command.cols,
             rows: command.rows,
@@ -1237,7 +1404,7 @@ export function createWsRouter({
         case "terminal.close": {
           terminals.close(command.terminalId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          pushTerminalSnapshot(command.terminalId)
+          pushTerminalSnapshot(command.terminalId, { force: true })
           return
         }
       }
@@ -1261,6 +1428,7 @@ export function createWsRouter({
     },
     broadcastSnapshots,
     broadcastChatStateImmediately,
+    broadcastSidebar: () => broadcastFilteredSnapshots({ includeSidebar: true }),
     scheduleBroadcast,
     scheduleChatStateBroadcast,
     pruneStaleEmptyChats: () => maybePruneStaleEmptyChats(),
@@ -1298,6 +1466,11 @@ export function createWsRouter({
         if (parsed.topic.type === "usage-limits" && usageLimits) {
           void usageLimits.refresh().catch(() => undefined)
         }
+        // Same shape for provider auth: cached state paints instantly, the
+        // TTL-respecting probe pushes fresh results to all subscribers.
+        if (parsed.topic.type === "provider-auth" && providerAuth) {
+          void providerAuth.refresh().catch(() => undefined)
+        }
         return
       }
 
@@ -1321,6 +1494,7 @@ export function createWsRouter({
       disposeAppSettingsEvents()
       disposeUpdateEvents()
       disposeUsageLimitsEvents()
+      disposeProviderAuthEvents()
     },
   }
 }

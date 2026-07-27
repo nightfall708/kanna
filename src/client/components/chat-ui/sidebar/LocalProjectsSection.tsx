@@ -24,6 +24,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../ui/tooltip"
 import type { SidebarChatRow, SidebarProjectGroup } from "../../../../shared/types"
 import { APP_NAME } from "../../../../shared/branding"
 import { getPathBasename } from "../../../lib/formatters"
+import { formatProjectSidebarLabel } from "../../../lib/project-label"
 import { cn } from "../../../lib/utils"
 import { ProjectSectionMenu } from "./Menus"
 
@@ -149,17 +150,22 @@ function EmptyProjectChatButton({
       type="button"
       disabled={disabled}
       title={!isConnected ? `Start ${APP_NAME} to connect` : "New Chat"}
+      // Geometry tracks ThreadRow's (gap-2.5 px-2 py-1.5) so this sits flush
+      // with the chat rows above it. The leading spacer stands in for their
+      // status glyph / harness icon, the trailing one for their min-w-12
+      // label slot; without both, the title lands out of alignment.
       className={cn(
-        "group flex w-full items-center gap-2 pl-2.5 pr-0.5 py-0.5 max-md:py-1.5 rounded-lg text-left cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
+        "group flex w-full items-center gap-2.5 rounded-lg border px-2 py-1.5 max-md:py-1.5 text-left text-sm max-md:text-base cursor-pointer hover:border-border hover:bg-muted/20 active:scale-[0.985] transition-all",
         "border-border/0 dark:hover:border-slate-400/10",
         disabled && "cursor-not-allowed opacity-50 active:scale-100"
       )}
       onClick={() => onNewLocalChat(localPath)}
     >
-      <span className="text-sm max-md:text-base truncate flex-1 translate-y-[-0.5px] text-slate-500 dark:text-slate-400">
+      <div className="h-4 w-4 shrink-0" aria-hidden />
+      <span className="min-w-0 shrink truncate text-slate-500 dark:text-slate-400">
         New Chat
       </span>
-      <div className="h-7 w-6 mr-[2px] shrink-0" aria-hidden />
+      <div className="ml-auto h-6 min-w-12 shrink-0 pl-3" aria-hidden />
     </button>
   )
 }
@@ -230,6 +236,9 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
   newSidebar = false,
 }: SortableProjectGroupProps) {
   const { groupKey, localPath, title } = group
+  // The New Sidebar names a project by its repo and branch; the old sidebar
+  // keeps the plain project title.
+  const headerTitle = newSidebar ? formatProjectSidebarLabel(group) : title
   const isExpanded = newSidebar || expandedGroups.has(groupKey)
   const isEmptyProject = group.chats.length === 0
   const hasMore = group.olderChats.length > 0
@@ -261,10 +270,23 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
       onClick={() => onToggleSection(groupKey)}
       {...(isReorderEnabled ? listeners : undefined)}
     >
-      <div className="flex items-center gap-2">
+      {/* Chevron trails the label, matching the Chats tab's section headers.
+          min-w-0 + the right padding let a long `repo/branch` truncate at the
+          hover actions instead of running under them. */}
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 pr-14">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="min-w-0 truncate whitespace-nowrap text-sm max-md:text-base">
+              {headerTitle || getPathBasename(localPath)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="right" sideOffset={4}>
+            {localPath}
+          </TooltipContent>
+        </Tooltip>
         <span className="relative size-3.5 shrink-0 cursor-pointer">
           <ChevronRight className={`translate-y-[1px] size-3.5 shrink-0 text-slate-400 transition-all duration-200 ${!collapsedSections.has(groupKey) && 'rotate-90'}`} />
-          
+
           {/* {collapsedSections.has(groupKey) ? (
             <ChevronRight className="translate-y-[1px] size-3.5 shrink-0 text-slate-400 transition-all duration-200" />
           ) : (
@@ -274,16 +296,6 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
             </>
           )} */}
         </span>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span className="truncate max-w-[150px] whitespace-nowrap text-sm max-md:text-base">
-              {title || getPathBasename(localPath)}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="right" sideOffset={4}>
-            {localPath}
-          </TooltipContent>
-        </Tooltip>
       </div>
       {(hasProjectMenu || onNewLocalChat) && (
         <div className="absolute right-2 flex items-center gap-[1px] opacity-100 md:opacity-0 md:group-hover/section:opacity-100">

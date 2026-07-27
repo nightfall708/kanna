@@ -29,13 +29,40 @@ function formatPercent(value: number | null): string {
   return `${Math.round(value)}%`
 }
 
-/** "$1,234.56" with comma grouping; falls back to a bare number for odd codes. */
-function formatMoney(amount: number, currency: string | null): string {
+/** The currency symbol for a code ("$"), or "" for codes Intl doesn't know. */
+function currencySymbol(currency: string | null): string {
   try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency: currency ?? "USD" }).format(amount)
+    const parts = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currency ?? "USD",
+      maximumFractionDigits: 0,
+    }).formatToParts(0)
+    return parts.find((part) => part.type === "currency")?.value ?? ""
   } catch {
-    return amount.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    return ""
   }
+}
+
+/**
+ * Rounded and abbreviated above a thousand: 130.42 → "130", 2000 → "2k",
+ * 7051.8 → "7.1k", 1_200_000 → "1.2m". Fractions are noise at this altitude.
+ */
+function formatCompact(value: number): string {
+  const sign = value < 0 ? "-" : ""
+  const abs = Math.abs(value)
+  const unit = (scaled: number, suffix: string) =>
+    `${sign}${scaled.toLocaleString("en-US", { maximumFractionDigits: 1 })}${suffix}`
+  if (abs >= 1_000_000) return unit(abs / 1_000_000, "m")
+  if (abs >= 1_000) return unit(abs / 1_000, "k")
+  return `${sign}${Math.round(abs)}`
+}
+
+/** Whole-dollar money, abbreviated above a thousand: "$130", "$1.3k", "$2k", "$1.2m". */
+function formatMoney(amount: number, currency: string | null): string {
+  const compact = formatCompact(amount)
+  const symbol = currencySymbol(currency)
+  // Keep the symbol ahead of the sign: -$5, not $-5.
+  return compact.startsWith("-") ? `-${symbol}${compact.slice(1)}` : `${symbol}${compact}`
 }
 
 function creditsSummary(credits: NonNullable<ProviderUsageSnapshot["credits"]>): string | null {
@@ -49,7 +76,7 @@ function creditsSummary(credits: NonNullable<ProviderUsageSnapshot["credits"]>):
     // Codex reports its prepaid balance as a bare numeric string ("1000");
     // render it as a remaining count. Non-numeric details ("Unlimited") pass through.
     const numeric = /^\d+(\.\d+)?$/.test(credits.detail.trim()) ? Number(credits.detail) : null
-    parts.push(numeric !== null ? `${numeric.toLocaleString("en-US")} credits remaining` : credits.detail)
+    parts.push(numeric !== null ? `${formatCompact(numeric)} credits remaining` : credits.detail)
   }
   return parts.length > 0 ? parts.join(" · ") : null
 }

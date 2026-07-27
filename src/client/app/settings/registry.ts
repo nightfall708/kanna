@@ -110,6 +110,12 @@ export const SETTINGS_ROWS = defineRows({
     description: "Used when opening transcript links or files from the git diff menu",
     keywords: ["cursor", "xcode", "windsurf", "vscode", "command template"],
   },
+  newProjectsDirectory: {
+    sectionId: "general",
+    title: "New Projects Directory",
+    description: "Where cloned and newly created projects are placed",
+    keywords: ["clone", "create", "folder", "destination", "add project", "path"],
+  },
   terminalScrollback: {
     sectionId: "general",
     title: "Terminal Scrollback",
@@ -177,6 +183,18 @@ export const SETTINGS_ROWS = defineRows({
     title: "New Sidebar",
     description: "Replace the sidebar with a tabbed Chats / Projects view — In Progress, Review, and Recents up top, full projects one tap away.",
     keywords: ["sidebar", "recents", "chats", "projects", "review", "in progress", "experimental"],
+  },
+  terminalWebglRenderer: {
+    sectionId: "labs",
+    title: "Terminal GPU rendering",
+    description: "Draw the embedded terminal with xterm's WebGL renderer instead of the DOM one. Faster with heavy output; falls back to the DOM renderer if the GPU context is unavailable or lost. Reopens open terminals.",
+    keywords: ["terminal", "webgl", "gpu", "renderer", "performance", "acceleration", "experimental"],
+  },
+  nightlyBuilds: {
+    sectionId: "labs",
+    title: "Nightly builds",
+    description: "Run the newest changes from main — downloaded from GitHub and built from source on this machine.",
+    keywords: ["nightly", "main", "update", "channel", "stable", "prerelease", "build"],
   },
 })
 

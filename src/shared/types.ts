@@ -175,6 +175,7 @@ export interface QueuedChatMessage {
   model?: string
   modelOptions?: ModelOptions
   planMode?: boolean
+  autoPlan?: boolean
 }
 
 export interface ProviderModelOption {
@@ -280,6 +281,44 @@ export interface ProviderPreference<TModelOptions> {
   model: string
   modelOptions: TModelOptions
   planMode: boolean
+  /**
+   * "Auto Plan": leave the EnterPlanMode tool in the harness's toolset so the
+   * agent may decide on its own to plan first. Orthogonal to {@link planMode},
+   * which forces the session to *start* in plan mode. Claude-only — every
+   * other provider normalizes this to false (see provider-preferences.ts).
+   */
+  autoPlan: boolean
+}
+
+/**
+ * The user-facing three-way mode, derived from the (planMode, autoPlan) pair.
+ * Kept as a derived value rather than a stored field so the two server-side
+ * concerns stay independent: planMode maps to the SDK's permissionMode (
+ * swappable at runtime), autoPlan maps to the session's tool allowlist (fixed
+ * at session creation).
+ */
+export type ChatMode = "full-access" | "plan" | "auto-plan"
+
+export function chatModeFromFlags(planMode: boolean, autoPlan: boolean): ChatMode {
+  // planMode wins: a user who explicitly asked to start in plan mode sees
+  // "Plan Mode" even while autoPlan is held underneath.
+  return planMode ? "plan" : autoPlan ? "auto-plan" : "full-access"
+}
+
+export function chatModeToFlags(
+  mode: ChatMode,
+  currentAutoPlan: boolean
+): { planMode: boolean; autoPlan: boolean } {
+  switch (mode) {
+    case "plan":
+      // Preserve autoPlan so approving a plan (which clears planMode) returns
+      // an Auto Plan user to Auto Plan rather than dropping them to Full Access.
+      return { planMode: true, autoPlan: currentAutoPlan }
+    case "auto-plan":
+      return { planMode: false, autoPlan: true }
+    case "full-access":
+      return { planMode: false, autoPlan: false }
+  }
 }
 
 export type ChatProviderPreferences = {
@@ -419,6 +458,8 @@ export interface ProviderCatalogEntry {
   defaultModel: string
   defaultEffort?: string
   supportsPlanMode: boolean
+  /** Whether the provider offers the third "Auto Plan" mode. Claude only. */
+  supportsAutoPlanMode: boolean
   models: ProviderModelOption[]
   efforts: ProviderEffortOption[]
 }
@@ -474,9 +515,18 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
   {
     id: "claude",
     label: "Claude Code",
-    defaultModel: "claude-sonnet-4-6",
+    defaultModel: "sonnet",
     defaultEffort: "high",
     supportsPlanMode: true,
+    supportsAutoPlanMode: true,
+    // Claude ids are family aliases ("opus"), never version-pinned ids
+    // ("claude-opus-4-8"): the harness resolves each alias to its latest
+    // release, so new model versions apply without a Kanna update. This static
+    // list is only a cold-start fallback — the real picker is rebuilt at
+    // runtime from the SDK's supportedModels (applyClaudeSdkModels), labeled
+    // from each row's resolved wire id. Persisted version-pinned ids from
+    // older Kanna versions fold into their family alias in
+    // normalizeProviderModelId.
     models: [
       {
         id: "fable",
@@ -487,29 +537,25 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         contextWindowTokens: 1_000_000,
       },
       {
-        id: "claude-opus-4-8",
-        label: deriveModelLabel("claude-opus-4-8"),
+        id: "opus",
+        label: deriveModelLabel("opus"),
         supportsEffort: true,
-        aliases: ["opus"],
         contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
         supportsMaxReasoningEffort: true,
-        // Fast mode is available on Opus 4.6/4.7/4.8 — Opus is the only
-        // catalog model in that family. The SDK confirms this at runtime via
-        // supportedModels() (see applyClaudeSdkModels).
+        // Fast mode is available on the Opus family. The SDK confirms this at
+        // runtime via supportedModels() (see applyClaudeSdkModels).
         supportsFastMode: true,
       },
       {
-        id: "claude-sonnet-4-6",
-        label: deriveModelLabel("claude-sonnet-4-6"),
+        id: "sonnet",
+        label: deriveModelLabel("sonnet"),
         supportsEffort: true,
-        aliases: ["sonnet"],
         contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
       },
       {
-        id: "claude-haiku-4-5-20251001",
-        label: deriveModelLabel("claude-haiku-4-5-20251001"),
+        id: "haiku",
+        label: deriveModelLabel("haiku"),
         supportsEffort: true,
-        aliases: ["haiku"],
       },
     ],
     efforts: [...CLAUDE_REASONING_OPTIONS],
@@ -520,6 +566,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     defaultModel: "gpt-5.6-sol",
     defaultEffort: "medium",
     supportsPlanMode: true,
+    supportsAutoPlanMode: false,
     models: [
       {
         id: "gpt-5.6-sol",
@@ -588,6 +635,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     label: "Cursor",
     defaultModel: "composer-2.5",
     supportsPlanMode: false,
+    supportsAutoPlanMode: false,
     // Static fallback only — the real list is discovered at runtime via
     // `cursor-agent --list-models` (see applyCursorModels in provider-catalog).
     models: [
@@ -605,6 +653,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     defaultModel: DEFAULT_PI_MODEL,
     defaultEffort: "medium",
     supportsPlanMode: false,
+    supportsAutoPlanMode: false,
     models: piModelOptionsFromFaves(DEFAULT_PI_FAVE_MODELS),
     efforts: [...PI_REASONING_OPTIONS],
   },
@@ -626,6 +675,17 @@ function getProviderModelMatch(provider: AgentProvider, modelId?: string): Provi
   )
 }
 
+/**
+ * The family word of a Claude-style model id: "claude-opus-4-8[1m]" → "opus",
+ * "sonnet" → "sonnet". Used to fold version-pinned ids into the alias-keyed
+ * catalog (migration of persisted ids) and to match SDK model rows to catalog
+ * entries (server provider-catalog).
+ */
+export function modelIdFamily(modelId: string): string {
+  const match = modelId.match(/^(?:claude-)?([a-z]+)(?:[-[]|$)/i)
+  return match?.[1]?.toLowerCase() ?? modelId.toLowerCase()
+}
+
 export function normalizeProviderModelId(
   provider: AgentProvider,
   modelId?: string,
@@ -637,12 +697,24 @@ export function normalizeProviderModelId(
   if (provider === "cursor") {
     return normalizeCursorModelId(modelId, fallbackModelId ?? getProviderCatalog(provider).defaultModel)
   }
-  return getProviderModelMatch(provider, modelId)?.id
-    ?? fallbackModelId
-    ?? getProviderCatalog(provider).defaultModel
+  const match = getProviderModelMatch(provider, modelId)
+  if (match) return match.id
+  if (provider === "claude" && modelId) {
+    // Claude catalog ids are family aliases; persisted version-pinned ids from
+    // older Kanna versions ("claude-opus-4-8", "claude-haiku-4-5-20251001")
+    // migrate here by folding into their family's alias entry.
+    const familyMatch = getProviderModelMatch(provider, modelIdFamily(modelId))
+    if (familyMatch) return familyMatch.id
+    // The static catalog is only a cold-start picker — the real list comes
+    // from the harness at runtime (supportedModels → applyClaudeSdkModels),
+    // so like cursor/pi, unknown ids pass through for it to validate.
+    const trimmed = modelId.trim()
+    if (trimmed) return trimmed
+  }
+  return fallbackModelId ?? getProviderCatalog(provider).defaultModel
 }
 
-export function normalizeClaudeModelId(modelId?: string, fallbackModelId = "claude-opus-4-8"): string {
+export function normalizeClaudeModelId(modelId?: string, fallbackModelId = "opus"): string {
   return normalizeProviderModelId("claude", modelId, fallbackModelId)
 }
 
@@ -762,6 +834,11 @@ export function resolveClaudeContextWindowMaxTokens(modelId: string, contextWind
   return resolveClaudeContextWindowTokens(resolveClaudeContextWindow(modelId, contextWindow))
 }
 
+/** Version strings stamped by nightly builds ("0.56.7-nightly.abc1234"). */
+export function isNightlyVersion(version: string): boolean {
+  return version.includes("-nightly.")
+}
+
 export type KannaStatus =
   | "idle"
   | "starting"
@@ -799,6 +876,13 @@ export interface SidebarChatRow {
   lastAgentMessagePreview?: string
   /** Tool kind the chat is waiting on when status is waiting_for_user (e.g. "ask_user_question"). */
   pendingToolKind?: string
+  /**
+   * Best-effort hint that this chat is relevant to the project's uncommitted
+   * work: its last turn ended after the working tree became dirty. Project-
+   * scoped, so every chat active since the dirt appeared is flagged — not just
+   * whichever one caused it. Drives the muted (non-pulsing) sidebar dot.
+   */
+  uncommittedWork?: boolean
   hasAutomation: boolean
   canFork?: boolean
 }
@@ -808,6 +892,15 @@ export interface SidebarProjectGroup {
   title: string
   realTitle: string
   sidebarTitle?: string
+  /**
+   * Basename of the git repo root, absent when the project isn't in a repo.
+   * Not always the project's folder name — a project can be a subdirectory of
+   * its repo. Together with `branchName` this is the New Sidebar's `repo/branch`
+   * label; best-effort, so treat "absent" as "not known yet", not "not a repo".
+   */
+  repoName?: string
+  /** Current branch of `repoName`'s repo; absent on a detached HEAD. */
+  branchName?: string
   localPath: string
   chats: SidebarChatRow[]
   previewChats: SidebarChatRow[]
@@ -863,6 +956,29 @@ export interface FsListResult {
   missingSuffix?: string
 }
 
+/** Default for `newProjectsDirectory` — expanded server-side at use time. */
+export const DEFAULT_NEW_PROJECTS_DIRECTORY = "~/Kanna"
+
+/** One repository from the signed-in user's GitHub account (via the local `gh` CLI). */
+export interface GitHubRepoSummary {
+  /** e.g. "owner/repo". */
+  nameWithOwner: string
+  description: string | null
+  /** ISO 8601 timestamp of the last push, or null when unknown. */
+  pushedAt: string | null
+  isPrivate: boolean
+  owner: string
+}
+
+export interface GitHubRecentReposResult {
+  /** False when the `gh` CLI is missing or unauthenticated. */
+  available: boolean
+  /** Active gh account login, when known. */
+  login?: string
+  /** Flat list across personal + org repos, sorted by recency (most recent push first). */
+  repos: GitHubRepoSummary[]
+}
+
 export interface AppSettingsSnapshot {
   analyticsEnabled: boolean
   browserSettingsMigrated: boolean
@@ -872,6 +988,8 @@ export interface AppSettingsSnapshot {
   terminal: {
     scrollbackLines: number
     minColumnWidth: number
+    /** Labs: render the embedded terminal with xterm's WebGL renderer instead of the DOM one. */
+    webglRenderer: boolean
   }
   editor: {
     preset: EditorPreset
@@ -882,8 +1000,24 @@ export interface AppSettingsSnapshot {
   transcriptAutoScroll: boolean
   /** Labs: the tabbed Chats/Projects "New Sidebar". On by default; false opts back into the legacy sidebar. */
   newSidebarEnabled: boolean
+  /** Base directory where cloned and newly created projects are placed. */
+  newProjectsDirectory: string
+  /**
+   * Setup-wizard progress. Persisted per machine (not per browser) so signing
+   * in from a second browser — locally or through the cloud tunnel — never
+   * re-runs onboarding that was already finished or dismissed here.
+   */
+  setupShown: boolean
+  setupCompleted: boolean
+  setupDismissed: boolean
   warning: string | null
   filePathDisplay: string
+  /**
+   * Server-computed, never persisted: this machine is a cloud dev-box
+   * (`kanna --cloud`, or KANNA_DEVBOX_UI=1 in dev). Unlocks dev-box-only UI
+   * like the full-screen home Terminal page.
+   */
+  devbox: boolean
 }
 
 export interface AppSettingsPatch {
@@ -893,6 +1027,10 @@ export interface AppSettingsPatch {
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
   newSidebarEnabled?: boolean
+  newProjectsDirectory?: string
+  setupShown?: boolean
+  setupCompleted?: boolean
+  setupDismissed?: boolean
   terminal?: Partial<AppSettingsSnapshot["terminal"]>
   editor?: Partial<AppSettingsSnapshot["editor"]>
   defaultProvider?: DefaultProviderPreference
@@ -985,6 +1123,86 @@ export interface ProviderUsageSnapshot {
 
 export interface UsageLimitsSnapshot {
   providers: ProviderUsageSnapshot[]
+}
+
+// ---------------------------------------------------------------------------
+// Provider auth: installed/version/signed-in state + headless login flows for
+// the coding-agent CLIs (claude, codex, cursor-agent), gh, and OpenRouter.
+// ---------------------------------------------------------------------------
+
+export type AuthServiceId = "claude" | "codex" | "cursor" | "gh" | "openrouter"
+
+export const AUTH_SERVICE_ORDER: AuthServiceId[] = ["claude", "codex", "cursor", "gh", "openrouter"]
+
+export const AUTH_SERVICE_LABELS: Record<AuthServiceId, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  cursor: "Cursor",
+  gh: "GitHub",
+  openrouter: "OpenRouter",
+}
+
+export type AuthServiceStatus =
+  // Not probed yet.
+  | "unknown"
+  | "not_installed"
+  | "signed_out"
+  | "signed_in"
+  // Installed, but too old for the commands Kanna drives (e.g. a Claude Code
+  // that predates `auth status --json`). Updating is the only way forward.
+  | "outdated"
+  // The probe itself failed (binary present but errored unexpectedly).
+  | "error"
+
+export type AuthLoginFlowState =
+  | { phase: "idle" }
+  | { phase: "starting" }
+  // codex / cursor / gh: user opens a link (and enters a code for codex/gh);
+  // the server polls until the provider reports approval.
+  | {
+      phase: "waiting_for_approval"
+      verificationUrl: string
+      userCode: string | null
+      startedAt: number
+      expiresAt: number | null
+    }
+  // claude: user opens a link, signs in, then pastes the resulting code back.
+  | { phase: "waiting_for_code_entry"; verificationUrl: string; startedAt: number }
+  // Approval/code received; finishing up (token exchange / re-probe).
+  | { phase: "finishing" }
+  | { phase: "error"; message: string; hint: string | null }
+
+export interface AuthServiceSnapshot {
+  service: AuthServiceId
+  label: string
+  /** openrouter is not a CLI — always true there. */
+  installed: boolean
+  version: string | null
+  latestVersion: string | null
+  updateAvailable: boolean
+  authStatus: AuthServiceStatus
+  /** Account identifier when cheap to read (gh login, cursor email, plan). */
+  account: string | null
+  /** Human-readable probe detail (e.g. why status is "error"). */
+  statusDetail: string | null
+  login: AuthLoginFlowState
+  installState: "idle" | "installing" | "error"
+  installError: string | null
+  checkedAt: number | null
+}
+
+export interface ProviderAuthSnapshot {
+  services: AuthServiceSnapshot[]
+}
+
+/**
+ * The auth service gating a harness, or null when the harness has no
+ * sign-in of its own (pi runs through the Model Registry, which may be any
+ * OpenAI-compatible endpoint — don't conflate it with the OpenRouter card).
+ */
+export function authServiceForProvider(provider: AgentProvider): AuthServiceId | null {
+  if (provider === "claude" || provider === "codex" || provider === "cursor") return provider
+  return null
 }
 
 /** A user-curated model shortcut shown in Pi's model picker. */
@@ -1614,6 +1832,7 @@ export interface ChatRuntime {
   isDraining: boolean
   provider: AgentProvider | null
   planMode: boolean
+  autoPlan: boolean
   sessionToken: string | null
 }
 
@@ -1635,6 +1854,21 @@ export interface ChatHistoryPage {
   messages: TranscriptEntry[]
   hasOlder: boolean
   olderCursor: string | null
+}
+
+/**
+ * A chat's stored read position, resolved against the current transcript.
+ *
+ * `messageId` is a `TranscriptEntry._id`. `atEnd` means the user was parked at
+ * the bottom following the stream, so restoring should keep following rather
+ * than pin to that message. `distanceFromEnd` is how many entries sit at or
+ * after the anchor, letting the client widen its subscription window in one
+ * round trip when the anchor predates the default recent page.
+ */
+export interface ResolvedChatReadAnchor {
+  messageId: string
+  atEnd: boolean
+  distanceFromEnd: number
 }
 
 export interface PendingToolSnapshot {

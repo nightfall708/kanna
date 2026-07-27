@@ -14,7 +14,7 @@ describe("ChatPreferenceControls", () => {
         onProviderChange={() => {}}
         onModelChange={() => {}}
         onModelOptionChange={() => {}}
-        includePlanMode={false}
+        includeMode={false}
       />
     )
 
@@ -35,7 +35,7 @@ describe("ChatPreferenceControls", () => {
         onProviderChange={() => {}}
         onModelChange={() => {}}
         onModelOptionChange={() => {}}
-        includePlanMode={false}
+        includeMode={false}
       />
     )
 
@@ -53,7 +53,7 @@ describe("ChatPreferenceControls", () => {
         onProviderChange={() => {}}
         onModelChange={() => {}}
         onModelOptionChange={() => {}}
-        includePlanMode={false}
+        includeMode={false}
       />
     )
 
@@ -66,14 +66,14 @@ describe("ChatPreferenceControls", () => {
       <ChatPreferenceControls
         availableProviders={PROVIDERS}
         selectedProvider="claude"
-        model="claude-opus-4-8"
+        model="opus"
         modelOptions={{ reasoningEffort: "max", contextWindow: "1m" }}
         onProviderChange={() => {}}
         onModelChange={() => {}}
         onModelOptionChange={() => {}}
-        planMode
-        onPlanModeChange={() => {}}
-        includePlanMode
+        mode="plan"
+        onModeChange={() => {}}
+        includeMode
       />
     )
 
@@ -95,7 +95,7 @@ describe("ChatPreferenceControls", () => {
         onProviderChange={() => {}}
         onModelChange={() => {}}
         onModelOptionChange={() => {}}
-        includePlanMode={false}
+        includeMode={false}
       />
     )
 

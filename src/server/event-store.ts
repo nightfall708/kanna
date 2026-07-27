@@ -3,7 +3,7 @@ import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir, LOG_PREFIX } from "../shared/branding"
-import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, ResolvedChatReadAnchor, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
@@ -88,6 +88,7 @@ function getReplayEventPriority(event: StoreEvent) {
     case "chat_renamed":
     case "chat_provider_set":
     case "chat_plan_mode_set":
+    case "chat_auto_plan_set":
       return 2
     case "message_appended":
       return 3
@@ -107,6 +108,7 @@ function getReplayEventPriority(event: StoreEvent) {
       return 8
     case "chat_read_state_set":
     case "chat_done_state_set":
+    case "chat_read_anchor_set":
       return 9
     case "chat_deleted":
     case "chat_archived":
@@ -167,6 +169,12 @@ export class EventStore {
   // chat, forcing a synchronous full-file re-read on its next event.
   private readonly transcriptCache = new Map<string, TranscriptEntry[]>()
   private static readonly TRANSCRIPT_CACHE_LIMIT = 8
+  /**
+   * Fired after a turn reaches a terminal state — the same three events that
+   * set `lastTurnEndedAt`. Deliberately distinct from `Agent.onStateChange`,
+   * which fires per streamed token.
+   */
+  onTurnEnded?: (chatId: string) => void
 
   constructor(dataDir = getDataDir(homedir())) {
     this.dataDir = dataDir
@@ -281,6 +289,7 @@ export class EventStore {
         this.state.chatsById.set(chat.id, {
           ...chat,
           unread: chat.unread ?? false,
+          readAnchor: chat.readAnchor ?? null,
           pendingForkSessionToken: chat.pendingForkSessionToken ?? null,
         })
       }
@@ -515,6 +524,7 @@ export class EventStore {
           unread: false,
           provider: null,
           planMode: false,
+          autoPlan: false,
           sessionToken: null,
           pendingForkSessionToken: null,
           hasMessages: false,
@@ -566,11 +576,30 @@ export class EventStore {
         chat.updatedAt = event.timestamp
         break
       }
+      case "chat_auto_plan_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        chat.autoPlan = event.autoPlan
+        chat.updatedAt = event.timestamp
+        break
+      }
       case "chat_read_state_set": {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.unread = event.unread
         chat.updatedAt = event.timestamp
+        break
+      }
+      case "chat_read_anchor_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        chat.readAnchor = {
+          messageId: event.messageId,
+          atEnd: event.atEnd,
+          updatedAt: event.timestamp,
+        }
+        // Intentionally does not bump `updatedAt` — a scroll is not a chat
+        // mutation, and bumping it would churn sidebar ordering/signatures.
         break
       }
       case "chat_done_state_set": {
@@ -867,6 +896,7 @@ export class EventStore {
     await this.append(this.chatsLogPath, createEvent)
     await this.setChatProvider(chatId, sourceChat.provider)
     await this.setPlanMode(chatId, sourceChat.planMode)
+    await this.setAutoPlan(chatId, sourceChat.autoPlan)
     await this.setPendingForkSessionToken(chatId, sourceSessionToken)
 
     const sourceEntries = this.getMessages(sourceChatId)
@@ -1124,6 +1154,19 @@ export class EventStore {
     await this.append(this.chatsLogPath, event)
   }
 
+  async setAutoPlan(chatId: string, autoPlan: boolean) {
+    const chat = this.requireChat(chatId)
+    if (chat.autoPlan === autoPlan) return
+    const event: ChatEvent = {
+      v: STORE_VERSION,
+      type: "chat_auto_plan_set",
+      timestamp: Date.now(),
+      chatId,
+      autoPlan,
+    }
+    await this.append(this.chatsLogPath, event)
+  }
+
   async setChatReadState(chatId: string, unread: boolean) {
     const chat = this.requireChat(chatId)
     if (chat.unread === unread) return
@@ -1148,6 +1191,49 @@ export class EventStore {
       done,
     }
     await this.append(this.chatsLogPath, event)
+  }
+
+  /**
+   * Persist where the user left off reading. Called on a throttle from the
+   * client as it scrolls, so the no-op guard below matters — it is the only
+   * write rate-limit in the store.
+   */
+  async setChatReadAnchor(chatId: string, messageId: string, atEnd: boolean) {
+    const chat = this.requireChat(chatId)
+    if (chat.readAnchor?.messageId === messageId && chat.readAnchor.atEnd === atEnd) return
+    const event: ChatEvent = {
+      v: STORE_VERSION,
+      type: "chat_read_anchor_set",
+      timestamp: Date.now(),
+      chatId,
+      messageId,
+      atEnd,
+    }
+    await this.append(this.chatsLogPath, event)
+  }
+
+  /**
+   * Resolve a chat's stored read anchor against the current transcript.
+   * Returns null when nothing is stored or the anchored message no longer
+   * exists (deleted, or compacted away), so the client can fall back.
+   *
+   * `distanceFromEnd` lets the client widen its subscription window in one
+   * round trip when the anchor sits outside the default recent page.
+   */
+  getChatReadAnchor(chatId: string): ResolvedChatReadAnchor | null {
+    const chat = this.requireChat(chatId)
+    const anchor = chat.readAnchor
+    if (!anchor) return null
+
+    const entries = this.getTranscriptEntries(chatId)
+    const index = entries.findIndex((entry) => entry._id === anchor.messageId)
+    if (index === -1) return null
+
+    return {
+      messageId: anchor.messageId,
+      atEnd: anchor.atEnd,
+      distanceFromEnd: entries.length - index,
+    }
   }
 
   async appendMessage(chatId: string, entry: TranscriptEntry) {
@@ -1177,6 +1263,7 @@ export class EventStore {
       model: message.model,
       modelOptions: message.modelOptions,
       planMode: message.planMode,
+      autoPlan: message.autoPlan,
     }
     const event: QueuedMessageEvent = {
       v: STORE_VERSION,
@@ -1225,6 +1312,7 @@ export class EventStore {
       chatId,
     }
     await this.append(this.turnsLogPath, event)
+    this.onTurnEnded?.(chatId)
   }
 
   async recordTurnFailed(chatId: string, error: string) {
@@ -1237,6 +1325,7 @@ export class EventStore {
       error,
     }
     await this.append(this.turnsLogPath, event)
+    this.onTurnEnded?.(chatId)
   }
 
   async recordTurnCancelled(chatId: string) {
@@ -1248,6 +1337,7 @@ export class EventStore {
       chatId,
     }
     await this.append(this.turnsLogPath, event)
+    this.onTurnEnded?.(chatId)
   }
 
   async setSessionToken(chatId: string, sessionToken: string | null) {

@@ -26,6 +26,8 @@ import type {
   UpstreamStatus,
 } from "../shared/types"
 import { generateCommitMessageDetailed } from "./generate-commit-message"
+import { getGhAuthInfo } from "./github"
+import { resolveCommandPath } from "./process-utils"
 import { inferProjectFileContentType } from "./uploads"
 
 interface StoredChatDiffState extends BranchMetadata, UpstreamStatus {
@@ -111,6 +113,12 @@ interface DirtyPathEntry {
   previousPath?: string
   changeType: ChatDiffFile["changeType"]
   isUntracked: boolean
+  /**
+   * True when the entry still has worktree (unstaged) changes. False means the
+   * change is already fully staged — e.g. an agent ran `git rm`/`git add` — so
+   * a `git add` pathspec may no longer match anything on disk or in the index.
+   */
+  hasUnstagedChanges: boolean
 }
 
 
@@ -134,7 +142,12 @@ async function runGit(args: string[], cwd: string, options?: { stdin?: string })
 }
 
 async function runCommand(args: string[]) {
-  const process = Bun.spawn(args, {
+  // Resolve gh through a login shell so servers launched without the user's
+  // PATH (launchd/systemd) still find it — same treatment as github.ts and
+  // provider-auth, so every gh consumer probes the same binary.
+  const [command, ...rest] = args
+  const argv = command === "gh" ? [resolveCommandPath("gh") ?? command, ...rest] : args
+  const process = Bun.spawn(argv, {
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -171,6 +184,9 @@ function createCommitFailure(mode: DiffCommitMode, detail: string): DiffCommitRe
   if (normalized.includes("ignored by one of your .gitignore files")) {
     title = "Ignored files cannot be staged"
     message = "One or more selected paths are ignored by .gitignore. Unignore them or remove them from the commit selection."
+  } else if (normalized.includes("did not match any files")) {
+    title = "Selection out of date"
+    message = "A selected file no longer matches the repository state — it may have just been changed by an agent or another tool. Review the refreshed changes and try again."
   }
 
   return {
@@ -267,16 +283,28 @@ async function hasUpstreamBranch(repoRoot: string) {
   return upstream.exitCode === 0 && upstream.stdout.trim().length > 0
 }
 
+/**
+ * Absolute path to the repo's git directory. Not always `<repoRoot>/.git` —
+ * in a linked worktree that path is a *file* pointing elsewhere, and in a
+ * submodule the real dir lives under the superproject.
+ */
+async function resolveGitDir(repoRoot: string) {
+  const result = await runGit(["rev-parse", "--git-dir"], repoRoot)
+  if (result.exitCode !== 0) {
+    return null
+  }
+  const gitDir = result.stdout.trim()
+  return gitDir.length > 0 ? path.resolve(repoRoot, gitDir) : null
+}
+
 async function getLastFetchedAt(repoRoot: string) {
-  const gitDirResult = await runGit(["rev-parse", "--git-dir"], repoRoot)
-  if (gitDirResult.exitCode !== 0) {
+  const gitDir = await resolveGitDir(repoRoot)
+  if (!gitDir) {
     return undefined
   }
 
-  const gitDir = gitDirResult.stdout.trim()
-  const fetchHeadPath = path.resolve(repoRoot, gitDir, "FETCH_HEAD")
   try {
-    const fetchHeadStat = await stat(fetchHeadPath)
+    const fetchHeadStat = await stat(path.join(gitDir, "FETCH_HEAD"))
     return fetchHeadStat.mtime.toISOString()
   } catch {
     return undefined
@@ -713,45 +741,6 @@ function sanitizeRepoName(name: string) {
     .replace(/^-|-$/gu, "")
 }
 
-async function getGhAuthInfo() {
-  const versionResult = await runCommand(["gh", "--version"])
-  if (versionResult.exitCode !== 0) {
-    return {
-      ghInstalled: false,
-      authenticated: false,
-      activeAccountLogin: undefined,
-    }
-  }
-
-  const authStatusResult = await runCommand(["gh", "auth", "status", "--json", "hosts"])
-  if (authStatusResult.exitCode !== 0) {
-    return {
-      ghInstalled: true,
-      authenticated: false,
-      activeAccountLogin: undefined,
-    }
-  }
-
-  try {
-    const parsed = JSON.parse(authStatusResult.stdout) as {
-      hosts?: Record<string, Array<{ active?: boolean; login?: string; state?: string }>>
-    }
-    const accounts = parsed.hosts?.["github.com"] ?? []
-    const activeAccount = accounts.find((account) => account.active) ?? accounts[0]
-    return {
-      ghInstalled: true,
-      authenticated: activeAccount?.state === "success",
-      activeAccountLogin: activeAccount?.login,
-    }
-  } catch {
-    return {
-      ghInstalled: true,
-      authenticated: false,
-      activeAccountLogin: undefined,
-    }
-  }
-}
-
 async function getGitHubOwners(): Promise<string[]> {
   const userResult = await runCommand(["gh", "api", "user", "--jq", ".login"])
   if (userResult.exitCode !== 0) {
@@ -786,6 +775,7 @@ function parseStatusPaths(output: string): DirtyPathEntry[] {
     const value = line.slice(3)
     if (!value) continue
     const isUntracked = statusCode === "??"
+    const hasUnstagedChanges = isUntracked || statusCode[1] !== " "
     const isRename = statusCode.includes("R")
     const isDelete = statusCode.includes("D")
     const isAdd = statusCode.includes("A") || isUntracked
@@ -805,6 +795,7 @@ function parseStatusPaths(output: string): DirtyPathEntry[] {
           previousPath: previousPath || undefined,
           changeType,
           isUntracked,
+          hasUnstagedChanges,
         })
       }
       continue
@@ -814,13 +805,20 @@ function parseStatusPaths(output: string): DirtyPathEntry[] {
       path: value,
       changeType,
       isUntracked,
+      hasUnstagedChanges,
     })
   }
   return entries.sort((left, right) => left.path.localeCompare(right.path))
 }
 
-async function listDirtyPaths(repoRoot: string) {
-  const status = await runGit(["status", "--short", "--untracked-files=all"], repoRoot)
+async function listDirtyPaths(repoRoot: string, options?: { noOptionalLocks?: boolean }) {
+  // `--no-optional-locks` keeps a read-only caller from taking the index lock
+  // and rewriting `.git/index` just to refresh its stat cache. Background
+  // pollers want it: it avoids contending with an agent's own git commands,
+  // and it stops the poll from looking like a repo mutation to anything
+  // watching the index mtime.
+  const globalArgs = options?.noOptionalLocks ? ["--no-optional-locks"] : []
+  const status = await runGit([...globalArgs, "status", "--short", "--untracked-files=all"], repoRoot)
   if (status.exitCode !== 0) {
     throw new Error(status.stderr.trim() || "Failed to read git status")
   }
@@ -952,6 +950,104 @@ async function mapWithConcurrency<T, R>(
   return results
 }
 
+/**
+ * Cheap, standalone "is this tree dirty and roughly when did that start"
+ * reading. Deliberately not a `DiffStore` method: it holds no state, bumps no
+ * snapshot version, and costs one `git status` (plus a bounded stat fan-out)
+ * rather than the ~6 git commands `performRefresh` runs.
+ */
+/**
+ * A raw look at the working tree: is it dirty, and what are the current mtimes
+ * of the dirty files.
+ *
+ * Deliberately *not* a "when did this get dirty" answer. Raw mtimes can't carry
+ * that on their own — `git pull --rebase --autostash` pops the stash and
+ * rewrites your still-dirty files, so their mtimes jump to now even though the
+ * content never changed. Same for a rebase, a branch switch, or a formatter
+ * sweep. `WorktreeProbe` turns these readings into a stable `dirtySinceMs` by
+ * remembering when each path was *first* seen dirty.
+ */
+export interface WorkingTreeScan {
+  dirty: boolean
+  /** Dirty paths that exist on disk. Deletions are omitted — nothing to stat. */
+  files: Array<{ path: string; mtimeMs: number }>
+}
+
+/** Derived from a series of `WorkingTreeScan`s — see `WorktreeProbe`. */
+export interface WorkingTreeProbe {
+  dirty: boolean
+  /**
+   * When the current dirty episode began. Absent when the tree is clean, when
+   * every dirty entry is a deletion (no file left to stat), or when everything
+   * dirty is older than `DIRTY_ANCHOR_MAX_AGE_MS`.
+   */
+  dirtySinceMs?: number
+}
+
+export interface WorkingTreeLocation {
+  repoRoot: string
+  gitDir: string
+}
+
+/**
+ * Dirty files older than this don't anchor `dirtySinceMs`. Without the floor a
+ * single long-lived untracked scratch file pins the anchor weeks into the past,
+ * which makes every "was this chat active since the tree got dirty?" comparison
+ * trivially true forever.
+ */
+export const DIRTY_ANCHOR_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+/**
+ * We only need the *minimum* first-seen time, so sampling is safe: a min over a
+ * subset can only land later than the true min, i.e. err toward reporting less
+ * recent dirt. Keeps a repo with a huge untracked tree from stalling the probe.
+ */
+const DIRTY_PROBE_MAX_FILES = 200
+
+/**
+ * Resolve a project path to its repo root and git dir. Callers should cache the
+ * result — it costs two git invocations and only changes if the project moves.
+ */
+export async function resolveWorkingTreeLocation(projectPath: string): Promise<WorkingTreeLocation | null> {
+  const topLevel = await runGit(["rev-parse", "--show-toplevel"], projectPath)
+  if (topLevel.exitCode !== 0) {
+    return null
+  }
+  const repoRoot = topLevel.stdout.trim()
+  if (repoRoot.length === 0) {
+    return null
+  }
+  const gitDir = await resolveGitDir(repoRoot)
+  return gitDir ? { repoRoot, gitDir } : null
+}
+
+/** Never throws — a probe failure is reported as a clean tree, not an error. */
+export async function probeWorkingTree(repoRoot: string): Promise<WorkingTreeScan> {
+  let dirtyPaths: DirtyPathEntry[]
+  try {
+    dirtyPaths = await listDirtyPaths(repoRoot, { noOptionalLocks: true })
+  } catch {
+    return { dirty: false, files: [] }
+  }
+
+  if (dirtyPaths.length === 0) {
+    return { dirty: false, files: [] }
+  }
+
+  // Deletions have no worktree file to stat, so they can't anchor the window.
+  const candidates = dirtyPaths
+    .filter((entry) => entry.changeType !== "deleted")
+    .slice(0, DIRTY_PROBE_MAX_FILES)
+
+  const scanned = await mapWithConcurrency(candidates, FILE_SCAN_CONCURRENCY, async (entry) => {
+    const fileInfo = await stat(path.join(repoRoot, entry.path)).catch(() => null)
+    return fileInfo?.isFile() ? { path: entry.path, mtimeMs: fileInfo.mtimeMs } : null
+  })
+
+  // `dirty` stays true even when nothing was stat-able (a deletion-only tree):
+  // the tree really is dirty, we just have no anchor for it.
+  return { dirty: true, files: scanned.filter((file): file is { path: string; mtimeMs: number } => file !== null) }
+}
+
 async function countFileLines(absolutePath: string, size: number): Promise<number> {
   if (size <= 0 || size > MAX_LINE_COUNT_BYTES) {
     return 0
@@ -1067,11 +1163,17 @@ async function computeCurrentFiles(
   repoRoot: string,
   baseCommit: string | null,
   lineCounts?: { cache: LineCountCache; nextCache: LineCountCache }
-): Promise<ChatDiffFile[]> {
+): Promise<{ files: ChatDiffFile[]; scan: WorkingTreeScan }> {
   const currentDirtyPaths = await listDirtyPaths(repoRoot)
   const trackedStatsByPath = await getTrackedDiffStats(repoRoot, baseCommit)
   const lineCountCache = lineCounts?.cache ?? new Map<string, LineCountCacheEntry>()
   const nextLineCountCache = lineCounts?.nextCache ?? new Map<string, LineCountCacheEntry>()
+
+  // This scan already stats every dirty file, so the working-tree reading comes
+  // along for free — no extra git or stat calls. Keeps the sidebar's
+  // uncommitted-work signal current for whichever project the client is
+  // refreshing, and clears it the instant a commit goes through Kanna.
+  const scanFiles: Array<{ path: string; mtimeMs: number }> = []
 
   const files = await mapWithConcurrency(currentDirtyPaths, FILE_SCAN_CONCURRENCY, async (entry): Promise<ChatDiffFile | null> => {
     const relativePath = entry.path
@@ -1088,6 +1190,10 @@ async function computeCurrentFiles(
     const mimeType = isFile ? inferProjectFileContentType(relativePath, Bun.file(absolutePath).type) : undefined
     const size = isFile ? fileInfo!.size : undefined
     const mtimeMs = isFile ? fileInfo!.mtimeMs : undefined
+
+    if (mtimeMs !== undefined) {
+      scanFiles.push({ path: relativePath, mtimeMs })
+    }
 
     const trackedStats = trackedStatsByPath.get(relativePath)
     const additions = trackedStats
@@ -1122,7 +1228,10 @@ async function computeCurrentFiles(
     }
   })
 
-  return files.filter((file): file is ChatDiffFile => file !== null)
+  return {
+    files: files.filter((file): file is ChatDiffFile => file !== null),
+    scan: { dirty: currentDirtyPaths.length > 0, files: scanFiles },
+  }
 }
 
 function normalizeRepoRelativePath(inputPath: string) {
@@ -1199,6 +1308,12 @@ export class DiffStore {
   private readonly queuedRefreshes = new Map<string, Promise<boolean>>()
   /** PR numbers by "repoRoot\nlocalBranchName", recorded when a PR is checked out through Kanna. */
   private readonly prNumbersByBranch = new Map<string, number>()
+  /**
+   * Notified on every completed refresh so the working-tree probe can piggyback
+   * on a scan that already stat'ed every dirty file. A callback rather than a
+   * direct import because `worktree-probe.ts` imports from this module.
+   */
+  onWorkingTreeProbe?: (projectId: string, scan: WorkingTreeScan) => void
 
   private getPrBranchKey(repoRoot: string, branchName: string) {
     return `${repoRoot}\n${branchName}`
@@ -1509,6 +1624,7 @@ export class DiffStore {
     const repo = await resolveRepo(projectPath)
     if (!repo) {
       this.lineCountCaches.delete(projectId)
+      this.onWorkingTreeProbe?.(projectId, { dirty: false, files: [] })
       const nextState = {
         status: "no_repo",
         branchName: undefined,
@@ -1529,7 +1645,7 @@ export class DiffStore {
     const nextLineCountCache = new Map<string, LineCountCacheEntry>()
     // These are all read-only git queries — run them concurrently instead of
     // paying ~10 sequential subprocess round-trips per refresh.
-    const [files, branchName, defaultBranchName, originRemoteUrl, hasUpstream, lastFetchedAt] = await Promise.all([
+    const [currentFiles, branchName, defaultBranchName, originRemoteUrl, hasUpstream, lastFetchedAt] = await Promise.all([
       computeCurrentFiles(repo.repoRoot, repo.baseCommit, {
         cache: lineCountCache,
         nextCache: nextLineCountCache,
@@ -1541,6 +1657,8 @@ export class DiffStore {
       getLastFetchedAt(repo.repoRoot),
     ])
     this.lineCountCaches.set(projectId, nextLineCountCache)
+    const files = currentFiles.files
+    this.onWorkingTreeProbe?.(projectId, currentFiles.scan)
     const hasOriginRemote = originRemoteUrl !== null
     const originRepoSlug = extractGitHubRepoSlug(originRemoteUrl) ?? undefined
     const [upstreamCounts, branchHistory] = await Promise.all([
@@ -2228,6 +2346,9 @@ export class DiffStore {
     const currentDirtyPathsByPath = new Map(currentDirtyEntries.map((entry) => [entry.path, entry]))
     const missingPaths = normalizedPaths.filter((relativePath) => !currentDirtyPathsByPath.has(relativePath))
     if (missingPaths.length > 0) {
+      // The selection is stale (e.g. an agent committed or reverted the file
+      // since the sidebar snapshot) — refresh so the sidebar catches up.
+      await this.refreshSnapshot(args.projectId, args.projectPath)
       throw new Error(`File is no longer changed: ${missingPaths[0]}`)
     }
 
@@ -2235,7 +2356,15 @@ export class DiffStore {
     // not overflow the OS argv size limit.
     const toPathspecStdin = (paths: string[]) => paths.join(String.fromCharCode(0))
 
-    const trackedPaths = normalizedPaths.filter((relativePath) => !currentDirtyPathsByPath.get(relativePath)?.isUntracked)
+    // Entries whose change is already fully staged (e.g. an agent ran
+    // `git rm`/`git add`) are skipped here: a staged deletion exists in
+    // neither the worktree nor the index, so a `git add` pathspec would fail
+    // with "did not match any files". `git commit --only` below still matches
+    // them against HEAD and commits the staged state.
+    const trackedPaths = normalizedPaths.filter((relativePath) => {
+      const entry = currentDirtyPathsByPath.get(relativePath)
+      return entry ? !entry.isUntracked && entry.hasUnstagedChanges : false
+    })
     if (trackedPaths.length > 0) {
       const addTrackedResult = await runGit(
         ["add", "-u", "--pathspec-from-file=-", "--pathspec-file-nul"],
@@ -2243,6 +2372,7 @@ export class DiffStore {
         { stdin: toPathspecStdin(trackedPaths) }
       )
       if (addTrackedResult.exitCode !== 0) {
+        await this.refreshSnapshot(args.projectId, args.projectPath)
         return createCommitFailure(args.mode, formatGitFailure(addTrackedResult))
       }
     }
@@ -2255,6 +2385,7 @@ export class DiffStore {
         { stdin: toPathspecStdin(untrackedPaths) }
       )
       if (addUntrackedResult.exitCode !== 0) {
+        await this.refreshSnapshot(args.projectId, args.projectPath)
         return createCommitFailure(args.mode, formatGitFailure(addUntrackedResult))
       }
     }
@@ -2267,6 +2398,7 @@ export class DiffStore {
 
     const commitResult = await runGit(commitArgs, repo.repoRoot, { stdin: toPathspecStdin(normalizedPaths) })
     if (commitResult.exitCode !== 0) {
+      await this.refreshSnapshot(args.projectId, args.projectPath)
       return createCommitFailure(args.mode, formatGitFailure(commitResult))
     }
 

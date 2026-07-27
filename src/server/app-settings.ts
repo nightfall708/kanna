@@ -11,6 +11,7 @@ import {
   type ProviderPreferenceInput,
 } from "../shared/provider-preferences"
 import {
+  DEFAULT_NEW_PROJECTS_DIRECTORY,
   type AppSettingsPatch,
   type AppSettingsSnapshot,
   type AppThemePreference,
@@ -30,6 +31,7 @@ interface AppSettingsFile {
   terminal?: {
     scrollbackLines?: unknown
     minColumnWidth?: unknown
+    webglRenderer?: unknown
   }
   editor?: {
     preset?: unknown
@@ -44,9 +46,14 @@ interface AppSettingsFile {
   }
   transcriptAutoScroll?: unknown
   newSidebarEnabled?: unknown
+  newProjectsDirectory?: unknown
+  setupShown?: unknown
+  setupCompleted?: unknown
+  setupDismissed?: unknown
 }
 
-interface AppSettingsState extends AppSettingsSnapshot {
+// devbox is a server-runtime fact (the --cloud flag), not settings state.
+interface AppSettingsState extends Omit<AppSettingsSnapshot, "devbox"> {
   analyticsUserId: string
 }
 
@@ -147,11 +154,16 @@ function toFilePayload(state: AppSettingsState) {
     providerDefaults: state.providerDefaults,
     transcriptAutoScroll: state.transcriptAutoScroll,
     newSidebarEnabled: state.newSidebarEnabled,
+    newProjectsDirectory: state.newProjectsDirectory,
+    setupShown: state.setupShown,
+    setupCompleted: state.setupCompleted,
+    setupDismissed: state.setupDismissed,
   }
 }
 
-function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
+function toSnapshot(state: AppSettingsState, devbox = false): AppSettingsSnapshot {
   return {
+    devbox,
     analyticsEnabled: state.analyticsEnabled,
     browserSettingsMigrated: state.browserSettingsMigrated,
     theme: state.theme,
@@ -163,6 +175,10 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     providerDefaults: state.providerDefaults,
     transcriptAutoScroll: state.transcriptAutoScroll,
     newSidebarEnabled: state.newSidebarEnabled,
+    newProjectsDirectory: state.newProjectsDirectory,
+    setupShown: state.setupShown,
+    setupCompleted: state.setupCompleted,
+    setupDismissed: state.setupDismissed,
     warning: state.warning,
     filePathDisplay: state.filePathDisplay,
   }
@@ -203,6 +219,14 @@ function normalizeAppSettings(
     warnings.push("newSidebarEnabled must be a boolean")
   }
 
+  const rawNewProjectsDirectory = typeof source?.newProjectsDirectory === "string"
+    ? source.newProjectsDirectory.trim()
+    : ""
+  const newProjectsDirectory = rawNewProjectsDirectory || DEFAULT_NEW_PROJECTS_DIRECTORY
+  if (source?.newProjectsDirectory !== undefined && !rawNewProjectsDirectory) {
+    warnings.push("newProjectsDirectory must be a non-empty string")
+  }
+
   const editorPreset = normalizeEditorPreset(source?.editor?.preset)
   const state: AppSettingsState = {
     analyticsEnabled,
@@ -214,6 +238,7 @@ function normalizeAppSettings(
     terminal: {
       scrollbackLines: clampNumber(source?.terminal?.scrollbackLines, DEFAULT_TERMINAL_SCROLLBACK, MIN_TERMINAL_SCROLLBACK, MAX_TERMINAL_SCROLLBACK),
       minColumnWidth: clampNumber(source?.terminal?.minColumnWidth, DEFAULT_TERMINAL_MIN_COLUMN_WIDTH, MIN_TERMINAL_MIN_COLUMN_WIDTH, MAX_TERMINAL_MIN_COLUMN_WIDTH),
+      webglRenderer: source?.terminal?.webglRenderer === true,
     },
     editor: {
       preset: editorPreset,
@@ -223,6 +248,12 @@ function normalizeAppSettings(
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
     transcriptAutoScroll: typeof source?.transcriptAutoScroll === "boolean" ? source.transcriptAutoScroll : true,
     newSidebarEnabled,
+    newProjectsDirectory,
+    // Onboarding markers default to false so a machine that has never run the
+    // wizard still gets it; once set they stay set for every browser.
+    setupShown: source?.setupShown === true,
+    setupCompleted: source?.setupCompleted === true,
+    setupDismissed: source?.setupDismissed === true,
     warning: null,
     filePathDisplay: formatDisplayPath(filePath),
   }
@@ -253,6 +284,12 @@ function toComparablePayload(source: AppSettingsFile) {
     providerDefaults: source.providerDefaults,
     transcriptAutoScroll: source.transcriptAutoScroll,
     newSidebarEnabled: source.newSidebarEnabled,
+    newProjectsDirectory: typeof source.newProjectsDirectory === "string"
+      ? source.newProjectsDirectory.trim()
+      : source.newProjectsDirectory,
+    setupShown: source.setupShown,
+    setupCompleted: source.setupCompleted,
+    setupDismissed: source.setupDismissed,
   }
 }
 
@@ -303,10 +340,13 @@ export class AppSettingsManager {
   private watcher: FSWatcher | null = null
   private state: AppSettingsState
   private readonly listeners = new Set<(snapshot: AppSettingsSnapshot) => void>()
+  /** Server-computed snapshot fields — never read from or written to the file. */
+  private readonly extras: { devbox: boolean }
 
-  constructor(filePath = getSettingsFilePath(homedir())) {
+  constructor(filePath = getSettingsFilePath(homedir()), extras: { devbox?: boolean } = {}) {
     this.filePath = filePath
     this.state = normalizeAppSettings(undefined, filePath).payload
+    this.extras = { devbox: extras.devbox === true }
   }
 
   async initialize() {
@@ -322,7 +362,7 @@ export class AppSettingsManager {
   }
 
   getSnapshot() {
-    return toSnapshot(this.state)
+    return toSnapshot(this.state, this.extras.devbox)
   }
 
   getState() {
@@ -354,7 +394,7 @@ export class AppSettingsManager {
     await mkdir(path.dirname(this.filePath), { recursive: true })
     await writeFile(this.filePath, `${JSON.stringify(toFilePayload(nextState), null, 2)}\n`, "utf8")
     this.setState(nextState)
-    return toSnapshot(nextState)
+    return toSnapshot(nextState, this.extras.devbox)
   }
 
   private async readState(options?: { persistNormalized?: boolean }) {
@@ -389,7 +429,7 @@ export class AppSettingsManager {
 
   private setState(state: AppSettingsState) {
     this.state = state
-    const snapshot = toSnapshot(state)
+    const snapshot = toSnapshot(state, this.extras.devbox)
     for (const listener of this.listeners) {
       listener(snapshot)
     }

@@ -1,15 +1,18 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
-import { Flower, History, House, Loader2, PanelLeft, Search, X, Menu, Plus, Settings, SquarePen } from "lucide-react"
+import { Flower, House, Loader2, PanelLeft, Search, X, Menu, Plus, Settings, SquarePen, Terminal } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { APP_NAME } from "../../shared/branding"
 import { Button } from "../components/ui/button"
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog"
 import { formatSidebarAgeLabel } from "../lib/formatters"
 import { getSidebarChatTimestamp } from "../lib/sidebarChats"
-import { cn } from "../lib/utils"
-import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
+import { getThreadDetailLabel } from "../lib/thread-detail-label"
+import { flattenSidebarThreads } from "../lib/thread-sections"
+import { cn, normalizeChatId } from "../lib/utils"
 import { LocalProjectsSection, projectActivity } from "../components/chat-ui/sidebar/LocalProjectsSection"
+import { ThreadRow } from "../components/chat-ui/sidebar/ThreadRow"
 import { ThreadSections } from "../components/chat-ui/sidebar/ThreadSections"
+import { Kbd } from "../components/ui/kbd"
 import { SegmentedControl } from "../components/ui/segmented-control"
 import { MachineSwitcher } from "./MachineSwitcher"
 import { getResolvedKeybindings } from "../lib/keybindings"
@@ -77,7 +80,6 @@ interface KannaSidebarProps {
   onOpenArchivedChat: (chatId: string) => void
   onRestoreChat: (chatId: string) => void
   onDeleteChat: (chat: SidebarChatRow) => void
-  onOpenAddProjectModal: () => void
   onCopyPath: (localPath: string) => void
   onOpenExternalPath: (action: "open_finder" | "open_editor", localPath: string) => void
   onRenameProject: (projectId: string, sidebarTitle: string | undefined, realTitle: string) => void
@@ -110,7 +112,6 @@ function KannaSidebarImpl({
   onOpenArchivedChat,
   onRestoreChat,
   onDeleteChat,
-  onOpenAddProjectModal,
   onCopyPath,
   onOpenExternalPath,
   onRenameProject,
@@ -130,14 +131,6 @@ function KannaSidebarImpl({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
 
-  // The selected chat's project group, when it has chats to browse — gates the
-  // "Chats in <project>" shortcut (mirrors the palette's own action gating).
-  const currentProjectGroup = useMemo(() => {
-    if (!currentProjectId) return null
-    const group = data.projectGroups.find((candidate) => candidate.groupKey === currentProjectId)
-    if (!group) return null
-    return group.chats.length > 0 || (group.archivedChats?.length ?? 0) > 0 ? group : null
-  }, [currentProjectId, data.projectGroups])
   const [showNumberJumpHints, setShowNumberJumpHints] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
@@ -162,6 +155,14 @@ function KannaSidebarImpl({
   const projectIdByPath = useMemo(
     () => new Map(data.projectGroups.map((group) => [group.localPath, group.groupKey])),
     [data.projectGroups]
+  )
+
+  // The Projects tab renders the same `ThreadRow` as the Chats tab, which wants
+  // a SidebarThread. Reuse the flattener rather than synthesising one per row so
+  // projectId/projectTitle/archived stay correct in one place.
+  const threadByChatId = useMemo(
+    () => new Map(flattenSidebarThreads(data).map((thread) => [thread.chatId, thread])),
+    [data]
   )
 
   const activeVisibleCount = visibleChats.length
@@ -233,33 +234,38 @@ function KannaSidebarImpl({
   }, [navigate, onClose])
 
   const renderChatRow = useCallback((chat: SidebarChatRow) => {
+    const thread = threadByChatId.get(chat.chatId)
+    if (!thread) return null
     const visibleIndex = visibleIndexByChatId.get(chat.chatId)
+    const shortcutHint = visibleIndex ? getSidebarNumberJumpHint(resolvedKeybindings, visibleIndex) : null
 
     return (
-      <ChatRow
+      <ThreadRow
         key={chat._id}
-        chat={chat}
-        activeChatId={activeChatId}
-        nowMs={nowMs}
-        shortcutHint={visibleIndex ? getSidebarNumberJumpHint(resolvedKeybindings, visibleIndex) : null}
-        showShortcutHint={showNumberJumpHints}
+        thread={thread}
+        isActive={activeChatId === normalizeChatId(chat.chatId)}
         editorLabel={editorLabel}
-        onSelectChat={selectChat}
-        onNewChatInProject={(localPath) => {
-          const projectId = projectIdByPath.get(localPath)
-          if (projectId) onCreateChat(projectId)
-        }}
-        onRenameChat={() => onRenameChat(chat)}
-        onShareChat={() => onShareChat(chat.chatId)}
-        onCopyPath={() => onCopyPath(chat.localPath)}
-        onOpenInFinder={() => onOpenExternalPath("open_finder", chat.localPath)}
-        onOpenInEditor={() => onOpenExternalPath("open_editor", chat.localPath)}
-        onForkChat={() => onForkChat(chat)}
-        onArchiveChat={() => onArchiveChat(chat)}
-        onDeleteChat={() => onDeleteChat(chat)}
+        // Project-scoped: rows already sit under their project header, so the
+        // slot shows the chat's age — swapped for a keycap while the
+        // number-jump modifier is held.
+        detailLabel={showNumberJumpHints && shortcutHint ? (
+          <Kbd className="h-4 min-w-4 rounded-sm border-border/50 bg-transparent px-1 text-[10px]">
+            {shortcutHint}
+          </Kbd>
+        ) : getThreadDetailLabel(thread, "project-scoped", nowMs)}
+        onSelect={selectChat}
+        onCreateChat={onCreateChat}
+        onRenameChat={onRenameChat}
+        onShareChat={onShareChat}
+        onCopyPath={onCopyPath}
+        onOpenExternalPath={onOpenExternalPath}
+        onForkChat={onForkChat}
+        onArchiveChat={onArchiveChat}
+        onRestoreChat={onRestoreChat}
+        onDeleteChat={onDeleteChat}
       />
     )
-  }, [activeChatId, editorLabel, nowMs, onArchiveChat, onCopyPath, onCreateChat, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, onShareChat, projectIdByPath, resolvedKeybindings, selectChat, showNumberJumpHints, visibleIndexByChatId])
+  }, [activeChatId, editorLabel, nowMs, onArchiveChat, onCopyPath, onCreateChat, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, onRestoreChat, onShareChat, resolvedKeybindings, selectChat, showNumberJumpHints, threadByChatId, visibleIndexByChatId])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -285,9 +291,8 @@ function KannaSidebarImpl({
 
       if (isSidebarModifierShortcut(resolvedKeybindings, "openAddProject", event)) {
         event.preventDefault()
-        navigate("/")
         onClose()
-        onOpenAddProjectModal()
+        openCommandPalette("add-project")
         return
       }
 
@@ -323,7 +328,7 @@ function KannaSidebarImpl({
       window.removeEventListener("keyup", handleKeyUp)
       window.removeEventListener("blur", clearHints)
     }
-  }, [currentProjectId, navigate, onClose, onCreateChat, onOpenAddProjectModal, resolvedKeybindings])
+  }, [currentProjectId, navigate, onClose, onCreateChat, resolvedKeybindings])
 
   useEffect(() => {
     if (!activeChatId || !scrollContainerRef.current) return
@@ -385,6 +390,7 @@ function KannaSidebarImpl({
   const hasVisibleChats = activeVisibleCount > 0
   const isLocalProjectsActive = location.pathname === "/"
   const newSidebarEnabled = useAppSettingsStore((s) => s.settings?.newSidebarEnabled !== false)
+  const devbox = useAppSettingsStore((s) => s.settings?.devbox === true)
   const newSidebarProjectsView = newSidebarEnabled && sidebarView === "projects"
 
   // New Sidebar's Projects tab hides projects with no chats and sorts by
@@ -472,17 +478,21 @@ function KannaSidebarImpl({
             >
               <X className="h-5 w-5" />
             </Button>
-            {!newSidebarEnabled ? (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="w-[42px] rounded-lg hover:!border-border/0 !border-0 -translate-x-[1px]"
-                onClick={() => window.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT))}
-                title="Search"
-              >
-                <Search className="h-5 w-5" />
-              </Button>
-            ) : null}
+            <Button
+              variant="ghost"
+              size="icon"
+              className={cn(
+                "w-[42px] rounded-lg hover:!border-border/0 !border-0 -translate-x-[1px]",
+                isSettingsActive ? "text-foreground" : "text-muted-foreground"
+              )}
+              onClick={() => {
+                navigate("/settings/general")
+                onClose()
+              }}
+              title="Settings"
+            >
+              <Settings className="h-5 w-5" />
+            </Button>
           </div>
           <div className="flex items-center justify-self-center gap-2 md:justify-self-auto">
             <button
@@ -498,6 +508,17 @@ function KannaSidebarImpl({
             <span className="font-logo text-base uppercase sm:text-md text-slate-600 dark:text-slate-100">{APP_NAME}</span>
           </div>
           <div className="flex items-center justify-self-end md:justify-self-auto">
+            {!newSidebarEnabled ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-10 rounded-lg hover:!border-border/0 md:hidden"
+                onClick={() => window.dispatchEvent(new CustomEvent(OPEN_COMMAND_PALETTE_EVENT))}
+                title="Search"
+              >
+                <Search className="h-5 w-5" />
+              </Button>
+            ) : null}
             <Button
               variant="ghost"
               size="icon"
@@ -558,7 +579,7 @@ function KannaSidebarImpl({
                   navigate("/")
                   onClose()
                 }}
-              className="hidden md:inline-flex h-10 w-auto rounded-lg px-1.5 hover:!border-border/0"
+              className="hidden md:inline-flex h-10 w-auto rounded-lg px-1.5 pl-2 hover:!border-border/0"
               title={newSidebarEnabled ? "Search" : "New project"}
             >
               {newSidebarEnabled ? <Search className="size-4" /> : <Plus className="size-4" />}
@@ -584,7 +605,7 @@ function KannaSidebarImpl({
         </div>
 
         {newSidebarEnabled ? (
-          <div className="flex flex-col gap-[1px] border-b border-border px-[7px] py-2">
+          <div className="px-[7px] py-2">
             <SegmentedControl
               value={sidebarView}
               onValueChange={changeSidebarView}
@@ -593,27 +614,9 @@ function KannaSidebarImpl({
                 { value: "projects", label: "Projects" },
               ]}
               size="sm"
-              className="grid w-full grid-cols-2 mb-2"
+              className="grid w-full grid-cols-2"
               optionClassName="w-full justify-center"
             />
-            <button
-              type="button"
-              onClick={() => openCommandPalette("new-thread")}
-              className="flex w-full items-center gap-2 rounded-lg border border-border/0 px-2 py-1.5 max-md:py-2 text-sm max-md:text-base text-muted-foreground transition-colors hover:border-border hover:bg-muted"
-            >
-              <SquarePen className="h-4 w-4 shrink-0" />
-              <span>New chat in…</span>
-            </button>
-            {currentProjectGroup ? (
-              <button
-                type="button"
-                onClick={() => openCommandPalette("project-chats")}
-                className="flex w-full items-center gap-2 rounded-lg border border-border/0 px-2 py-1.5 max-md:py-2 text-sm max-md:text-base text-muted-foreground transition-colors hover:border-border hover:bg-muted"
-              >
-                <History className="h-4 w-4 shrink-0" />
-                <span className="min-w-0 truncate">Chats in {currentProjectGroup.title}</span>
-              </button>
-            ) : null}
           </div>
         ) : null}
 
@@ -626,6 +629,40 @@ function KannaSidebarImpl({
           }}
         >
           <div className="p-[7px]">
+            {newSidebarEnabled ? (
+              <div className="flex flex-col gap-[1px] pb-2">
+                <button
+                  type="button"
+                  onClick={() => openCommandPalette("new-thread")}
+                  className="flex w-full items-center gap-2 rounded-lg border border-border/0 px-2 py-1.5 max-md:py-2 text-sm max-md:text-base text-muted-foreground transition-colors hover:border-border hover:bg-muted"
+                >
+                  <SquarePen className="h-4 w-4 shrink-0" />
+                  <span>New Chat</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openCommandPalette("add-project")}
+                  className="flex w-full items-center gap-2 rounded-lg border border-border/0 px-2 py-1.5 max-md:py-2 text-sm max-md:text-base text-muted-foreground transition-colors hover:border-border hover:bg-muted"
+                >
+                  <Plus className="h-4 w-4 shrink-0" />
+                  <span>Add Project</span>
+                </button>
+                {devbox ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigate("/terminal")
+                      onClose()
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg border border-border/0 px-2 py-1.5 max-md:py-2 text-sm max-md:text-base text-muted-foreground transition-colors hover:border-border hover:bg-muted"
+                  >
+                    <Terminal className="h-4 w-4 shrink-0" />
+                    <span>Terminal</span>
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+
             {!hasVisibleChats && isConnecting ? (
               <div className="space-y-5 px-1 pt-3">
                 {[0, 1, 2].map((section) => (
@@ -702,7 +739,7 @@ function KannaSidebarImpl({
         </div>
 
           <MachineSwitcher />
-        <div className={cn("border-t border-border p-2", isStandalone && "pb-[55px]")}>
+        <div className={cn("hidden md:block border-t border-border p-2", isStandalone && "pb-[55px]")}>
           <button
             type="button"
             onClick={() => {
@@ -716,7 +753,7 @@ function KannaSidebarImpl({
                 : "border-border/0 hover:bg-muted hover:border-border active:bg-muted/80"
             )}
           >
-            <div className="flex items- justify-between gap-2">
+            <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Settings className="h-4 w-4 text-muted-foreground" />
                 <span className="text-sm">Settings</span>

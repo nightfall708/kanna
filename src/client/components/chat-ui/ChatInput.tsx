@@ -1,8 +1,10 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ArrowUp, Paperclip } from "lucide-react"
 import {
+  chatModeFromFlags,
   type AgentProvider,
   type ChatAttachment,
+  type ChatMode,
   type ChatSkillsSnapshot,
   type HarnessSkill,
   type ModelOptions,
@@ -19,6 +21,8 @@ import { useChatInputStore } from "../../stores/chatInputStore"
 import { type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput, REQUEST_ATTACH_FILES_EVENT } from "../../app/chatFocusPolicy"
 import { formatPathWithTilde } from "../../lib/pathUtils"
+import { useUnauthenticatedHarnesses } from "../../stores/providerAuthStore"
+import { SignInDialog } from "../auth/SignInDialog"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 import { ContextWindowMeter } from "./ContextWindowMeter"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
@@ -119,7 +123,7 @@ interface ComposerAttachment extends ChatAttachment {
 interface Props {
   onSubmit: (
     value: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: ChatAttachment[] }
+    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; autoPlan?: boolean; attachments?: ChatAttachment[] }
   ) => Promise<void>
   onLayoutChange?: () => void
   onCancel?: () => void
@@ -178,10 +182,25 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   })
   const { composerChatId, providerSwitchPending, selectedProvider } = composer
   const providerPrefs = composer.effectiveState
-  const showPlanMode = composer.supportsPlanMode
+  const showModePicker = composer.supportsPlanMode
+  // Switching to a harness that isn't signed in is blocked: the pick is
+  // stashed here, a sign-in dialog opens, and the switch applies
+  // automatically once the auth store reports the service signed in.
+  const unauthenticatedHarnesses = useUnauthenticatedHarnesses()
+  const [pendingSignInProvider, setPendingSignInProvider] = useState<AgentProvider | null>(null)
+  useEffect(() => {
+    if (!pendingSignInProvider) return
+    if (unauthenticatedHarnesses.has(pendingSignInProvider)) return
+    composer.selectProvider(pendingSignInProvider)
+    setPendingSignInProvider(null)
+  }, [pendingSignInProvider, unauthenticatedHarnesses, composer])
   const [value, setValue] = useState(() => (chatId ? getDraft(chatId) : ""))
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
+  // Leading/trailing gutter *inside* the controls scroller, standing in for the
+  // horizontal padding its wrapper can't have. Standalone keeps the same 32px
+  // net inset the old wrapper produced (20px padding + 12px spacer).
+  const controlsScrollSpacer = cn("min-w-3", isStandalone && "min-w-8")
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : []))
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -430,12 +449,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     attachmentsRef.current.forEach(cleanupAttachmentPreview)
   }, [cleanupAttachmentPreview])
 
-  function setEffectivePlanMode(planMode: boolean) {
-    composer.setPlanMode(planMode)
-  }
-
-  function toggleEffectivePlanMode() {
-    setEffectivePlanMode(!providerPrefs.planMode)
+  function setEffectiveMode(mode: ChatMode) {
+    composer.setMode(mode)
   }
 
   const processUploadQueue = useCallback(() => {
@@ -581,7 +596,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       provider: selectedProvider,
       model: providerPrefs.model,
       modelOptions,
-      planMode: showPlanMode ? providerPrefs.planMode : false,
+      planMode: showModePicker ? providerPrefs.planMode : false,
+      autoPlan: showModePicker ? providerPrefs.autoPlan : false,
       attachments: attachmentsForSubmit,
     }
     setValue("")
@@ -640,9 +656,11 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       return
     }
 
-    if (event.key === "Tab" && event.shiftKey && showPlanMode) {
+    // Cycles the provider's modes in picker order: two for codex
+    // (Full Access → Plan Mode), three for claude (… → Auto Plan).
+    if (event.key === "Tab" && event.shiftKey && showModePicker) {
       event.preventDefault()
-      toggleEffectivePlanMode()
+      composer.cycleMode()
       return
     }
 
@@ -874,9 +892,16 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }}
       />
 
-      <div className={cn("relative py-3 max-w-[840px] mx-auto", isStandalone && "p-5 pt-3")}>
+      {/*
+        Vertical padding only: horizontal padding here would clip the scroller
+        and stop the controls row from bleeding to the screen edge. The inset is
+        applied as leading/trailing spacers *inside* the scroller instead (see
+        controlsScrollSpacer), so the net gutter is unchanged but content can
+        scroll under the edge.
+      */}
+      <div className={cn("relative py-3 max-w-[840px] mx-auto", isStandalone && "pt-3 pb-5")}>
         <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden flex flex-row">
-          <div className="min-w-3" />
+          <div className={controlsScrollSpacer} />
           <label
             aria-label="Add attachment"
             className={cn(
@@ -909,6 +934,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             model={providerPrefs.model}
             modelOptions={providerPrefs.modelOptions}
             onProviderChange={(provider) => {
+              if (provider !== selectedProvider && unauthenticatedHarnesses.has(provider)) {
+                setPendingSignInProvider(provider)
+                return
+              }
               composer.selectProvider(provider)
             }}
             onModelChange={(_, model) => {
@@ -930,9 +959,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               }
             }}
             onEditModels={onEditModels}
-            planMode={providerPrefs.planMode}
-            onPlanModeChange={setEffectivePlanMode}
-            includePlanMode={showPlanMode}
+            mode={chatModeFromFlags(providerPrefs.planMode, providerPrefs.autoPlan)}
+            onModeChange={setEffectiveMode}
+            includeMode={showModePicker}
             className="max-w-[840px] mx-auto"
           />
           {activeContextWindow ? (
@@ -940,7 +969,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               <ContextWindowMeter usage={activeContextWindow} />
             </div>
           ) : null}
-          <div className="min-w-3" />
+          <div className={controlsScrollSpacer} />
         </div>
 
         {activeContextWindow ? (
@@ -951,6 +980,12 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       </div>
 
       <AttachmentPreviewModal attachment={selectedAttachment} onOpenChange={(open) => !open && setSelectedAttachmentId(null)} />
+      <SignInDialog
+        provider={pendingSignInProvider}
+        onOpenChange={(open) => {
+          if (!open) setPendingSignInProvider(null)
+        }}
+      />
     </div>
   )
 })

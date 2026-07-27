@@ -21,7 +21,6 @@ import {
   getNewestRemainingChatId,
   getPreviousPrompt,
   getProjectIdForChat,
-  INITIAL_CHAT_RECENT_LIMIT,
   NEW_CHAT_OPTIMISTIC_SCOPE,
   reconcileOptimisticUserPrompts,
   resolveComposeIntent,
@@ -40,6 +39,7 @@ import { CLOUD_WS_ENDPOINT_PATH, type CloudWsEndpointResponse } from "../../shar
 import { KannaSocket, type SocketStatus } from "./socket"
 import { useAppSettingsSync } from "./useAppSettingsSync"
 import { useChatCommands } from "./useChatCommands"
+import { useChatReadAnchor, type ChatReadAnchorState } from "./useChatReadAnchor"
 import { useSendMessage } from "./useSendMessage"
 import { useShareExport } from "./useShareExport"
 import { useUpdateRestart } from "./useUpdateRestart"
@@ -104,6 +104,14 @@ async function wsUrlProvider(): Promise<string> {
   return sameOriginWsUrl()
 }
 
+/**
+ * A socket for pages that live outside KannaLayout (e.g. the OpenRouter OAuth
+ * callback popup) — same URL resolution as the main app socket.
+ */
+export function createStandaloneKannaSocket() {
+  return new KannaSocket(wsUrlProvider)
+}
+
 function useKannaSocket() {
   const socketRef = useRef<KannaSocket | null>(null)
   if (!socketRef.current) {
@@ -129,6 +137,10 @@ export interface KannaState {
   localProjects: LocalProjectsSnapshot | null
   updateSnapshot: UpdateSnapshot | null
   chatSnapshot: ChatSnapshot | null
+  /** Server-stored read position for the active chat; drives restore on open. */
+  readAnchorState: ChatReadAnchorState
+  /** Report the message at the top of the viewport (throttled write). */
+  reportReadAnchor: (messageId: string, atEnd: boolean) => void
   chatDiffSnapshot: ChatDiffSnapshot | null
   keybindings: KeybindingsSnapshot | null
   appSettings: AppSettingsSnapshot | null
@@ -158,13 +170,10 @@ export interface KannaState {
   navbarLocalPath?: string
   editorLabel: string
   hasSelectedProject: boolean
-  addProjectModalOpen: boolean
   openSidebar: () => void
   closeSidebar: () => void
   collapseSidebar: () => void
   expandSidebar: () => void
-  openAddProjectModal: () => void
-  closeAddProjectModal: () => void
   loadOlderHistory: () => Promise<void>
   handleCreateChat: (projectId: string) => Promise<void>
   handleForkChat: (chat: SidebarChatRow) => Promise<void>
@@ -172,6 +181,8 @@ export interface KannaState {
   handleCreateProject: (project: ProjectRequest) => Promise<void>
   handleCheckForUpdates: (options?: { force?: boolean }) => Promise<void>
   handleInstallUpdate: () => Promise<void>
+  handleInstallNightly: () => Promise<void>
+  handleInstallStable: () => Promise<void>
   handleReadAppSettings: () => Promise<void>
   handleWriteAppSettings: (patch: AppSettingsPatch) => Promise<void>
   handleReadLlmProvider: () => Promise<void>
@@ -179,7 +190,7 @@ export interface KannaState {
   handleWriteFaveModels: (faveModels: FaveModel[]) => Promise<void>
   handleValidateLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
   handleSignOut: () => Promise<void>
-  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean }) => Promise<void>
+  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; autoPlan?: boolean }) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleCancel: () => Promise<void>
@@ -237,7 +248,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [addProjectModalOpen, setAddProjectModalOpen] = useState(false)
   const [commandError, setCommandError] = useState<string | null>(null)
   const [startingLocalPath, setStartingLocalPath] = useState<string | null>(null)
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
@@ -300,7 +310,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     })
   }, [socket])
 
-  const { updateSnapshot, handleCheckForUpdates, handleInstallUpdate } = useUpdateRestart({
+  const { updateSnapshot, handleCheckForUpdates, handleInstallUpdate, handleInstallNightly, handleInstallStable } = useUpdateRestart({
     socket,
     connectionStatus,
     dialog,
@@ -319,6 +329,14 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleValidateLlmProvider,
   } = useAppSettingsSync({ socket, connectionStatus, setCommandError })
 
+  // Declared before the chat subscription so a widened window (an anchor that
+  // predates the default recent page) is available when the subscription runs.
+  const {
+    anchorState: readAnchorState,
+    recentLimit: chatRecentLimit,
+    reportReadAnchor,
+  } = useChatReadAnchor(socket, activeChatId)
+
   useEffect(() => {
     if (!activeChatId) {
       setChatSnapshot(null)
@@ -328,7 +346,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
     setChatSnapshot(null)
     setChatReady(false)
-    const unsubscribe = socket.subscribe<ChatSnapshot | null>({ type: "chat", chatId: activeChatId, recentLimit: INITIAL_CHAT_RECENT_LIMIT }, (snapshot) => {
+    const unsubscribe = socket.subscribe<ChatSnapshot | null>({ type: "chat", chatId: activeChatId, recentLimit: chatRecentLimit }, (snapshot) => {
       setChatSnapshot((current) => (sameChatSnapshotCore(current, snapshot) ? current : snapshot))
       setHistoryCursor(snapshot?.history.olderCursor ?? null)
       setHasOlderHistory(snapshot?.history.hasOlder ?? false)
@@ -336,7 +354,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
       setCommandError(null)
     })
     return unsubscribe
-  }, [activeChatId, socket])
+  }, [activeChatId, chatRecentLimit, socket])
 
   useEffect(() => {
     if (selectedProjectId) return
@@ -589,7 +607,9 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
     const command: Parameters<typeof socket.command>[0] = intent.project.mode === "clone" && intent.project.cloneUrl
       ? { type: "project.clone", cloneUrl: intent.project.cloneUrl, localPath: intent.project.localPath, fallbackPath: intent.project.fallbackPath, title: intent.project.title }
-      : { type: "project.open", localPath: intent.project.localPath }
+      : intent.project.mode === "create"
+        ? { type: "project.create", localPath: intent.project.localPath, title: intent.project.title }
+        : { type: "project.open", localPath: intent.project.localPath }
     const result = await socket.command<{ projectId: string; localPath?: string }>(command)
     return { projectId: result.projectId, localPath: result.localPath ?? intent.project.localPath }
   }, [socket])
@@ -609,8 +629,9 @@ export function useKannaState(activeChatId: string | null): KannaState {
       await createChatForProject(projectId)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
-      // Re-throw for clone operations so the modal can show the error inline
-      if (intent.kind === "project_request" && intent.project.mode === "clone") {
+      // Re-throw project requests so the command palette can show the
+      // failure inline (clone/create/open rows).
+      if (intent.kind === "project_request") {
         throw error
       }
     } finally {
@@ -811,8 +832,6 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const closeSidebar = useCallback(() => setSidebarOpen(false), [])
   const collapseSidebar = useCallback(() => setSidebarCollapsed(true), [])
   const expandSidebar = useCallback(() => setSidebarCollapsed(false), [])
-  const openAddProjectModal = useCallback(() => setAddProjectModalOpen(true), [])
-  const closeAddProjectModal = useCallback(() => setAddProjectModalOpen(false), [])
 
   return {
     socket,
@@ -822,6 +841,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
     localProjects,
     updateSnapshot,
     chatSnapshot,
+    readAnchorState,
+    reportReadAnchor,
     chatDiffSnapshot,
     keybindings,
     appSettings,
@@ -851,13 +872,10 @@ export function useKannaState(activeChatId: string | null): KannaState {
     navbarLocalPath,
     editorLabel,
     hasSelectedProject,
-    addProjectModalOpen,
     openSidebar,
     closeSidebar,
     collapseSidebar,
     expandSidebar,
-    openAddProjectModal,
-    closeAddProjectModal,
     loadOlderHistory,
     handleCreateChat,
     handleForkChat,
@@ -865,6 +883,8 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleCreateProject,
     handleCheckForUpdates,
     handleInstallUpdate,
+    handleInstallNightly,
+    handleInstallStable,
     handleReadAppSettings,
     handleWriteAppSettings,
     handleReadLlmProvider,

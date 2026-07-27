@@ -68,6 +68,7 @@ describe("EventStore", () => {
         unread: false,
         provider: null,
         planMode: false,
+        autoPlan: false,
         sessionToken: null,
         lastTurnOutcome: null,
       }],
@@ -189,6 +190,7 @@ describe("EventStore", () => {
       provider: "codex",
       model: "gpt-5.4",
       planMode: false,
+      autoPlan: false,
     })
     const second = await store.enqueueMessage(chat.id, {
       content: "second queued",
@@ -196,6 +198,7 @@ describe("EventStore", () => {
       provider: "claude",
       model: "claude-sonnet-4-6",
       planMode: true,
+      autoPlan: false,
     })
 
     expect(store.getQueuedMessages(chat.id).map((message) => message.content)).toEqual([
@@ -241,6 +244,106 @@ describe("EventStore", () => {
     const reloaded = new EventStore(dataDir)
     await reloaded.initialize()
     expect(reloaded.getChat(chat.id)?.unread).toBe(true)
+  })
+
+  test("stores and resolves a read anchor across restart", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    expect(store.getChatReadAnchor(chat.id)).toBeNull()
+
+    await store.appendMessage(chat.id, entry("user_prompt", 200, { content: "hello" }))
+    await store.appendMessage(chat.id, entry("assistant_text", 201, { content: "world" }))
+    await store.appendMessage(chat.id, entry("assistant_text", 202, { content: "again" }))
+
+    await store.setChatReadAnchor(chat.id, "user_prompt-200", false)
+
+    // 3 entries total, anchor at index 0 -> 3 entries at or after it.
+    expect(store.getChatReadAnchor(chat.id)).toEqual({
+      messageId: "user_prompt-200",
+      atEnd: false,
+      distanceFromEnd: 3,
+    })
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.getChatReadAnchor(chat.id)).toEqual({
+      messageId: "user_prompt-200",
+      atEnd: false,
+      distanceFromEnd: 3,
+    })
+  })
+
+  test("survives compaction and tracks distance as the transcript grows", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    await store.appendMessage(chat.id, entry("user_prompt", 200, { content: "hello" }))
+    await store.setChatReadAnchor(chat.id, "user_prompt-200", true)
+    expect(store.getChatReadAnchor(chat.id)?.distanceFromEnd).toBe(1)
+
+    await store.appendMessage(chat.id, entry("assistant_text", 201, { content: "world" }))
+    expect(store.getChatReadAnchor(chat.id)?.distanceFromEnd).toBe(2)
+
+    await store.compact()
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.getChatReadAnchor(chat.id)).toEqual({
+      messageId: "user_prompt-200",
+      atEnd: true,
+      distanceFromEnd: 2,
+    })
+  })
+
+  test("resolves a read anchor to null when the anchored message is gone", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+
+    await store.appendMessage(chat.id, entry("user_prompt", 200, { content: "hello" }))
+    await store.setChatReadAnchor(chat.id, "missing-entry", false)
+
+    expect(store.getChat(chat.id)?.readAnchor?.messageId).toBe("missing-entry")
+    expect(store.getChatReadAnchor(chat.id)).toBeNull()
+  })
+
+  test("skips redundant read anchor writes", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    await store.appendMessage(chat.id, entry("user_prompt", 200, { content: "hello" }))
+
+    const chatsLogPath = join(dataDir, "chats.jsonl")
+    const countAnchorEvents = async () => {
+      const contents = await readFile(chatsLogPath, "utf8")
+      return contents.split("\n").filter((line) => line.includes("chat_read_anchor_set")).length
+    }
+
+    await store.setChatReadAnchor(chat.id, "user_prompt-200", false)
+    expect(await countAnchorEvents()).toBe(1)
+
+    // Same anchor + same atEnd -> no second event.
+    await store.setChatReadAnchor(chat.id, "user_prompt-200", false)
+    expect(await countAnchorEvents()).toBe(1)
+
+    // Flipping atEnd alone is still a real change.
+    await store.setChatReadAnchor(chat.id, "user_prompt-200", true)
+    expect(await countAnchorEvents()).toBe(2)
   })
 
   test("preserves read state after a finished turn across restart", async () => {
@@ -345,6 +448,7 @@ describe("EventStore", () => {
         updatedAt: 5,
         provider: null,
         planMode: false,
+        autoPlan: false,
         sessionToken: null,
         lastTurnOutcome: null,
       }],
@@ -665,9 +769,13 @@ describe("EventStore", () => {
     const archivedChat = await store.createChat(project.id)
     await store.appendMessage(archivedChat.id, entry("user_prompt", archivedChat.createdAt + 1, { content: "b" }))
     await store.archiveChat(archivedChat.id)
-    // Fresh chat anchors the reference past the window.
-    const latestStale = Math.max(store.getChat(plain.id)!.lastMessageAt!, store.getChat(archivedChat.id)!.lastMessageAt!)
-    const stalePoint = latestStale + NINETY_DAYS_MS
+    // Fresh chat anchors the reference past the window. Measure from whichever
+    // of the two is newer: they are created back-to-back off the real clock, so
+    // anchoring to `plain` alone leaves `archivedChat` one millisecond short of
+    // the window whenever the clock ticks between the two createChat calls.
+    const stalePoint =
+      Math.max(store.getChat(plain.id)!.lastMessageAt!, store.getChat(archivedChat.id)!.lastMessageAt!) +
+      NINETY_DAYS_MS
     const fresh = await store.createChat(project.id)
     await store.appendMessage(fresh.id, entry("user_prompt", stalePoint, { content: "c" }))
 
@@ -718,6 +826,25 @@ describe("EventStore", () => {
     expect(store.getChat(protectedChat.id)?.id).toBe(protectedChat.id)
   })
 
+  test("auto plan defaults to false and survives a replay", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    // A chat that never saw a chat_auto_plan_set event — i.e. every chat in a
+    // log written before Auto Plan existed — reads as Full Access.
+    expect(store.requireChat(chat.id).autoPlan).toBe(false)
+
+    await store.setAutoPlan(chat.id, true)
+    expect(store.requireChat(chat.id).autoPlan).toBe(true)
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.requireChat(chat.id).autoPlan).toBe(true)
+  })
+
   test("forks a chat with copied transcript and pending fork session token", async () => {
     const dataDir = await createTempDataDir()
     const store = new EventStore(dataDir)
@@ -727,6 +854,7 @@ describe("EventStore", () => {
     const source = await store.createChat(project.id)
     await store.setChatProvider(source.id, "claude")
     await store.setPlanMode(source.id, true)
+    await store.setAutoPlan(source.id, true)
     await store.setSessionToken(source.id, "session-1")
     await store.appendMessage(source.id, entry("user_prompt", source.createdAt + 1, { content: "analyze this" }))
     await store.appendMessage(source.id, entry("assistant_text", source.createdAt + 2, { text: "done" }))
@@ -737,6 +865,7 @@ describe("EventStore", () => {
     expect(forked.title).toBe("Fork: New Chat")
     expect(forked.provider).toBe("claude")
     expect(forked.planMode).toBe(true)
+    expect(forked.autoPlan).toBe(true)
     expect(forked.sessionToken).toBeNull()
     expect(forked.pendingForkSessionToken).toBe("session-1")
     expect(forked.lastTurnOutcome).toBeNull()

@@ -5,6 +5,7 @@ import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX, PACKAGE_NAME } fr
 import type { ShareMode } from "../shared/share"
 import { assertNoHostOverride, getShareCliFlag, isShareEnabled, isTokenShareMode } from "../shared/share"
 import type { UpdateInstallErrorCode } from "../shared/types"
+import { repairBunGlobalManifest, type NightlyInstallResult } from "./nightly"
 import { PROD_SERVER_PORT } from "../shared/ports"
 import { CLI_SUPPRESS_OPEN_ONCE_ENV_VAR } from "./restart"
 import { logShareDetails, renderTerminalQr, startShareTunnel, type StartedShareTunnel } from "./share"
@@ -23,12 +24,21 @@ export interface CliOptions {
   strictPort: boolean
   /** One-shot: skip bringing a paired machine online for this run. */
   noCloud: boolean
+  /**
+   * Run as a cloud dev-box (`kanna --cloud`): requires a provisioned cloud
+   * identity, forces direct mode (no cloudflared — the proxy reaches this
+   * machine at its public sandbox URL), and binds 0.0.0.0 so the sandbox
+   * ingress can reach the server. Hook for future dev-box-only features.
+   */
+  directCloud: boolean
 }
 
 export interface CliUpdateOptions {
   version: string
   fetchLatestVersion: (packageName: string) => Promise<string>
   installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
+  /** Build main from source and install it globally (see server/nightly.ts). */
+  installNightly?: () => Promise<NightlyInstallResult>
   argv: string[]
   command: string
 }
@@ -61,6 +71,7 @@ export interface CliRuntimeDeps {
   }) => Promise<{ port: number; stop: () => Promise<void>; analytics?: AnalyticsReporter }>
   fetchLatestVersion: (packageName: string) => Promise<string>
   installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
+  installNightly?: () => Promise<NightlyInstallResult>
   openUrl: (url: string) => void
   log: (message: string) => void
   warn: (message: string) => void
@@ -110,6 +121,7 @@ Options:
   --strict-port        Fail instead of trying another port
   --no-open            Don't open browser automatically
   --no-cloud           Skip bringing a paired machine online for this run
+  --cloud              Run as a cloud dev-box (direct mode, no cloudflared)
   --version            Print version and exit
   --help               Show this help message`)
 }
@@ -155,6 +167,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let sawRemote = false
   let strictPort = false
   let noCloud = false
+  let directCloud = false
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -211,6 +224,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
       noCloud = true
       continue
     }
+    if (arg === "--cloud") {
+      directCloud = true
+      continue
+    }
     if (arg === "--password") {
       const next = argv[index + 1]
       if (!next || next.startsWith("-")) throw new Error("Missing value for --password")
@@ -225,6 +242,14 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (!arg.startsWith("-")) throw new Error(`Unexpected positional argument: ${arg}`)
   }
 
+  if (directCloud) {
+    if (noCloud) throw new Error("--cloud cannot be used with --no-cloud")
+    if (isShareEnabled(share)) throw new Error(`--cloud cannot be used with ${getShareCliFlag(share)}`)
+    if (sawHost || sawRemote) throw new Error("--cloud cannot be used with --host or --remote")
+    // The sandbox ingress reaches the server from outside loopback.
+    host = "0.0.0.0"
+  }
+
   return {
     kind: "run",
     options: {
@@ -235,6 +260,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       password,
       strictPort,
       noCloud,
+      directCloud,
     },
   }
 }
@@ -345,7 +371,15 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
 
   const readIdentity = deps.readCloudIdentityImpl
     ?? ((warn: (message: string) => void) => readCloudIdentity(undefined, warn))
-  const identity = await readIdentity((message) => deps.warn(`${LOG_PREFIX} ${message}`))
+  let identity = await readIdentity((message) => deps.warn(`${LOG_PREFIX} ${message}`))
+  if (runOptions.directCloud) {
+    if (!identity) {
+      deps.warn(`${LOG_PREFIX} --cloud needs a provisioned cloud identity (~/.kanna/cloud.json) — dev-boxes get one from kanna.sh`)
+      return { kind: "exited", code: 1 }
+    }
+    // The flag is explicit intent: force direct mode and ignore a sticky disable.
+    identity = { ...identity, mode: "direct", enabled: true }
+  }
   const suppressOpenBrowser = process.env[CLI_SUPPRESS_OPEN_ONCE_ENV_VAR] === "1"
 
   // Single-instance guard: two servers on one data dir mean two JSONL
@@ -373,7 +407,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
   const cloudEligible =
     !runOptions.noCloud &&
     !isShareEnabled(runOptions.share) &&
-    runOptions.host === "127.0.0.1"
+    (runOptions.host === "127.0.0.1" || runOptions.directCloud)
   if (cloudEligible && identity?.enabled) {
     cloudRuntime = (deps.createCloudRuntimeImpl ?? createCloudRuntime)(identity)
   }
@@ -387,6 +421,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
       version: deps.version,
       fetchLatestVersion: deps.fetchLatestVersion,
       installVersion: deps.installVersion,
+      installNightly: deps.installNightly,
       argv,
       command: CLI_COMMAND,
     },
@@ -518,6 +553,11 @@ export function installPackageVersion(packageName: string, version: string) {
       userMessage: "Kanna could not find Bun to install the update.",
     } satisfies UpdateInstallAttemptResult
   }
+
+  // A corrupt global manifest (see repairBunGlobalManifest) makes every
+  // global install fail with a DependencyLoop error — heal it first so
+  // machines that hit 0.57.0's nightly bug can still auto-update.
+  repairBunGlobalManifest()
 
   const result = spawnSync("bun", ["install", "-g", `${packageName}@${version}`], {
     stdio: ["ignore", "pipe", "pipe"],

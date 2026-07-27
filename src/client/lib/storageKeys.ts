@@ -8,9 +8,6 @@ export const UI_UPDATE_RESTART_STORAGE_KEY = "kanna:ui-update-restart"
 /** sessionStorage: timestamp of the last server-initiated reload request we handled. */
 export const UI_UPDATE_RELOAD_REQUEST_STORAGE_KEY = "kanna:last-update-reload-request"
 
-/** localStorage: last app version the user has seen (release notes banner). */
-export const VERSION_SEEN_STORAGE_KEY = "kanna:last-seen-version"
-
 /** localStorage: persisted sidebar width in pixels. */
 export const SIDEBAR_WIDTH_STORAGE_KEY = "kanna:sidebar-width"
 
@@ -19,3 +16,19 @@ export const OPEN_EXTERNAL_SELECT_STORAGE_KEY = "kanna:last-open-external"
 
 /** localStorage: active sidebar view ("recents" | "projects") when the recent-chats Labs mode is on. */
 export const SIDEBAR_VIEW_STORAGE_KEY = "kanna:sidebar-view"
+
+// Legacy setup-wizard markers. Onboarding progress is now machine-wide state
+// in the server's settings file (`setupShown`/`setupCompleted`/`setupDismissed`
+// on the app-settings snapshot) so a second browser — local or via the cloud
+// tunnel — never re-runs a wizard this machine already finished. These keys are
+// only read once, to migrate a pre-upgrade browser, then removed; see
+// readLegacySetupFlagsPatch in app/useAppSettingsSync.ts.
+
+/** localStorage (legacy): the setup wizard has been shown at least once. */
+export const LEGACY_SETUP_SHOWN_STORAGE_KEY = "kanna:setup-shown"
+
+/** localStorage (legacy): the setup wizard was completed (finished the last step). */
+export const LEGACY_SETUP_COMPLETED_STORAGE_KEY = "kanna:setup-completed"
+
+/** localStorage (legacy): the setup wizard was dismissed ("Set up later"). */
+export const LEGACY_SETUP_DISMISSED_STORAGE_KEY = "kanna:setup-dismissed"

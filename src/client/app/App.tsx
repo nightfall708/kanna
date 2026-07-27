@@ -8,18 +8,22 @@ import { Button } from "../components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card"
 import { Input } from "../components/ui/input"
 import { TooltipProvider } from "../components/ui/tooltip"
-import { APP_NAME, SDK_CLIENT_APP } from "../../shared/branding"
+import { APP_NAME } from "../../shared/branding"
 import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
+import { getSetupLaunchAction, useProviderAuthStore } from "../stores/providerAuthStore"
+import { SetupWizard } from "../components/auth/SetupWizard"
+import type { ProviderAuthSnapshot } from "../../shared/types"
 import { playChatNotificationSound, shouldPlayChatSound } from "../lib/chatSounds"
 import { getBrowserWindowTitle, getChatSoundBurstCount } from "./chatNotifications"
 import { KannaSidebar } from "./KannaSidebar"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
+import { OpenRouterCallbackPage } from "./OpenRouterCallbackPage"
 import { SettingsPage } from "./SettingsPage"
+import { TerminalPage } from "./TerminalPage"
 import { useKannaState } from "./useKannaState"
 import type { AppSettingsSnapshot } from "../../shared/types"
-import { VERSION_SEEN_STORAGE_KEY } from "../lib/storageKeys"
 
 const AUTH_STATUS_RETRY_DELAY_MS = 500
 
@@ -184,10 +188,6 @@ function useAppAuthState() {
   }
 }
 
-export function shouldRedirectToChangelog(pathname: string, currentVersion: string, seenVersion: string | null) {
-  return pathname === "/" && Boolean(currentVersion) && seenVersion !== currentVersion
-}
-
 export function shouldPlayChatNotificationSound(
   appSettings: AppSettingsSnapshot | null,
   preference: ChatSoundPreference,
@@ -201,10 +201,52 @@ function KannaLayout() {
   const navigate = useNavigate()
   const params = useParams()
   const state = useKannaState(params.chatId ?? null)
+
+  // Feed the provider-auth store for the app's lifetime: sign-in state powers
+  // the settings/new-chat auth cards, the harness picker's "Sign In" pills,
+  // and the blocked-switch dialog.
+  useEffect(() => {
+    useProviderAuthStore.getState().setSocket(state.socket)
+    const unsubscribe = state.socket.subscribe<ProviderAuthSnapshot>(
+      { type: "provider-auth" },
+      (snapshot) => useProviderAuthStore.getState().setSnapshot(snapshot),
+    )
+    return () => {
+      unsubscribe()
+      useProviderAuthStore.getState().setSocket(null)
+    }
+  }, [state.socket])
+
+  // Onboarding auto-launch (see getSetupLaunchAction): a first-ever launch
+  // opens the wizard instantly — cards show live probe status inside — while
+  // later launches wait for the probe round and re-open only when something
+  // is still unconnected. Decided at most once per app load; "Set up later"
+  // and a completed run are both persisted per machine (server settings, not
+  // this browser's localStorage) and suppress future launches everywhere, so
+  // we also wait for `setupLoaded` before deciding anything.
+  const authSnapshot = useProviderAuthStore((store) => store.snapshot)
+  const setupLoaded = useProviderAuthStore((store) => store.setupLoaded)
+  const setupLaunchDecidedRef = useRef(false)
+  useEffect(() => {
+    if (setupLaunchDecidedRef.current) return
+    const { setupShown, setupCompleted, setupDismissed, openSetupWizard } =
+      useProviderAuthStore.getState()
+    const action = getSetupLaunchAction(authSnapshot, {
+      setupLoaded,
+      setupShown,
+      setupCompleted,
+      setupDismissed,
+    })
+    if (action === "wait") return
+    setupLaunchDecidedRef.current = true
+    if (action === "open") {
+      openSetupWizard()
+    }
+  }, [authSnapshot, setupLoaded])
+
   const chatSoundPreference = useChatSoundPreferencesStore((store) => store.chatSoundPreference)
   const chatSoundId = useChatSoundPreferencesStore((store) => store.chatSoundId)
-  const showMobileOpenButton = location.pathname === "/"
-  const currentVersion = SDK_CLIENT_APP.split("/")[1] ?? "unknown"
+  const showMobileOpenButton = location.pathname === "/" || location.pathname === "/terminal"
   const previousSidebarDataRef = useRef<ReturnType<typeof useKannaState>["sidebarData"] | null>(null)
   const browserTitle = useMemo(() => getBrowserWindowTitle({
     appName: APP_NAME,
@@ -236,9 +278,6 @@ function KannaLayout() {
   const handleRestoreChat = useCallback((chatId: string) => {
     void state.handleRestoreChat(chatId)
   }, [state.handleRestoreChat])
-  const handleOpenAddProjectModal = useCallback(() => {
-    state.openAddProjectModal()
-  }, [state.openAddProjectModal])
   const handleSidebarDeleteChat = useCallback((chat: Parameters<typeof state.handleDeleteChat>[0]) => {
     void state.handleDeleteChat(chat)
   }, [state.handleDeleteChat])
@@ -280,7 +319,6 @@ function KannaLayout() {
       onOpenArchivedChat={handleOpenArchivedChat}
       onRestoreChat={handleRestoreChat}
       onDeleteChat={handleSidebarDeleteChat}
-      onOpenAddProjectModal={handleOpenAddProjectModal}
       onCopyPath={handleSidebarCopyPath}
       onOpenExternalPath={handleSidebarOpenExternalPath}
       onRenameProject={handleSidebarRenameProject}
@@ -292,7 +330,6 @@ function KannaLayout() {
     />
   ), [
     handleOpenChangelog,
-    handleOpenAddProjectModal,
     handleSidebarCopyPath,
     handleSidebarCreateChat,
     handleSidebarArchiveChat,
@@ -322,14 +359,6 @@ function KannaLayout() {
     state.sidebarReady,
     state.updateSnapshot,
   ])
-
-  useEffect(() => {
-    const seenVersion = window.localStorage.getItem(VERSION_SEEN_STORAGE_KEY)
-    const shouldRedirect = shouldRedirectToChangelog(location.pathname, currentVersion, seenVersion)
-    window.localStorage.setItem(VERSION_SEEN_STORAGE_KEY, currentVersion)
-    if (!shouldRedirect) return
-    navigate("/settings/changelog", { replace: true })
-  }, [currentVersion, location.pathname, navigate])
 
   useLayoutEffect(() => {
     document.title = browserTitle
@@ -366,6 +395,7 @@ function KannaLayout() {
     <div className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">
       {sidebarElement}
       <Outlet context={state} />
+      <SetupWizard />
       <CommandPalette state={state} />
       <StandaloneShareDialog
         open={Boolean(state.standaloneShareUrl)}
@@ -401,11 +431,14 @@ export function App() {
     <TooltipProvider>
       <AppDialogProvider>
         <Routes>
+          {/* Rendered outside the layout: opened as a bare OAuth popup. */}
+          <Route path="/oauth/openrouter/callback" element={<OpenRouterCallbackPage />} />
           <Route element={<KannaLayout />}>
             <Route path="/" element={<LocalProjectsPage />} />
             <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
             <Route path="/settings/:sectionId" element={<SettingsPage />} />
             <Route path="/chat/:chatId" element={<ChatPage />} />
+            <Route path="/terminal" element={<TerminalPage />} />
           </Route>
         </Routes>
       </AppDialogProvider>

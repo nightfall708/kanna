@@ -2,6 +2,8 @@ import type {
   AppSettingsSnapshot,
   AppSettingsPatch,
   AgentProvider,
+  AuthServiceId,
+  ProviderAuthSnapshot,
   ChatAttachment,
   ChatDiffSnapshot,
   ChatHistoryPage,
@@ -50,6 +52,7 @@ export type SubscriptionTopic =
   | { type: "keybindings" }
   | { type: "app-settings" }
   | { type: "usage-limits" }
+  | { type: "provider-auth" }
   | { type: "chat"; chatId: string; recentLimit?: number }
   | { type: "project-git"; projectId: string }
   | { type: "terminal"; terminalId: string }
@@ -74,8 +77,10 @@ export type TerminalEvent =
 
 export type ClientCommand =
   | { type: "project.open"; localPath: string }
+  | { type: "project.create"; localPath: string; title?: string }
   | { type: "project.rename"; projectId: string; title: string }
   | { type: "project.clone"; cloneUrl: string; localPath: string; fallbackPath?: string; title: string }
+  | { type: "github.listRecentRepos" }
   | { type: "project.remove"; projectId: string }
   | { type: "sidebar.reorderProjectGroups"; projectIds: string[] }
   | { type: "project.readDiffPatch"; projectId: string; path: string }
@@ -88,6 +93,8 @@ export type ClientCommand =
   | { type: "project.writeQuickActions"; projectId: string; quickActions: ProjectQuickAction[] }
   | { type: "update.check"; force?: boolean }
   | { type: "update.install" }
+  | { type: "update.installNightly" }
+  | { type: "update.installStable" }
   | { type: "settings.readKeybindings" }
   | { type: "settings.writeKeybindings"; bindings: KeybindingsSnapshot["bindings"] }
   | { type: "settings.readAppSettings" }
@@ -95,6 +102,17 @@ export type ClientCommand =
   | { type: "settings.writeAppSettingsPatch"; patch: AppSettingsPatch }
   | { type: "settings.readLlmProvider" }
   | { type: "usage.refresh"; force?: boolean }
+  | { type: "auth.refresh"; force?: boolean }
+  /** Install (or update to the latest version of) a service's CLI. */
+  | { type: "auth.install"; service: AuthServiceId }
+  | { type: "auth.login.start"; service: AuthServiceId }
+  /** claude only: the code the user pasted back from the OAuth page. */
+  | { type: "auth.login.submitCode"; service: AuthServiceId; code: string }
+  | { type: "auth.login.cancel"; service: AuthServiceId }
+  /** Ack result: `{ authUrl: string }` — open in a popup. */
+  | { type: "auth.openrouter.start"; callbackUrl: string }
+  /** Ack result: LlmProviderSnapshot with the exchanged key saved. */
+  | { type: "auth.openrouter.exchange"; code: string }
   | { type: "chat.listSkills"; provider: AgentProvider; chatId?: string; projectId?: string }
   | { type: "skills.search"; query: string; limit?: number }
   | { type: "skills.install"; source: string; skillId: string }
@@ -133,6 +151,14 @@ export type ClientCommand =
   | { type: "chat.setDraftProtection"; chatIds: string[] }
   | { type: "chat.markRead"; chatId: string }
   | { type: "chat.setDone"; chatId: string; done: boolean }
+  /**
+   * Persist where the user left off reading. Sent on a throttle while
+   * scrolling. Deliberately ack-only: the anchor is not part of any snapshot,
+   * so a scroll never triggers a sidebar or chat re-push to other sockets.
+   */
+  | { type: "chat.setReadAnchor"; chatId: string; messageId: string; atEnd: boolean }
+  /** Read back the stored anchor when opening a chat. Result: ResolvedChatReadAnchor | null. */
+  | { type: "chat.getReadAnchor"; chatId: string }
   | {
       type: "chat.send"
       chatId?: string
@@ -144,6 +170,7 @@ export type ClientCommand =
       modelOptions?: ModelOptions
       effort?: string
       planMode?: boolean
+      autoPlan?: boolean
     }
   | { type: "chat.refreshDiffs"; chatId: string }
   | { type: "chat.initGit"; chatId: string }
@@ -199,6 +226,7 @@ export type ClientCommand =
       model?: string
       modelOptions?: ModelOptions
       planMode?: boolean
+      autoPlan?: boolean
     }
   | {
       type: "message.steer"
@@ -210,7 +238,8 @@ export type ClientCommand =
       chatId: string
       queuedMessageId: string
     }
-  | { type: "terminal.create"; projectId: string; terminalId: string; cols: number; rows: number; scrollback: number }
+  /** projectId null → a home-directory terminal (dev-box full-screen Terminal page). */
+  | { type: "terminal.create"; projectId: string | null; terminalId: string; cols: number; rows: number; scrollback: number }
   | { type: "terminal.input"; terminalId: string; data: string }
   | { type: "terminal.resize"; terminalId: string; cols: number; rows: number }
   | { type: "terminal.close"; terminalId: string }
@@ -229,6 +258,7 @@ export type ServerSnapshot =
   | { type: "keybindings"; data: KeybindingsSnapshot }
   | { type: "app-settings"; data: AppSettingsSnapshot }
   | { type: "usage-limits"; data: UsageLimitsSnapshot }
+  | { type: "provider-auth"; data: ProviderAuthSnapshot }
   | { type: "llm-provider"; data: LlmProviderSnapshot }
   | { type: "chat"; data: ChatSnapshot | null }
   | { type: "project-git"; data: ChatDiffSnapshot | null }

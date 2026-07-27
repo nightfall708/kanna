@@ -1,6 +1,8 @@
 import { useOutletContext } from "react-router-dom"
+import { DEFAULT_NEW_PROJECTS_DIRECTORY } from "../../shared/types"
+import { SetupCard } from "../components/auth/SetupCard"
+import { GitHubReposSection } from "../components/GitHubReposSection"
 import { LocalDev } from "../components/LocalDev"
-import type { FsListResult } from "../../shared/types"
 import type { KannaState } from "./useKannaState"
 
 export function LocalProjectsPage() {
@@ -14,18 +16,15 @@ export function LocalProjectsPage() {
         snapshot={state.localProjects}
         startingLocalPath={state.startingLocalPath}
         commandError={state.commandError}
-        newProjectOpen={state.addProjectModalOpen}
-        onNewProjectOpenChange={(open) => {
-          if (open) {
-            state.openAddProjectModal()
-            return
-          }
-          state.closeAddProjectModal()
-        }}
         onOpenProject={state.handleOpenLocalProject}
-        onCreateProject={state.handleCreateProject}
-        onListDirectory={(path, nearest) => state.socket.command<FsListResult>({ type: "fs.list", path, nearest })}
-        onMakeDirectory={(path) => state.socket.command<FsListResult>({ type: "fs.mkdir", path })}
+        providerCards={<SetupCard className="mb-8" />}
+        githubSection={
+          <GitHubReposSection
+            socket={state.socket}
+            newProjectsDirectory={state.appSettings?.newProjectsDirectory ?? DEFAULT_NEW_PROJECTS_DIRECTORY}
+            onCloneRepo={state.handleCreateProject}
+          />
+        }
       />
     </div>
   )
