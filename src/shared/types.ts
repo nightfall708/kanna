@@ -867,13 +867,35 @@ export interface SidebarChatRow {
   doneAt?: number
   localPath: string
   provider: AgentProvider | null
+  /**
+   * Model id the chat's most recent turn ran with. Absent on chats that have
+   * never run a turn, and on turns recorded before the field existed — the
+   * hover card names the harness alone in that case.
+   */
+  model?: string
   lastMessageAt?: number
+  /** When the most recent turn started; with `lastTurnEndedAt`, how long it took. */
+  lastTurnStartedAt?: number
   /** When the last turn ended (agent response received). Drives Review/In Progress ordering. */
   lastTurnEndedAt?: number
+  /**
+   * When the agent last produced something — assistant text, a tool call, or a
+   * tool result. Unlike `lastTurnEndedAt` this advances *during* a turn, so a
+   * chat parked mid-turn (plan mode / a permission prompt, which end no turn)
+   * still sorts by when it actually started asking for you rather than by when
+   * you last hit send. Drives sidebar recency alongside `lastMessageAt`.
+   */
+  lastAgentMessageAt?: number
   /** One-line preview of the latest user prompt. */
   lastUserMessagePreview?: string
   /** One-line preview of the latest agent text message. */
   lastAgentMessagePreview?: string
+  /**
+   * When that preview was written. Distinct from `lastAgentMessageAt`, which
+   * tool calls advance too: this dates the *words*, so a reader can tell a
+   * reply to the latest prompt from one carried over from the turn before.
+   */
+  lastAgentMessagePreviewAt?: number
   /** Tool kind the chat is waiting on when status is waiting_for_user (e.g. "ask_user_question"). */
   pendingToolKind?: string
   /**
@@ -901,6 +923,13 @@ export interface SidebarProjectGroup {
   repoName?: string
   /** Current branch of `repoName`'s repo; absent on a detached HEAD. */
   branchName?: string
+  /**
+   * Owner segment of the `origin` remote (`owner` in `owner/repo`), absent when
+   * there's no origin or its URL doesn't carry one. Purely for display — the
+   * sidebar's branch tooltip qualifies the repo with it — so a missing owner
+   * degrades to the bare `repoName`, never to an error.
+   */
+  repoOwner?: string
   localPath: string
   chats: SidebarChatRow[]
   previewChats: SidebarChatRow[]
@@ -1343,6 +1372,16 @@ interface TranscriptEntryBase {
   createdAt: number
   hidden?: boolean
   debugRaw?: string
+  /**
+   * Set only when this entry was reduced for the wire: its unbounded tool
+   * payload fields were left on the server, to be fetched with
+   * `chat.getToolEntries` if the row is opened.
+   *
+   * Never present on disk, in `getMessages()` results, or in export bundles —
+   * those keep full fidelity. Absent also means "nothing was dropped", so a
+   * reader can treat presence as "fetching will reveal more".
+   */
+  trimmed?: true
 }
 
 interface ToolCallBase<TKind extends string, TInput> {
@@ -1382,22 +1421,22 @@ export interface ReadFileToolCall
   extends ToolCallBase<"read_file", { filePath: string }> { }
 
 export interface WriteFileToolCall
-  extends ToolCallBase<"write_file", { filePath: string; content: string }> { }
+  extends ToolCallBase<"write_file", { filePath: string; content?: string }> { }
 
 export interface EditFileToolCall
-  extends ToolCallBase<"edit_file", { filePath: string; oldString: string; newString: string }> { }
+  extends ToolCallBase<"edit_file", { filePath: string; oldString?: string; newString?: string }> { }
 
 export interface DeleteFileToolCall
-  extends ToolCallBase<"delete_file", { filePath: string; content: string }> { }
+  extends ToolCallBase<"delete_file", { filePath: string; content?: string }> { }
 
 export interface SubagentTaskToolCall
   extends ToolCallBase<"subagent_task", { subagentType?: string }> { }
 
 export interface McpGenericToolCall
-  extends ToolCallBase<"mcp_generic", { server: string; tool: string; payload: Record<string, unknown> }> { }
+  extends ToolCallBase<"mcp_generic", { server: string; tool: string; payload?: Record<string, unknown> }> { }
 
 export interface UnknownToolCall
-  extends ToolCallBase<"unknown_tool", { payload: Record<string, unknown> }> { }
+  extends ToolCallBase<"unknown_tool", { payload?: Record<string, unknown> }> { }
 
 export type NormalizedToolCall =
   | AskUserQuestionToolCall
@@ -1421,6 +1460,16 @@ export interface ToolResultEntry extends TranscriptEntryBase {
   toolId: string
   content: unknown
   isError?: boolean
+  /**
+   * `tool_use_result` lifted out of the provider's raw payload, present only
+   * for the tool kinds that need it (`ask_user_question`, `exit_plan_mode`).
+   *
+   * Derived server-side when a page is built so the client never receives
+   * `debugRaw` — which is the whole raw provider message and duplicates
+   * `content`, accounting for ~66% of a typical chat snapshot. Not persisted;
+   * `debugRaw` remains on disk and is fetched on demand by the raw JSON view.
+   */
+  structuredResult?: unknown
 }
 
 export interface UserPromptEntry extends TranscriptEntryBase {
@@ -1739,6 +1788,24 @@ export interface HydratedToolCallBase<TKind extends string, TInput, TResult> {
   result?: TResult
   rawResult?: unknown
   isError?: boolean
+  /**
+   * `_id` of the `tool_result` entry this row's result was hydrated from, or
+   * undefined while the call is still pending.
+   *
+   * Transcript entries are append-only and immutable, so this plus the row's
+   * own `id` (the `tool_call` entry) pins `input`/`result`/`rawResult` exactly.
+   * Equality checks compare these ids instead of deep-comparing the payloads —
+   * the results carry megabytes of tool output and the comparison runs per row
+   * on every snapshot push.
+   */
+  resultEntryId?: string
+  /**
+   * The wire left this call's unbounded input fields behind; fetching the entry
+   * by `id` reveals them. Absent means what is here is all there is.
+   */
+  inputTrimmed?: boolean
+  /** As `inputTrimmed`, for the result body — fetch by `resultEntryId`. */
+  resultTrimmed?: boolean
   timestamp: string
 }
 
@@ -1836,24 +1903,36 @@ export interface ChatRuntime {
   sessionToken: string | null
 }
 
-export interface ChatHistorySnapshot {
-  hasOlder: boolean
-  olderCursor: string | null
-  recentLimit: number
-}
-
 export interface ChatSnapshot {
   runtime: ChatRuntime
   queuedMessages: QueuedChatMessage[]
   messages: TranscriptEntry[]
-  history: ChatHistorySnapshot
+  /**
+   * Absolute index of `messages[0]` in the transcript. Always 0 on a full
+   * snapshot; non-zero on an incremental one, where it says where the slice
+   * belongs.
+   */
+  startIndex: number
+  /**
+   * When true, `messages` extends what the client already holds rather than
+   * replacing it — the entries before `startIndex` were sent earlier and are
+   * unchanged.
+   *
+   * The transcript is the only part of this snapshot that grows without bound,
+   * and it grows only at the end, so re-sending all of it on every streamed
+   * entry was the dominant cost on the socket. Everything else here is small
+   * and still ships whole.
+   */
+  incremental?: boolean
   availableProviders: ProviderCatalogEntry[]
-}
-
-export interface ChatHistoryPage {
-  messages: TranscriptEntry[]
-  hasOlder: boolean
-  olderCursor: string | null
+  /**
+   * The stored read position, resolved against the transcript.
+   *
+   * Carried inline so opening a chat is a single round trip rather than a
+   * probe followed by a subscription. Null when nothing is stored or the
+   * anchored entry no longer exists.
+   */
+  readAnchor: ResolvedChatReadAnchor | null
 }
 
 /**
@@ -1861,14 +1940,18 @@ export interface ChatHistoryPage {
  *
  * `messageId` is a `TranscriptEntry._id`. `atEnd` means the user was parked at
  * the bottom following the stream, so restoring should keep following rather
- * than pin to that message. `distanceFromEnd` is how many entries sit at or
- * after the anchor, letting the client widen its subscription window in one
- * round trip when the anchor predates the default recent page.
+ * than pin to that message.
  */
 export interface ResolvedChatReadAnchor {
   messageId: string
   atEnd: boolean
-  distanceFromEnd: number
+  /**
+   * Transcript column width when recorded. `offsetFromMessage` only applies at
+   * the same width, since a narrower column rewraps the message underneath it.
+   */
+  transcriptWidth?: number
+  /** Distance below the anchored message's top, in pixels. */
+  offsetFromMessage?: number
 }
 
 export interface PendingToolSnapshot {

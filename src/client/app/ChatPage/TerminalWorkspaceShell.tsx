@@ -49,6 +49,7 @@ export const TerminalWorkspaceShell = memo(function TerminalWorkspaceShell({
         scrollback={scrollback}
         minColumnWidth={minColumnWidth}
         splitTerminalShortcut={splitTerminalShortcut}
+        lastPaneClose="hide"
         focusRequestVersion={focusRequestVersion}
         pendingCommandsByTerminalId={pendingCommandsByTerminalId}
         onTerminalCommandSent={onTerminalCommandSent}

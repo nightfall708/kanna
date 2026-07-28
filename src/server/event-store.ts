@@ -3,7 +3,7 @@ import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir, LOG_PREFIX } from "../shared/branding"
-import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, ResolvedChatReadAnchor, TranscriptEntry } from "../shared/types"
+import type { AgentProvider, QueuedChatMessage, ResolvedChatReadAnchor, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
@@ -14,6 +14,7 @@ import {
   type StoreState,
   type TurnEvent,
   cloneTranscriptEntries,
+  cloneTranscriptEntriesForClient,
   createEmptyState,
 } from "./events"
 import { resolveLocalPath } from "./paths"
@@ -26,16 +27,41 @@ const STALE_CHAT_AUTO_ARCHIVE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 const STALE_CHAT_DELETE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000
 const SIDEBAR_PROJECT_ORDER_FILE = "sidebar-order.json"
 const CHAT_MESSAGE_PREVIEW_MAX_LENGTH = 160
+/**
+ * Ceiling on a chat's remembered touched paths. A long-running chat that
+ * rewrites half a repo shouldn't grow an unbounded array in every snapshot;
+ * once a chat has touched this many distinct files it is going to intersect
+ * whatever is dirty anyway, so the tail adds nothing.
+ */
+const TOUCHED_PATHS_LIMIT = 500
 // How much of each transcript tail is scanned at boot to rebuild chat metadata
 // (lastMessageAt, previews) that only lives in snapshots between compactions.
 const TRANSCRIPT_METADATA_TAIL_BYTES = 256 * 1024
-
 function buildChatMessagePreview(text: string) {
   const collapsed = text.replace(/\s+/g, " ").trim()
   if (!collapsed) return undefined
   return collapsed.length > CHAT_MESSAGE_PREVIEW_MAX_LENGTH
     ? `${collapsed.slice(0, CHAT_MESSAGE_PREVIEW_MAX_LENGTH)}…`
     : collapsed
+}
+
+/**
+ * Entries the agent itself produced, as opposed to the user's prompts or the
+ * bookkeeping entries a session emits around them (system_init, account_info,
+ * context_window_updated, compaction/handoff boundaries…). Only these advance
+ * `lastAgentMessageAt`, so idle session housekeeping can't make a chat look
+ * freshly active.
+ *
+ * `tool_call`/`tool_result` count alongside `assistant_text`: a plan lands as
+ * an ExitPlanMode tool call, and a permission prompt may arrive with no text
+ * at all, so text alone would miss exactly the mid-turn stops this timestamp
+ * exists to catch. `result` counts too — it's the agent's closing entry.
+ */
+function isAgentAuthoredEntry(entry: TranscriptEntry) {
+  return entry.kind === "assistant_text"
+    || entry.kind === "tool_call"
+    || entry.kind === "tool_result"
+    || entry.kind === "result"
 }
 
 function normalizeSidebarProjectOrder(value: unknown) {
@@ -63,12 +89,6 @@ interface LegacyTranscriptStats {
   sources: Array<"snapshot" | "messages_log">
   chatCount: number
   entryCount: number
-}
-
-interface TranscriptPageResult {
-  entries: TranscriptEntry[]
-  hasOlder: boolean
-  olderCursor: string | null
 }
 
 interface ParsedReplayEvent {
@@ -109,35 +129,12 @@ function getReplayEventPriority(event: StoreEvent) {
     case "chat_read_state_set":
     case "chat_done_state_set":
     case "chat_read_anchor_set":
+    case "chat_files_touched":
       return 9
     case "chat_deleted":
     case "chat_archived":
     case "chat_unarchived":
       return 10
-  }
-}
-
-function encodeHistoryCursor(index: number) {
-  return `idx:${index}`
-}
-
-function decodeCursor(cursor: string) {
-  if (cursor.startsWith("idx:")) {
-    const value = Number.parseInt(cursor.slice("idx:".length), 10)
-    if (!Number.isInteger(value) || value < 0) {
-      throw new Error("Invalid history cursor")
-    }
-    return value
-  }
-
-  throw new Error("Invalid history cursor")
-}
-
-function getHistorySnapshot(page: TranscriptPageResult, recentLimit: number): ChatHistorySnapshot {
-  return {
-    hasOlder: page.hasOlder,
-    olderCursor: page.olderCursor,
-    recentLimit,
   }
 }
 
@@ -175,6 +172,11 @@ export class EventStore {
    * which fires per streamed token.
    */
   onTurnEnded?: (chatId: string) => void
+  /**
+   * Fired when a turn begins, so file tracking can snapshot the worktree before
+   * the agent touches it. Paired with `onTurnEnded`.
+   */
+  onTurnStarted?: (chatId: string) => void
 
   constructor(dataDir = getDataDir(homedir())) {
     this.dataDir = dataDir
@@ -529,6 +531,9 @@ export class EventStore {
           pendingForkSessionToken: null,
           hasMessages: false,
           lastTurnOutcome: null,
+          // Forks carry the source's turn-end timestamp on the create event
+          // (they have no turn events of their own to replay).
+          ...(event.lastTurnEndedAt != null ? { lastTurnEndedAt: event.lastTurnEndedAt } : {}),
         }
         this.state.chatsById.set(chat.id, chat)
         break
@@ -597,9 +602,24 @@ export class EventStore {
           messageId: event.messageId,
           atEnd: event.atEnd,
           updatedAt: event.timestamp,
+          ...(event.transcriptWidth != null ? { transcriptWidth: event.transcriptWidth } : {}),
+          ...(event.offsetFromMessage != null ? { offsetFromMessage: event.offsetFromMessage } : {}),
         }
         // Intentionally does not bump `updatedAt` — a scroll is not a chat
         // mutation, and bumping it would churn sidebar ordering/signatures.
+        break
+      }
+      case "chat_files_touched": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat) break
+        const paths = new Set(chat.touchedPaths ?? [])
+        for (const filePath of event.paths) {
+          if (paths.size >= TOUCHED_PATHS_LIMIT) break
+          paths.add(filePath)
+        }
+        chat.touchedPaths = [...paths]
+        // Like the read anchor, this is bookkeeping about a chat rather than a
+        // change to it — bumping `updatedAt` would churn sidebar ordering.
         break
       }
       case "chat_done_state_set": {
@@ -651,6 +671,10 @@ export class EventStore {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.updatedAt = event.timestamp
+        chat.lastTurnStartedAt = event.timestamp
+        // Kept from the previous turn when this one didn't name a model, so a
+        // resumed background turn doesn't blank what the chat last ran with.
+        if (event.model) chat.lastModel = event.model
         // A new turn means the user re-engaged, so the chat is no longer "done".
         delete chat.doneAt
         break
@@ -710,7 +734,18 @@ export class EventStore {
       }
     } else if (entry.kind === "assistant_text" && !entry.hidden) {
       const preview = buildChatMessagePreview(entry.text)
-      if (preview) chat.lastAgentMessagePreview = preview
+      if (preview) {
+        chat.lastAgentMessagePreview = preview
+        // Stamped so a reader can tell whether the preview answers the latest
+        // prompt or the one before it. `lastAgentMessageAt` can't: it advances
+        // on tool calls too, so it moves while the text is still stale.
+        chat.lastAgentMessagePreviewAt = entry.createdAt
+      }
+    }
+    if (isAgentAuthoredEntry(entry)) {
+      // Hidden entries count: this is "when did the agent last do something",
+      // not "what can we show" — same split as lastMessageAt vs its preview.
+      chat.lastAgentMessageAt = Math.max(chat.lastAgentMessageAt ?? 0, entry.createdAt)
     }
     chat.updatedAt = Math.max(chat.updatedAt, entry.createdAt)
   }
@@ -733,7 +768,12 @@ export class EventStore {
     return this.transcriptPath(chatId)
   }
 
-  /** Cached entries for a chat, loading from disk on miss. Callers must not mutate. */
+  /**
+   * Every entry for a chat, loading from disk on miss. Callers must not mutate.
+   *
+   * This is the only transcript read there is: rendering, export, handoff and
+   * anchor resolution all want the whole thing.
+   */
   private getTranscriptEntries(chatId: string): TranscriptEntry[] {
     const cached = this.transcriptCache.get(chatId)
     if (cached) {
@@ -892,8 +932,18 @@ export class EventStore {
       chatId,
       projectId: sourceChat.projectId,
       title: getForkedChatTitle(sourceChat.title),
+      // A fork inherits the conversation, so it inherits its recency too: with
+      // no turn events of its own it would otherwise read as brand new and sort
+      // by creation time alone.
+      ...(sourceChat.lastTurnEndedAt != null ? { lastTurnEndedAt: sourceChat.lastTurnEndedAt } : {}),
     }
     await this.append(this.chatsLogPath, createEvent)
+    // The fork carries the same conversation, so it carries the same claim on
+    // the files that conversation changed — it stays in Relevant alongside its
+    // source rather than starting with an empty touched set.
+    if (sourceChat.touchedPaths?.length) {
+      await this.recordFilesTouched(chatId, sourceChat.touchedPaths)
+    }
     await this.setChatProvider(chatId, sourceChat.provider)
     await this.setPlanMode(chatId, sourceChat.planMode)
     await this.setAutoPlan(chatId, sourceChat.autoPlan)
@@ -919,7 +969,15 @@ export class EventStore {
             chat.lastMessageAt = Math.max(chat.lastMessageAt ?? 0, lastEntryAt)
           }
           if (sourceChat.lastUserMessagePreview) chat.lastUserMessagePreview = sourceChat.lastUserMessagePreview
-          if (sourceChat.lastAgentMessagePreview) chat.lastAgentMessagePreview = sourceChat.lastAgentMessagePreview
+          if (sourceChat.lastAgentMessagePreview) {
+            chat.lastAgentMessagePreview = sourceChat.lastAgentMessagePreview
+            chat.lastAgentMessagePreviewAt = sourceChat.lastAgentMessagePreviewAt
+          }
+          // Same transcript, so the same last-agent-activity timestamp a
+          // reload would derive from it.
+          if (sourceChat.lastAgentMessageAt != null) {
+            chat.lastAgentMessageAt = Math.max(chat.lastAgentMessageAt ?? 0, sourceChat.lastAgentMessageAt)
+          }
         }
         this.setCachedTranscript(chatId, cloneTranscriptEntries(sourceEntries))
       })
@@ -1198,9 +1256,22 @@ export class EventStore {
    * client as it scrolls, so the no-op guard below matters — it is the only
    * write rate-limit in the store.
    */
-  async setChatReadAnchor(chatId: string, messageId: string, atEnd: boolean) {
+  async setChatReadAnchor(
+    chatId: string,
+    messageId: string,
+    atEnd: boolean,
+    layout?: { transcriptWidth?: number; offsetFromMessage?: number }
+  ) {
     const chat = this.requireChat(chatId)
-    if (chat.readAnchor?.messageId === messageId && chat.readAnchor.atEnd === atEnd) return
+    // Scrolling within one message changes only the offset, so that has to
+    // count as a change or the position would stick to wherever the message
+    // first came into view.
+    if (
+      chat.readAnchor?.messageId === messageId
+      && chat.readAnchor.atEnd === atEnd
+      && chat.readAnchor.offsetFromMessage === layout?.offsetFromMessage
+      && chat.readAnchor.transcriptWidth === layout?.transcriptWidth
+    ) return
     const event: ChatEvent = {
       v: STORE_VERSION,
       type: "chat_read_anchor_set",
@@ -1208,6 +1279,8 @@ export class EventStore {
       chatId,
       messageId,
       atEnd,
+      ...(layout?.transcriptWidth != null ? { transcriptWidth: layout.transcriptWidth } : {}),
+      ...(layout?.offsetFromMessage != null ? { offsetFromMessage: layout.offsetFromMessage } : {}),
     }
     await this.append(this.chatsLogPath, event)
   }
@@ -1226,14 +1299,65 @@ export class EventStore {
     if (!anchor) return null
 
     const entries = this.getTranscriptEntries(chatId)
-    const index = entries.findIndex((entry) => entry._id === anchor.messageId)
-    if (index === -1) return null
+    if (!entries.some((entry) => entry._id === anchor.messageId)) return null
 
     return {
       messageId: anchor.messageId,
       atEnd: anchor.atEnd,
-      distanceFromEnd: entries.length - index,
+      ...(anchor.transcriptWidth != null ? { transcriptWidth: anchor.transcriptWidth } : {}),
+      ...(anchor.offsetFromMessage != null ? { offsetFromMessage: anchor.offsetFromMessage } : {}),
     }
+  }
+
+  /**
+   * `_id` of the entry at an absolute index, or null when the index is out of
+   * range or sits before the loaded window.
+   *
+   * Deliberately refuses to widen the window to answer: this exists to check a
+   * client's cached position, and a cache that reaches further back than the
+   * server is holding is not worth a full transcript read to validate — the
+   * caller just sends a full window instead.
+   */
+  getEntryIdAt(chatId: string, index: number): string | null {
+    if (index < 0) return null
+    return this.transcriptCache.get(chatId)?.[index]?._id ?? null
+  }
+
+  /**
+   * Entries by id, with their payloads intact.
+   *
+   * Backs the tool-payload fetch: snapshots ship tool calls and results without
+   * their unbounded fields, and a row that gets opened asks for the real thing.
+   * Batched because expanding a tool group asks for every member at once.
+   * `debugRaw` is stripped as everywhere else on the wire — the raw JSON view
+   * has its own request for that.
+   *
+   * Ids that no longer exist are simply absent from the result.
+   */
+  getEntriesById(chatId: string, entryIds: string[]): TranscriptEntry[] {
+    this.requireChat(chatId)
+    if (entryIds.length === 0) return []
+    const wanted = new Set(entryIds)
+    const found: TranscriptEntry[] = []
+    for (const entry of this.getTranscriptEntries(chatId)) {
+      if (!wanted.has(entry._id)) continue
+      const { debugRaw, ...rest } = entry
+      found.push(rest as TranscriptEntry)
+      if (found.length === wanted.size) break
+    }
+    return found
+  }
+
+  /**
+   * The raw provider payload for one entry, or null if the entry is gone or
+   * never carried one. Snapshots strip `debugRaw`; this backs the raw JSON
+   * debug view, which is opened rarely enough that a full transcript read is
+   * an acceptable cost.
+   */
+  getEntryDebugRaw(chatId: string, entryId: string): string | null {
+    this.requireChat(chatId)
+    const entries = this.getTranscriptEntries(chatId)
+    return entries.find((entry) => entry._id === entryId)?.debugRaw ?? null
   }
 
   async appendMessage(chatId: string, entry: TranscriptEntry) {
@@ -1292,15 +1416,38 @@ export class EventStore {
     await this.append(this.queuedMessagesLogPath, event)
   }
 
-  async recordTurnStarted(chatId: string) {
+  /** `model` is what this turn runs with; omitted where the caller has none to name. */
+  async recordTurnStarted(chatId: string, model?: string) {
     this.requireChat(chatId)
     const event: TurnEvent = {
       v: STORE_VERSION,
       type: "turn_started",
       timestamp: Date.now(),
       chatId,
+      ...(model ? { model } : {}),
     }
     await this.append(this.turnsLogPath, event)
+    this.onTurnStarted?.(chatId)
+  }
+
+  /** Records the paths one turn changed; replay unions them into `touchedPaths`. */
+  async recordFilesTouched(chatId: string, paths: string[]) {
+    if (paths.length === 0) return
+    const chat = this.state.chatsById.get(chatId)
+    if (!chat) return
+    // Nothing new to learn — skip the append rather than growing the log with
+    // a repeat of what we already know (the common case for a chat iterating
+    // on the same handful of files, turn after turn).
+    const known = new Set(chat.touchedPaths ?? [])
+    if (paths.every((filePath) => known.has(filePath))) return
+    const event: ChatEvent = {
+      v: STORE_VERSION,
+      type: "chat_files_touched",
+      timestamp: Date.now(),
+      chatId,
+      paths,
+    }
+    await this.append(this.chatsLogPath, event)
   }
 
   async recordTurnFinished(chatId: string) {
@@ -1390,20 +1537,6 @@ export class EventStore {
     return [...this.sidebarProjectOrder]
   }
 
-  private getMessagesPageFromEntries(entries: TranscriptEntry[], limit: number, beforeIndex?: number): TranscriptPageResult {
-    if (entries.length === 0) {
-      return { entries: [], hasOlder: false, olderCursor: null }
-    }
-
-    const endIndex = beforeIndex === undefined ? entries.length : Math.max(0, Math.min(beforeIndex, entries.length))
-    const startIndex = Math.max(0, endIndex - limit)
-    return {
-      entries: cloneTranscriptEntries(entries.slice(startIndex, endIndex)),
-      hasOlder: startIndex > 0,
-      olderCursor: startIndex > 0 ? encodeHistoryCursor(startIndex) : null,
-    }
-  }
-
   getMessages(chatId: string) {
     return cloneTranscriptEntries(this.getTranscriptEntries(chatId))
   }
@@ -1420,44 +1553,23 @@ export class EventStore {
     return this.getQueuedMessages(chatId).find((entry) => entry.id === queuedMessageId) ?? null
   }
 
-  getRecentMessagesPage(chatId: string, limit: number): ChatHistoryPage {
-    if (limit <= 0) {
-      return { messages: [], hasOlder: false, olderCursor: null }
-    }
-
-    const page = this.getMessagesPageFromEntries(this.getTranscriptEntries(chatId), limit)
-
+  /**
+   * The whole transcript, reduced for the wire, plus the resolved read anchor.
+   *
+   * There is no window. Once consecutive tool calls collapse into single rows a
+   * chat is a few hundred rows — the largest here is 1,096 — and with the tool
+   * payloads trimmed the entire thing is smaller than one page of untrimmed
+   * history used to be. Sending all of it means the client can render, search
+   * and map the whole conversation without ever asking for more.
+   *
+   * `startIndex` is always 0. It stays on the shape because streamed appends
+   * are sent as slices positioned against it.
+   */
+  getClientTranscript(chatId: string) {
     return {
-      messages: page.entries,
-      hasOlder: page.hasOlder,
-      olderCursor: page.olderCursor,
-    }
-  }
-
-  getMessagesPageBefore(chatId: string, beforeCursor: string, limit: number): ChatHistoryPage {
-    if (limit <= 0) {
-      return { messages: [], hasOlder: false, olderCursor: null }
-    }
-
-    const beforeIndex = decodeCursor(beforeCursor)
-    const page = this.getMessagesPageFromEntries(this.getTranscriptEntries(chatId), limit, beforeIndex)
-
-    return {
-      messages: page.entries,
-      hasOlder: page.hasOlder,
-      olderCursor: page.olderCursor,
-    }
-  }
-
-  getRecentChatHistory(chatId: string, recentLimit: number) {
-    const page = this.getRecentMessagesPage(chatId, recentLimit)
-    return {
-      messages: page.messages,
-      history: getHistorySnapshot({
-        entries: page.messages,
-        hasOlder: page.hasOlder,
-        olderCursor: page.olderCursor,
-      }, recentLimit),
+      messages: cloneTranscriptEntriesForClient(this.getTranscriptEntries(chatId)),
+      startIndex: 0,
+      readAnchor: this.getChatReadAnchor(chatId),
     }
   }
 

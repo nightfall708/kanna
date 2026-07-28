@@ -1,5 +1,5 @@
 import type { SidebarChatRow, SidebarData } from "../../shared/types"
-import { formatProjectSidebarLabel } from "./project-label"
+import { getProjectSidebarLabel, type ProjectSidebarLabel } from "./project-label"
 
 /**
  * Canonical thread-section logic shared by the command palette (empty-query
@@ -12,32 +12,46 @@ export interface SidebarThread {
   projectId: string
   projectTitle: string
   /**
-   * The New Sidebar's project name — see `formatProjectSidebarLabel`. Separate
+   * The New Sidebar's project name — see `getProjectSidebarLabel`. Separate
    * from `projectTitle` because the command palette still wants the plain
    * project name; only the sidebar shows the branch.
    */
-  projectLabel: string
+  projectLabel: ProjectSidebarLabel
   archived: boolean
   lastActivityAt: number
   row: SidebarChatRow
 }
 
 /**
- * "Most recent activity" for a chat — the later of when you last sent a
- * message and when the agent last got back to you (turn end). This is the one
- * timestamp every section sorts/buckets by, so a chat you kicked off long ago
- * that only just finished counts as fresh (rises in Today/Recents), not stale.
- * Falls back to creation time for empty chats with neither timestamp.
+ * "Most recent activity" for a chat — the latest of when you last sent a
+ * message, when the agent last wrote to the transcript, and when its last turn
+ * ended. This is the one timestamp every section sorts/buckets by, so a chat
+ * you kicked off long ago that only just produced something counts as fresh
+ * (rises in Today/Recents), not stale.
+ *
+ * `lastAgentMessageAt` is what makes a chat parked mid-turn sort correctly:
+ * plan mode and permission prompts end no turn, so `lastTurnEndedAt` doesn't
+ * move and `lastMessageAt` is still the moment you hit send — a plan that took
+ * ten minutes to land would sort ten minutes stale without it. `lastTurnEndedAt`
+ * stays in the max as a floor for turns that end without the agent writing
+ * anything (a cancel, an empty failure) and for chats whose transcripts predate
+ * the field.
+ *
+ * Falls back to creation time for empty chats with none of the three.
  */
 function activityAt(row: SidebarChatRow): number {
-  return Math.max(row.lastMessageAt ?? 0, row.lastTurnEndedAt ?? 0) || row._creationTime
+  return Math.max(
+    row.lastMessageAt ?? 0,
+    row.lastAgentMessageAt ?? 0,
+    row.lastTurnEndedAt ?? 0,
+  ) || row._creationTime
 }
 
 /** Flattens the sidebar snapshot into one searchable thread list (active + archived). */
 export function flattenSidebarThreads(data: SidebarData): SidebarThread[] {
   const threads: SidebarThread[] = []
   for (const group of data.projectGroups) {
-    const projectLabel = formatProjectSidebarLabel(group)
+    const projectLabel = getProjectSidebarLabel(group)
     const pushRows = (rows: SidebarChatRow[], archived: boolean) => {
       for (const row of rows) {
         threads.push({
@@ -84,6 +98,12 @@ export function getReviewThreads(threads: SidebarThread[]): SidebarThread[] {
  * exclude set (typically the review section). Special case: sorted OLDEST
  * first (unlike every other section) — the chat that's gone longest without a
  * response leads since it's most likely to need you next.
+ *
+ * Sorted by `lastMessageAt` — when *you* last hit send — not the shared
+ * `lastActivityAt`. Every chat here is running by definition, so agent activity
+ * is constant churn: sorting by it would reshuffle the section every time any
+ * agent emitted a token, and a chatty agent would sink below a quiet one you
+ * kicked off later. "How long since I asked" is the stable thing to queue on.
  */
 export function getInProgressThreads(
   threads: SidebarThread[],
@@ -94,18 +114,24 @@ export function getInProgressThreads(
       !thread.archived
       && !(exclude?.has(thread.chatId))
       && (thread.row.status === "running" || thread.row.status === "starting"))
-    .sort((left, right) => left.lastActivityAt - right.lastActivityAt)
+    .sort((left, right) => userMessageAt(left) - userMessageAt(right))
+}
+
+/** When the user last sent a prompt, falling back to creation for never-prompted chats. */
+function userMessageAt(thread: SidebarThread): number {
+  return thread.row.lastMessageAt ?? thread.row._creationTime
 }
 
 /**
- * Chats whose work is sitting in their project's dirty tree — the same
- * `uncommittedWork` flag that keeps the row's title at full contrast. Pulled out of the
- * date buckets so everything bearing on the current diff sits together instead
- * of scattered across Today / This Week / Last 30 Days.
+ * Chats you have something outstanding with: work sitting in the project's
+ * dirty tree (the same `uncommittedWork` flag that keeps the row's title at
+ * full contrast), or a draft you typed and never sent. Pulled out of the date
+ * buckets so everything outstanding sits together instead of scattered across
+ * Today / This Week / Last 30 Days.
  *
  * Sorted NEWEST first, like the date buckets below it rather than the
  * oldest-first Review / In Progress sections above: those two are queues you
- * drain from the bottom, while this is a view of the diff you're in the middle
+ * drain from the bottom, while this is a view of the work you're in the middle
  * of, where the chat you just touched is the one you want back.
  *
  * Archived chats never qualify, even when flagged — archiving is an explicit
@@ -114,15 +140,43 @@ export function getInProgressThreads(
 export function getRelevantThreads(
   threads: SidebarThread[],
   exclude?: ReadonlySet<string>,
+  /** Chats holding an unsent draft → when that draft appeared (`useDraftStartTimes`). */
+  draftStartTimes?: DraftStartTimes,
 ): SidebarThread[] {
   return threads
-    .filter((thread) =>
-      !thread.archived
-      && !(exclude?.has(thread.chatId))
+    .filter((thread) => {
+      if (thread.archived || exclude?.has(thread.chatId)) return false
+      // A draft outranks the empty-chat rule below: a chat you opened, typed
+      // into and walked away from is exactly the one that must not vanish,
+      // and it is the only place that sentence exists.
+      if (draftStartTimes?.has(thread.chatId)) return true
       // Empty new chats are hidden everywhere else; don't let the flag resurface one.
-      && thread.row.lastMessageAt != null
-      && Boolean(thread.row.uncommittedWork))
-    .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
+      return thread.row.lastMessageAt != null && Boolean(thread.row.uncommittedWork)
+    })
+    .sort((left, right) => relevantSortKey(right, draftStartTimes) - relevantSortKey(left, draftStartTimes))
+}
+
+/** Chat id → when its unsent draft appeared; see `useDraftStartTimes`. */
+export type DraftStartTimes = ReadonlyMap<string, number>
+
+/**
+ * What a Relevant row sorts by: when you *started writing* in it if you were
+ * drafting, otherwise when the chat itself last moved.
+ *
+ * A draft is the newest thing about a chat by definition — you typed it after
+ * everything else happened — so a chat you just started a sentence in rises to
+ * the top of the section even though its last message is a week old. That's
+ * the point of the section: it's where you left off, not what happened last.
+ *
+ * Deliberately the *start* of the draft rather than the last keystroke: the row
+ * takes its place when you begin and holds it, instead of climbing while you
+ * type in a list you are looking at.
+ *
+ * A `0` start time (a draft that predates the timestamp) falls back to activity
+ * rather than sinking the chat to the bottom.
+ */
+function relevantSortKey(thread: SidebarThread, draftStartTimes?: DraftStartTimes): number {
+  return draftStartTimes?.get(thread.chatId) || thread.lastActivityAt
 }
 
 /** How many chats the "Recents" section shows. */
@@ -177,7 +231,7 @@ export interface ThreadDateBucket {
   /** "Today" | "Yesterday" | "Friday" | "Last Friday" | "Monday Jun 7th" | "This Week" | "Last Week" | "Last 30 Days". */
   label: string
   threads: SidebarThread[]
-  /** Only the recent-activity day buckets start expanded. */
+  /** Only the first (most recent) bucket starts expanded; everything below it is collapsed. */
   defaultExpanded: boolean
 }
 
@@ -242,7 +296,7 @@ function dayBucketLabel(dayStart: number, todayStart: number): string {
 /**
  * Buckets threads (already filtered) by walking the timestamps: the
  * RECENT_ACTIVITY_DAY_BUCKETS most recent distinct days of activity each get
- * their own expanded section, labeled by what the day actually is — "Today",
+ * their own section, labeled by what the day actually is — "Today",
  * "Yesterday" and "Monday" when activity is fresh, "Today" and "Last Friday"
  * after a long weekend, "Monday Jun 7th" and "Friday Jun 4th" after two idle
  * weeks. Day labels and bucket labels agree on the week boundary, so a day
@@ -251,6 +305,9 @@ function dayBucketLabel(dayStart: number, todayStart: number): string {
  * prior Mon–Sun), and Last 30 Days. No client-side age cutoff — server
  * garbage collection (auto-archive 30 days behind the latest activity,
  * delete at 90) bounds the list. Empty buckets are never emitted.
+ *
+ * Only the first bucket returned — the most recent day of activity — starts
+ * expanded. Every section below it defaults collapsed.
  */
 export function computeThreadDateBuckets(threads: SidebarThread[], nowMs: number): ThreadDateBucket[] {
   const todayStart = startOfDay(nowMs)
@@ -268,19 +325,17 @@ export function computeThreadDateBuckets(threads: SidebarThread[], nowMs: number
     if (recentDayStarts.size === RECENT_ACTIVITY_DAY_BUCKETS) break
   }
 
-  const buckets = new Map<string, ThreadDateBucket>()
+  const buckets = new Map<string, Omit<ThreadDateBucket, "defaultExpanded">>()
   for (const thread of sorted) {
     const activityAt = thread.lastActivityAt
     const dayStart = startOfDay(activityAt)
 
     let key: string
     let label: string
-    let defaultExpanded = false
     if (recentDayStarts.has(dayStart)) {
       const date = new Date(dayStart)
       key = `day-${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`
       label = dayBucketLabel(dayStart, todayStart)
-      defaultExpanded = true
     } else if (activityAt >= thisWeekStart) {
       key = "this-week"; label = "This Week"
     } else if (activityAt >= lastWeekStart) {
@@ -291,12 +346,16 @@ export function computeThreadDateBuckets(threads: SidebarThread[], nowMs: number
 
     const bucket = buckets.get(key)
     if (bucket) bucket.threads.push(thread)
-    else buckets.set(key, { key, label, threads: [thread], defaultExpanded })
+    else buckets.set(key, { key, label, threads: [thread] })
   }
 
   // Threads are sorted most-recent-first and every non-day thread is older
-  // than the extracted days, so first-seen bucket order is newest → oldest.
-  return [...buckets.values()]
+  // than the extracted days, so first-seen bucket order is newest → oldest —
+  // which makes the first bucket the only one that starts expanded. Everything
+  // below the newest day of activity is history you scroll past, so it stays
+  // folded until asked for; the sections above (In Progress, Relevant) are
+  // where the live work lives.
+  return [...buckets.values()].map((bucket, index) => ({ ...bucket, defaultExpanded: index === 0 }))
 }
 
 /**
@@ -311,11 +370,21 @@ export function computeThreadDateBuckets(threads: SidebarThread[], nowMs: number
  * outranks "this touches the current diff". So it only claims chats that would
  * otherwise have fallen through to a date bucket.
  */
-export function computeSidebarThreadSections(threads: SidebarThread[], nowMs: number): SidebarThreadSections {
+export function computeSidebarThreadSections(
+  threads: SidebarThread[],
+  nowMs: number,
+  /**
+   * Chats holding an unsent draft, and when each draft appeared. Browser-local
+   * (see `useDraftStartTimes`), which is why it's passed in rather than read
+   * off the row like every other input here — the server has never heard of a
+   * draft.
+   */
+  draftStartTimes?: DraftStartTimes,
+): SidebarThreadSections {
   const review = getReviewThreads(threads)
   const inProgress = getInProgressThreads(threads, new Set(review.map((thread) => thread.chatId)))
   const pinnedIds = new Set([...review, ...inProgress].map((thread) => thread.chatId))
-  const relevant = getRelevantThreads(threads, pinnedIds)
+  const relevant = getRelevantThreads(threads, pinnedIds, draftStartTimes)
   const excludeIds = new Set([...pinnedIds, ...relevant.map((thread) => thread.chatId)])
   const rest = threads.filter((thread) =>
     !thread.archived
@@ -327,4 +396,27 @@ export function computeSidebarThreadSections(threads: SidebarThread[], nowMs: nu
     .filter((thread) => thread.archived && thread.row.lastMessageAt != null)
     .sort((left, right) => right.lastActivityAt - left.lastActivityAt)
   return { inProgress, review, relevant, buckets: computeThreadDateBuckets(rest, nowMs), archived }
+}
+
+/**
+ * Review folded into Relevant as the single group the New Sidebar's Chats tab
+ * renders under "Relevant" — there, a chat waiting on you and a chat sitting on
+ * the current diff are the same "come back to this" pile, and two adjacent
+ * near-identical headers only made you decide which one to scan.
+ *
+ * Sorted NEWEST first — Relevant's order, not Review's oldest-first queue
+ * order. FIFO only pays off when Review is its own drainable section (as it
+ * still is in the command palette, which keeps the sections separate); mixed in
+ * with diff-relevant chats it would just bury the chat you last touched.
+ *
+ * The two inputs are disjoint by construction (computeSidebarThreadSections
+ * excludes review ids from relevant), so this concatenates rather than unions.
+ */
+export function mergeRelevantThreads(
+  sections: SidebarThreadSections,
+  /** Same key the section itself sorted by — see `relevantSortKey`. */
+  draftStartTimes?: DraftStartTimes,
+): SidebarThread[] {
+  return [...sections.review, ...sections.relevant]
+    .sort((left, right) => relevantSortKey(right, draftStartTimes) - relevantSortKey(left, draftStartTimes))
 }

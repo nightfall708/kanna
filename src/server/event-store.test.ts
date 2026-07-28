@@ -146,36 +146,6 @@ describe("EventStore", () => {
     expect(existsSync(store.getTranscriptPath(chat.id))).toBe(true)
   })
 
-  test("pages recent transcript history and older entries by cursor", async () => {
-    const dataDir = await createTempDataDir()
-    const store = new EventStore(dataDir)
-    await store.initialize()
-
-    const project = await store.openProject("/tmp/project")
-    const chat = await store.createChat(project.id)
-
-    for (let index = 1; index <= 5; index += 1) {
-      await store.appendMessage(chat.id, entry(index % 2 === 0 ? "assistant_text" : "user_prompt", 200 + index, {
-        content: `message-${index}`,
-      }))
-    }
-
-    const recentPage = store.getRecentMessagesPage(chat.id, 2)
-    expect(recentPage.messages.map((message) => message._id)).toEqual(["assistant_text-204", "user_prompt-205"])
-    expect(recentPage.hasOlder).toBe(true)
-    expect(recentPage.olderCursor).not.toBeNull()
-
-    const olderPage = store.getMessagesPageBefore(chat.id, recentPage.olderCursor!, 2)
-    expect(olderPage.messages.map((message) => message._id)).toEqual(["assistant_text-202", "user_prompt-203"])
-    expect(olderPage.hasOlder).toBe(true)
-    expect(olderPage.olderCursor).not.toBeNull()
-
-    const oldestPage = store.getMessagesPageBefore(chat.id, olderPage.olderCursor!, 2)
-    expect(oldestPage.messages.map((message) => message._id)).toEqual(["user_prompt-201"])
-    expect(oldestPage.hasOlder).toBe(false)
-    expect(oldestPage.olderCursor).toBeNull()
-  })
-
   test("persists queued messages across restart and removes promoted entries", async () => {
     const dataDir = await createTempDataDir()
     const store = new EventStore(dataDir)
@@ -262,11 +232,9 @@ describe("EventStore", () => {
 
     await store.setChatReadAnchor(chat.id, "user_prompt-200", false)
 
-    // 3 entries total, anchor at index 0 -> 3 entries at or after it.
     expect(store.getChatReadAnchor(chat.id)).toEqual({
       messageId: "user_prompt-200",
       atEnd: false,
-      distanceFromEnd: 3,
     })
 
     const reloaded = new EventStore(dataDir)
@@ -274,11 +242,10 @@ describe("EventStore", () => {
     expect(reloaded.getChatReadAnchor(chat.id)).toEqual({
       messageId: "user_prompt-200",
       atEnd: false,
-      distanceFromEnd: 3,
     })
   })
 
-  test("survives compaction and tracks distance as the transcript grows", async () => {
+  test("survives compaction", async () => {
     const dataDir = await createTempDataDir()
     const store = new EventStore(dataDir)
     await store.initialize()
@@ -288,10 +255,7 @@ describe("EventStore", () => {
 
     await store.appendMessage(chat.id, entry("user_prompt", 200, { content: "hello" }))
     await store.setChatReadAnchor(chat.id, "user_prompt-200", true)
-    expect(store.getChatReadAnchor(chat.id)?.distanceFromEnd).toBe(1)
-
     await store.appendMessage(chat.id, entry("assistant_text", 201, { content: "world" }))
-    expect(store.getChatReadAnchor(chat.id)?.distanceFromEnd).toBe(2)
 
     await store.compact()
 
@@ -300,7 +264,6 @@ describe("EventStore", () => {
     expect(reloaded.getChatReadAnchor(chat.id)).toEqual({
       messageId: "user_prompt-200",
       atEnd: true,
-      distanceFromEnd: 2,
     })
   })
 
@@ -876,6 +839,82 @@ describe("EventStore", () => {
     expect(store.getMessages(forked.id)).toEqual(store.getMessages(source.id))
   })
 
+  test("lastAgentMessageAt tracks agent entries mid-turn, ignoring user prompts", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    await store.appendMessage(chat.id, entry("user_prompt", 1_000, { content: "plan this" }))
+    // The user's own prompt is not agent activity.
+    expect(store.requireChat(chat.id).lastAgentMessageAt).toBeUndefined()
+
+    await store.appendMessage(chat.id, entry("assistant_text", 2_000, { text: "here's the plan" }))
+    expect(store.requireChat(chat.id).lastAgentMessageAt).toBe(2_000)
+
+    // No turn ended (the chat is parked waiting on plan approval), so this is
+    // the only timestamp that reflects how fresh the chat actually is.
+    expect(store.requireChat(chat.id).lastTurnEndedAt).toBeUndefined()
+    expect(store.requireChat(chat.id).lastMessageAt).toBe(1_000)
+
+    // A later user prompt doesn't drag the agent timestamp backwards.
+    await store.appendMessage(chat.id, entry("user_prompt", 3_000, { content: "go" }))
+    expect(store.requireChat(chat.id).lastAgentMessageAt).toBe(2_000)
+
+    // Rebuilt from the transcript on boot, like lastMessageAt.
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.requireChat(chat.id).lastAgentMessageAt).toBe(2_000)
+  })
+
+  test("a fork inherits the source's touched paths", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const source = await store.createChat(project.id)
+    await store.setChatProvider(source.id, "claude")
+    await store.setSessionToken(source.id, "session-1")
+    await store.appendMessage(source.id, entry("user_prompt", 1_000, { content: "edit files" }))
+    await store.recordFilesTouched(source.id, ["src/app.ts", "src/util.ts"])
+
+    const forked = await store.forkChat(source.id)
+
+    // Same conversation, same claim on the files it changed — the fork belongs
+    // in Relevant next to its source, not with an empty touched set.
+    expect(forked.touchedPaths).toEqual(["src/app.ts", "src/util.ts"])
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.requireChat(forked.id).touchedPaths).toEqual(["src/app.ts", "src/util.ts"])
+  })
+
+  test("a fork inherits lastTurnEndedAt, so it keeps the conversation's recency", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+
+    const project = await store.openProject("/tmp/project")
+    const source = await store.createChat(project.id)
+    await store.setChatProvider(source.id, "claude")
+    await store.setSessionToken(source.id, "session-1")
+    await store.appendMessage(source.id, entry("user_prompt", source.createdAt + 1, { content: "edit files" }))
+    await store.recordTurnFinished(source.id)
+    const sourceTurnEndedAt = store.requireChat(source.id).lastTurnEndedAt
+    expect(sourceTurnEndedAt).toBeNumber()
+
+    const forked = await store.forkChat(source.id)
+    expect(forked.lastTurnEndedAt).toBe(sourceTurnEndedAt!)
+    // A fork has no turn events of its own, so the timestamp has to ride on
+    // chat_created to survive a replay of the log.
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.requireChat(forked.id).lastTurnEndedAt).toBe(sourceTurnEndedAt!)
+    // The fork itself hasn't run a turn — only the timestamp is inherited.
+    expect(reloaded.requireChat(forked.id).lastTurnOutcome).toBeNull()
+  })
+
   test("reopening a removed project restores its existing chats", async () => {
     const dataDir = await createTempDataDir()
     const store = new EventStore(dataDir)
@@ -963,5 +1002,78 @@ describe("EventStore", () => {
     await reloaded.setChatDoneState(chat.id, true)
     await reloaded.setChatDoneState(chat.id, false)
     expect(reloaded.getChat(chat.id)?.doneAt).toBeUndefined()
+  })
+})
+
+describe("on-demand tool payloads", () => {
+  test("returns the requested entries with their payloads, minus debugRaw", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject(dataDir, "payloads")
+    const chat = await store.createChat(project.id)
+
+    await store.appendMessage(chat.id, {
+      _id: "call-1",
+      createdAt: 1,
+      kind: "tool_call",
+      debugRaw: "{}",
+      tool: { kind: "tool", toolKind: "write_file", toolName: "Write", toolId: "t1", input: { filePath: "a.ts", content: "body" } },
+    } as unknown as TranscriptEntry)
+    await store.appendMessage(chat.id, {
+      _id: "result-1",
+      createdAt: 2,
+      kind: "tool_result",
+      toolId: "t1",
+      content: "written",
+    } as unknown as TranscriptEntry)
+
+    const found = store.getEntriesById(chat.id, ["call-1", "result-1"])
+
+    expect(found).toHaveLength(2)
+    // The payloads the wire dropped are exactly what this exists to return.
+    expect((found[0] as unknown as { tool: { input: { content?: string } } }).tool.input.content).toBe("body")
+    expect((found[1] as unknown as { content?: unknown }).content).toBe("written")
+    expect(found[0]?.debugRaw).toBeUndefined()
+  })
+
+  test("silently omits ids that are not in the transcript", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject(dataDir, "payloads")
+    const chat = await store.createChat(project.id)
+    await store.appendMessage(chat.id, entry("assistant_text", 1, { text: "hi" }))
+
+    expect(store.getEntriesById(chat.id, ["nope"])).toEqual([])
+    expect(store.getEntriesById(chat.id, [])).toEqual([])
+  })
+})
+
+describe("stale empty chat pruning", () => {
+  test("keeps a cached chat that actually has messages", async () => {
+    // The prune sweep only deletes chats it believes are empty. `hasMessages`
+    // can be stale — it is metadata, repaired by peeking at the transcript —
+    // so a chat with entries must survive, transcript and all.
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject(dataDir, "prune")
+    const chat = await store.createChat(project.id)
+    await store.appendMessage(chat.id, entry("user_prompt", 1, { content: "hello" }))
+
+    // Warm the LRU, then mimic the metadata having been lost.
+    store.getClientTranscript(chat.id)
+    const record = store.getChat(chat.id)!
+    record.hasMessages = false
+    record.createdAt = Date.now() - 60 * 60 * 1000
+
+    const pruned = await store.pruneStaleEmptyChats({ activeChatIds: new Set(), protectedChatIds: new Set() })
+
+    expect(pruned).not.toContain(chat.id)
+    expect(store.getChat(chat.id)).not.toBeNull()
+    expect(store.getMessages(chat.id)).toHaveLength(1)
+    // And the repair happened rather than merely being skipped.
+    expect(store.getChat(chat.id)?.hasMessages).toBe(true)
   })
 })

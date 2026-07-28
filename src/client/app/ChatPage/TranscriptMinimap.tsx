@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { formatDuration, formatPromptTimestamp } from "../../components/messages/ResultMessage"
-import { cn } from "../../lib/utils"
 import {
   getMagnifyFalloff,
   getMinimapCapacity,
@@ -18,18 +17,30 @@ const TRANSCRIPT_COLUMN_PADDING_PX = 24
 const MIN_GUTTER_PX = 88
 
 /** Inset from the left edge of the chat pane. */
-const STRIP_LEFT_PX = 15
+const STRIP_INSET_PX = 15
 
 /**
- * Tick geometry is proportioned off the resting width by the golden ratio:
- * spacing is the minor part, the magnified width the major. Keeping both
- * derived means retuning the strip is a single number.
+ * Tick geometry is proportioned off one basis value: spacing is its golden
+ * minor, and a tick under the cursor grows by the magnification scale.
  */
-const GOLDEN_MAJOR = 1.618
 const GOLDEN_MINOR = 0.618
-const TICK_BASE_WIDTH_PX = 13
-const TICK_PITCH_PX = TICK_BASE_WIDTH_PX * GOLDEN_MINOR
-const TICK_MAX_WIDTH_PX = TICK_BASE_WIDTH_PX * GOLDEN_MAJOR
+const MAGNIFY_SCALE = 2
+/**
+ * The number the rest of the geometry is proportioned from, so retuning the
+ * strip stays a single value. Never rendered as a width itself — every tick
+ * sits at the resting width until the cursor's swell reaches it.
+ */
+const TICK_SCALE_BASIS_PX = 13
+/** Width of every tick outside the swell, hovered or not. */
+const TICK_RESTING_WIDTH_PX = 10
+/** The basis's golden minor, tightened a pixel by eye. */
+const TICK_PITCH_PX = TICK_SCALE_BASIS_PX * GOLDEN_MINOR - 1
+const TICK_MAX_WIDTH_PX = TICK_SCALE_BASIS_PX * MAGNIFY_SCALE
+
+/** Quick while the cursor is on the strip, slower settling back once it leaves. */
+const SIZE_ENTER_DURATION_MS = 100
+const SIZE_EXIT_DURATION_MS = 200
+const OPACITY_DURATION_MS = 150
 const TICK_BASE_HEIGHT_PX = 2
 const TICK_MAX_HEIGHT_PX = 3
 
@@ -46,9 +57,8 @@ const TICK_MAX_HEIGHT_PX = 3
  * competing highlights would make it ambiguous which tick the card belongs to.
  */
 const TICK_OPACITY_OFF_SCREEN = 0.15
-/** On-screen ticks read this many times brighter than off-screen ones. */
-const TICK_ON_SCREEN_CONTRAST = 5
-const TICK_OPACITY_ON_SCREEN = TICK_OPACITY_OFF_SCREEN * TICK_ON_SCREEN_CONTRAST
+/** Roughly 5.3x the floor — the contrast that carries "you are here". */
+const TICK_OPACITY_ON_SCREEN = 0.8
 const TICK_OPACITY_FOCUSED = 1
 /**
  * How many neighbours either side of the cursor swell. The radius is derived
@@ -207,6 +217,9 @@ export const TranscriptMinimap = memo(function TranscriptMinimap({
     if (focusedDistance > magnifyRadiusPx) focusedIndex = -1
   }
 
+  // Quick while the cursor is engaged, gentler once it has left the strip.
+  const sizeDurationMs = focusedIndex >= 0 ? SIZE_ENTER_DURATION_MS : SIZE_EXIT_DURATION_MS
+
   const focusedTurn = focusedIndex >= 0 ? ticks[focusedIndex] : null
   const focusedMeta = focusedTurn
     ? [
@@ -240,6 +253,8 @@ export const TranscriptMinimap = memo(function TranscriptMinimap({
           const falloff = pointerY === null ? 0 : getMagnifyFalloff(pointerY - centerY, magnifyRadiusPx)
           // The in-view highlight only applies while nothing is focused: once
           // a tick is picked out, every other tick sits at the floor.
+          const isGrowing = falloff > 0
+
           const inView = focusedIndex < 0 && isTurnInView(turn, visibleStart, visibleEnd)
           const opacity = index === focusedIndex
             ? TICK_OPACITY_FOCUSED
@@ -262,26 +277,28 @@ export const TranscriptMinimap = memo(function TranscriptMinimap({
                 height: TICK_PITCH_PX,
               }}
             >
+              {/* Deliberately uniform in colour: a tick's only job is to show
+                  where a turn sits and whether it is on screen. Tinting
+                  failures would make the strip a status display and compete
+                  with the in-view contrast that carries the actual meaning. */}
               <span
-                className={cn(
-                  // Deliberately uniform: a tick's only job is to show where a
-                  // turn sits and whether it is on screen. Tinting failures
-                  // would make the strip a status display and compete with the
-                  // in-view contrast that carries the actual meaning.
-                  "absolute rounded-full bg-foreground",
-                  // Opacity always eases, including mid-hover: it now steps
-                  // between two fixed values rather than following a gradient,
-                  // and an untweened step reads as a flicker as the focus
-                  // moves. Size still snaps — tweening it lags the pointer and
-                  // the dock feels rubbery.
-                  "transition-opacity duration-150 ease-out",
-                  pointerY === null && "transition-[width,height,opacity] duration-200 ease-out",
-                )}
+                className="absolute rounded-full bg-foreground"
                 style={{
-                  left: STRIP_LEFT_PX,
-                  width: TICK_BASE_WIDTH_PX + (TICK_MAX_WIDTH_PX - TICK_BASE_WIDTH_PX) * falloff,
+                  left: STRIP_INSET_PX,
+                  width: TICK_RESTING_WIDTH_PX
+                    + (TICK_MAX_WIDTH_PX - TICK_RESTING_WIDTH_PX) * falloff,
                   height: TICK_BASE_HEIGHT_PX + (TICK_MAX_HEIGHT_PX - TICK_BASE_HEIGHT_PX) * falloff,
                   opacity,
+                  // A tick inside the swell tracks the cursor, so its size must
+                  // not tween — that is what made the dock feel rubbery. One
+                  // that has just left the swell eases back instead. Opacity
+                  // always eases: it steps between fixed values, and an
+                  // untweened step reads as a flicker as the focus moves.
+                  transition: isGrowing
+                    ? `opacity ${OPACITY_DURATION_MS}ms ease-out`
+                    : `width ${sizeDurationMs}ms ease-out,`
+                      + ` height ${sizeDurationMs}ms ease-out,`
+                      + ` opacity ${OPACITY_DURATION_MS}ms ease-out`,
                 }}
               />
             </button>
@@ -295,7 +312,7 @@ export const TranscriptMinimap = memo(function TranscriptMinimap({
           aria-hidden
           className="pointer-events-none absolute animate-fade-in rounded-lg border border-border bg-popover/95 px-3 py-2 shadow-xl backdrop-blur-sm transition-[top] duration-150 ease-out"
           style={{
-            left: STRIP_LEFT_PX + TICK_MAX_WIDTH_PX + CARD_GAP_PX,
+            left: STRIP_INSET_PX + TICK_MAX_WIDTH_PX + CARD_GAP_PX,
             top: cardCenterY,
             width: CARD_WIDTH_PX,
             transform: "translateY(-50%)",

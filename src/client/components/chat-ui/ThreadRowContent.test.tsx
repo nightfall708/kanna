@@ -24,7 +24,7 @@ function thread(overrides: Partial<SidebarChatRow> = {}, archived = false): Side
     title: row.title,
     projectId: "project-1",
     projectTitle: "Project",
-    projectLabel: "Project/feature",
+    projectLabel: { name: "Project", branchName: "feature", repoPath: "acme/Project", text: "Project/feature" },
     archived,
     lastActivityAt: 1,
     row,
@@ -137,6 +137,40 @@ describe("ThreadRowContent relevance treatment", () => {
 
     expect(html).toContain("text-muted-foreground")
     expect(html).not.toContain("text-logo")
+  })
+})
+
+describe("ThreadRowContent draft glyph", () => {
+  test("an unsent draft claims the harness icon's slot", () => {
+    // Which harness a chat runs is the same on every row of a project; "you
+    // left something half-written here" is the rarer, more actionable thing.
+    const html = renderRow({ thread: thread(), hasDraft: true, detailLabel: null })
+
+    expect(html).toContain("lucide-pencil-line")
+  })
+
+  test("wears the brand red — the one glyph on the row that is about you", () => {
+    const html = renderRow({ thread: thread(), hasDraft: true, detailLabel: null })
+
+    expect(html).toContain("text-logo")
+  })
+
+  test("the open chat keeps its pencil — swapping the glyph on click is a flicker", () => {
+    const html = renderRow({ thread: thread(), hasDraft: true, isActive: true, detailLabel: null })
+
+    expect(html).toContain("lucide-pencil-line")
+  })
+
+  test("the status dot still outranks it — that one is about the agent", () => {
+    const html = renderRow({
+      thread: thread({ status: "running" }),
+      showStatus: true,
+      hasDraft: true,
+      detailLabel: null,
+    })
+
+    expect(html).toContain("animate-spin")
+    expect(html).not.toContain("lucide-pencil-line")
   })
 })
 

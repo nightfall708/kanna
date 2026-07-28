@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef } from "react"
 import type { ResolvedChatReadAnchor } from "../../shared/types"
 import type { KannaSocket } from "./socket"
-import { INITIAL_CHAT_RECENT_LIMIT } from "./kannaStateHelpers"
 
 /**
  * Minimum gap between `chat.setReadAnchor` writes while the user keeps
@@ -10,92 +9,78 @@ import { INITIAL_CHAT_RECENT_LIMIT } from "./kannaStateHelpers"
  */
 const READ_ANCHOR_WRITE_INTERVAL_MS = 1500
 
-/** Extra entries loaded beyond the anchor so there's context above it. */
-const READ_ANCHOR_WINDOW_PADDING = 50
-
 /**
- * Ceiling on how far back we'll widen the initial chat window to reach an
- * anchor. Beyond this the transcript payload gets unreasonable and we fall
- * back to the latest user message instead.
+ * Where in the message the reader was, and the column width that makes it
+ * meaningful. Restoring uses the offset only at a matching width, since a
+ * narrower column rewraps the message and moves everything inside it.
  */
-export const MAX_READ_ANCHOR_RECENT_LIMIT = 2000
+export interface ReadAnchorLayout {
+  transcriptWidth: number
+  offsetFromMessage: number
+}
 
 export interface ChatReadAnchorState {
   /**
-   * False until `chat.getReadAnchor` settles for the current chat. Consumers
-   * must wait for this before restoring scroll, otherwise they'd land on the
-   * fallback and then visibly jump when the anchor arrives.
+   * False until the chat's first snapshot lands. Consumers must wait for this
+   * before restoring scroll, otherwise they'd land on the fallback and then
+   * visibly jump when the anchor arrives.
    */
   resolved: boolean
   anchor: ResolvedChatReadAnchor | null
 }
 
-const UNRESOLVED: ChatReadAnchorState = { resolved: false, anchor: null }
-const RESOLVED_EMPTY: ChatReadAnchorState = { resolved: true, anchor: null }
-
 export interface ChatReadAnchorSync {
   anchorState: ChatReadAnchorState
-  /** `recentLimit` the chat subscription should use to include the anchor. */
-  recentLimit: number
   /**
    * Report the message currently at the top of the viewport. Safe to call on
    * every scroll event — writes are throttled and deduped.
    */
-  reportReadAnchor: (messageId: string, atEnd: boolean) => void
+  reportReadAnchor: (messageId: string, atEnd: boolean, layout?: ReadAnchorLayout) => void
 }
 
 /**
  * Tracks a chat's server-side read position.
  *
- * Reads happen once per chat open; there is deliberately no live push, so a
- * device sitting on an open chat never gets its viewport moved because another
- * device scrolled. Writes are throttled and ack-only — the anchor is not part
- * of any snapshot, so scrolling causes no broadcast fan-out.
+ * The anchor arrives inline on the chat snapshot, already resolved against the
+ * window the server chose — opening a chat is one round trip rather than a
+ * probe followed by a re-subscription at a wider limit, which fetched the
+ * transcript twice.
+ *
+ * Only the first snapshot per chat is consulted, so a device sitting on an
+ * open chat never gets its viewport moved because another device scrolled.
+ * Writes are throttled and ack-only.
  */
-export function useChatReadAnchor(socket: KannaSocket, activeChatId: string | null): ChatReadAnchorSync {
-  const [state, setState] = useState<{ chatId: string | null; value: ChatReadAnchorState; limit: number }>({
+export function useChatReadAnchor(
+  socket: KannaSocket,
+  activeChatId: string | null,
+  snapshotAnchor: ResolvedChatReadAnchor | null | undefined,
+  chatReady: boolean
+): ChatReadAnchorSync {
+  // Latched per chat: later snapshots carry a moving anchor (it is recomputed
+  // as entries append), and adopting those would let a background update
+  // retarget a restore that already happened.
+  const latchedRef = useRef<{ chatId: string | null; anchor: ResolvedChatReadAnchor | null }>({
     chatId: null,
-    value: RESOLVED_EMPTY,
-    limit: INITIAL_CHAT_RECENT_LIMIT,
+    anchor: null,
   })
+  if (latchedRef.current.chatId !== activeChatId) {
+    latchedRef.current = { chatId: activeChatId, anchor: chatReady ? snapshotAnchor ?? null : null }
+  } else if (!latchedRef.current.anchor && chatReady && snapshotAnchor) {
+    latchedRef.current = { chatId: activeChatId, anchor: snapshotAnchor }
+  }
 
-  // Derived rather than stored so a chat switch resets synchronously — a stale
-  // limit would otherwise drive one wasted subscription at the old window.
-  const anchorState = state.chatId === activeChatId ? state.value : UNRESOLVED
-  const recentLimit = state.chatId === activeChatId ? state.limit : INITIAL_CHAT_RECENT_LIMIT
+  const anchorState = useMemo<ChatReadAnchorState>(
+    () => ({ resolved: !activeChatId || chatReady, anchor: latchedRef.current.anchor }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- latch is keyed by chat + readiness
+    [activeChatId, chatReady, latchedRef.current.anchor]
+  )
 
-  useEffect(() => {
-    if (!activeChatId) {
-      setState({ chatId: null, value: RESOLVED_EMPTY, limit: INITIAL_CHAT_RECENT_LIMIT })
-      return
-    }
-
-    let cancelled = false
-    void socket.command<ResolvedChatReadAnchor | null>({ type: "chat.getReadAnchor", chatId: activeChatId })
-      .then((anchor) => {
-        if (cancelled) return
-        // Only widen for a message anchor — `atEnd` restores to the bottom,
-        // which the default window always covers.
-        const needsWiderWindow = Boolean(anchor)
-          && !anchor?.atEnd
-          && (anchor?.distanceFromEnd ?? 0) > INITIAL_CHAT_RECENT_LIMIT
-        const limit = needsWiderWindow
-          ? Math.min((anchor?.distanceFromEnd ?? 0) + READ_ANCHOR_WINDOW_PADDING, MAX_READ_ANCHOR_RECENT_LIMIT)
-          : INITIAL_CHAT_RECENT_LIMIT
-        setState({ chatId: activeChatId, value: { resolved: true, anchor: anchor ?? null }, limit })
-      })
-      .catch(() => {
-        // A missing anchor is not an error worth surfacing — fall back.
-        if (cancelled) return
-        setState({ chatId: activeChatId, value: RESOLVED_EMPTY, limit: INITIAL_CHAT_RECENT_LIMIT })
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [activeChatId, socket])
-
-  const pendingRef = useRef<{ chatId: string; messageId: string; atEnd: boolean } | null>(null)
+  const pendingRef = useRef<{
+    chatId: string
+    messageId: string
+    atEnd: boolean
+    layout?: ReadAnchorLayout
+  } | null>(null)
   const timerRef = useRef<number | null>(null)
   const lastWriteAtRef = useRef(0)
   const lastWrittenKeyRef = useRef<string | null>(null)
@@ -112,7 +97,12 @@ export function useChatReadAnchor(socket: KannaSocket, activeChatId: string | nu
     // While parked at the bottom the top-visible message churns with every
     // streamed chunk, but restore only needs to know "was at the end" — so all
     // of those collapse to a single write instead of one every interval.
-    const key = pending.atEnd ? `${pending.chatId}:atEnd` : `${pending.chatId}:${pending.messageId}`
+    // Scrolling within one long message changes only the offset, so that has to
+    // be part of the key or the position would stick where the message first
+    // came into view.
+    const key = pending.atEnd
+      ? `${pending.chatId}:atEnd`
+      : `${pending.chatId}:${pending.messageId}:${pending.layout?.offsetFromMessage ?? ""}`
     if (key === lastWrittenKeyRef.current) return
     lastWrittenKeyRef.current = key
     lastWriteAtRef.current = Date.now()
@@ -122,15 +112,16 @@ export function useChatReadAnchor(socket: KannaSocket, activeChatId: string | nu
       chatId: pending.chatId,
       messageId: pending.messageId,
       atEnd: pending.atEnd,
+      ...(pending.layout ?? {}),
     }).catch(() => {
       // Every pending command rejects with "Disconnected" on socket close even
       // though the envelope may still be delivered. Never surface this.
     })
   }, [socket])
 
-  const reportReadAnchor = useCallback((messageId: string, atEnd: boolean) => {
+  const reportReadAnchor = useCallback((messageId: string, atEnd: boolean, layout?: ReadAnchorLayout) => {
     if (!activeChatId) return
-    pendingRef.current = { chatId: activeChatId, messageId, atEnd }
+    pendingRef.current = { chatId: activeChatId, messageId, atEnd, layout }
     // Already scheduled — the newer position just replaces the pending one.
     if (timerRef.current !== null) return
     const delay = Math.max(0, READ_ANCHOR_WRITE_INTERVAL_MS - (Date.now() - lastWriteAtRef.current))
@@ -140,18 +131,22 @@ export function useChatReadAnchor(socket: KannaSocket, activeChatId: string | nu
     }, delay)
   }, [activeChatId, flush])
 
-  // Drop anything still queued for the outgoing chat, and reset the dedupe key
+  // Write anything still queued for the outgoing chat, and reset the dedupe key
   // so the new chat's first sample always writes.
+  //
+  // Leaving used to discard the pending sample instead. Writes are throttled to
+  // `READ_ANCHOR_WRITE_INTERVAL_MS`, so the position a reader stops at is
+  // almost always still pending when they navigate away — which is exactly the
+  // position worth keeping. Dropping it meant returning to wherever they
+  // happened to be a second and a half earlier, or to a much older sample if
+  // they never paused that long. The pending entry carries its own `chatId`, so
+  // flushing here writes it against the chat it was sampled from.
   useEffect(() => {
     return () => {
-      if (timerRef.current !== null) {
-        window.clearTimeout(timerRef.current)
-        timerRef.current = null
-      }
-      pendingRef.current = null
+      flush()
       lastWrittenKeyRef.current = null
     }
-  }, [activeChatId])
+  }, [activeChatId, flush])
 
   // Backgrounding a tab is the common way a session ends. `visibilitychange`
   // fires reliably here, unlike pagehide/beforeunload where the socket may
@@ -165,7 +160,7 @@ export function useChatReadAnchor(socket: KannaSocket, activeChatId: string | nu
   }, [flush])
 
   return useMemo(
-    () => ({ anchorState, recentLimit, reportReadAnchor }),
-    [anchorState, recentLimit, reportReadAnchor]
+    () => ({ anchorState, reportReadAnchor }),
+    [anchorState, reportReadAnchor]
   )
 }

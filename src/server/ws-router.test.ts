@@ -1273,80 +1273,6 @@ describe("ws-router", () => {
     })
   })
 
-  test("loads older chat history pages", async () => {
-    const state = createEmptyState()
-    state.projectsById.set("project-1", {
-      id: "project-1",
-      localPath: "/tmp/project",
-      title: "Project",
-      createdAt: 1,
-      updatedAt: 1,
-    })
-    state.projectIdsByPath.set("/tmp/project", "project-1")
-    state.chatsById.set("chat-1", {
-      id: "chat-1",
-      projectId: "project-1",
-      title: "Chat",
-      createdAt: 1,
-      updatedAt: 1,
-      unread: false,
-      provider: null,
-      planMode: false,
-      autoPlan: false,
-      sessionToken: null,
-      lastTurnOutcome: null,
-    })
-
-    const router = createTestRouter({
-      store: createFakeStore({
-        state,
-        getMessagesPageBefore: () => ({
-          messages: [{
-            _id: "msg-1",
-            kind: "assistant_text",
-            createdAt: 1,
-            text: "older message",
-          }],
-          hasOlder: false,
-          olderCursor: null,
-        }),
-        getChat: () => state.chatsById.get("chat-1") ?? null,
-      }),
-    })
-    const ws = new FakeWebSocket()
-
-    await router.handleMessage(
-      ws as never,
-      JSON.stringify({
-        v: 1,
-        type: "command",
-        id: "history-1",
-        command: {
-          type: "chat.loadHistory",
-          chatId: "chat-1",
-          beforeCursor: "idx:100",
-          limit: 100,
-        },
-      })
-    )
-
-    expect(ws.sent[0]).toEqual({
-      v: PROTOCOL_VERSION,
-      type: "ack",
-      id: "history-1",
-      result: {
-        messages: [{
-          _id: "msg-1",
-          kind: "assistant_text",
-          createdAt: 1,
-          text: "older message",
-        }],
-        hasOlder: false,
-        olderCursor: null,
-      },
-    })
-  })
-
   test("persists a read anchor without broadcasting any snapshot", async () => {
     const writes: Array<{ chatId: string; messageId: string; atEnd: boolean }> = []
     const router = createTestRouter({
@@ -2148,7 +2074,7 @@ describe("ws-router", () => {
         state,
         getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
         getProject: (projectId: string) => state.projectsById.get(projectId) ?? null,
-        getRecentChatHistory: () => ({ entries: [], hasOlder: false, olderCursor: null }),
+        getClientTranscript: () => ({ messages: [], startIndex: 0, readAnchor: null }),
       }),
       diffStore: createFakeDiffStore({
         getProjectSnapshot: () => ({ status: "ready" as const, files: [], defaultBranchName: "main", originRepoSlug: "acme/repo", aheadCount: 0, behindCount: 0, lastFetchedAt: undefined }),

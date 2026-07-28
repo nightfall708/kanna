@@ -54,13 +54,6 @@ function sameProviders(left: ProviderCatalogEntry[] | null | undefined, right: P
   })
 }
 
-function sameHistory(left: ChatSnapshot["history"] | null | undefined, right: ChatSnapshot["history"] | null | undefined) {
-  if (left === right) return true
-  if (!left || !right) return false
-  return left.hasOlder === right.hasOlder
-    && left.olderCursor === right.olderCursor
-    && left.recentLimit === right.recentLimit
-}
 
 function sameQueuedMessage(left: QueuedChatMessage, right: QueuedChatMessage) {
   return left.id === right.id
@@ -143,8 +136,38 @@ export function sameChatSnapshotCore(left: ChatSnapshot | null, right: ChatSnaps
   return sameRuntime(left.runtime, right.runtime)
     && sameQueuedMessages(left.queuedMessages, right.queuedMessages)
     && sameTranscriptEntries(left.messages, right.messages)
-    && sameHistory(left.history, right.history)
     && sameProviders(left.availableProviders, right.availableProviders)
+}
+
+/**
+ * Fold an incremental chat snapshot into the one already held.
+ *
+ * The server sends only the entries past what this socket last received, so
+ * the body has to be spliced back onto the window at its absolute index. A
+ * snapshot that is not incremental replaces outright.
+ *
+ * Returns null when the incoming body cannot be placed contiguously — the
+ * server's cursor should make that unreachable, but a caller that gets null
+ * must not render a transcript with a hole in it.
+ */
+export function applyIncrementalChatSnapshot(
+  current: Pick<ChatSnapshot, "messages" | "startIndex"> | null,
+  incoming: ChatSnapshot | null
+): ChatSnapshot | null {
+  if (!incoming?.incremental) return incoming
+  if (!current) return null
+
+  const offset = incoming.startIndex - current.startIndex
+  if (offset < 0 || offset > current.messages.length) return null
+
+  const messages = current.messages.slice(0, offset)
+  messages.push(...incoming.messages)
+  return {
+    ...incoming,
+    messages,
+    startIndex: current.startIndex,
+    incremental: false,
+  }
 }
 
 export function mergeTranscriptEntries(olderHistoryEntries: TranscriptEntry[], recentEntries: TranscriptEntry[]) {

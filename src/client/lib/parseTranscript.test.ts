@@ -185,8 +185,13 @@ describe("processTranscriptMessages", () => {
   // system_init and tool_result entries (agent.ts), but transcripts written
   // before that trim stamp it on every entry. Both must hydrate identically.
   test("hydrates trimmed-format and legacy fully-stamped transcripts identically", () => {
+    // `resultEntryId` points at the tool_result entry, whose `_id` is
+    // generated per fixture, so it varies between the two shapes by design.
     const stripIds = (messages: ReturnType<typeof processTranscriptMessages>) =>
-      messages.map(({ id, timestamp, ...rest }) => rest)
+      messages.map(({ id, timestamp, ...rest }) => {
+        const { resultEntryId, ...withoutResultEntryId } = rest as typeof rest & { resultEntryId?: string }
+        return withoutResultEntryId
+      })
 
     const baseEntries: Array<Omit<TranscriptEntry, "_id" | "createdAt">> = [
       {
@@ -352,5 +357,64 @@ describe("getLatestToolIds", () => {
       ExitPlanMode: null,
       TodoWrite: null,
     })
+  })
+})
+
+describe("trimmed tool payloads", () => {
+  const toolCall = (overrides: Record<string, unknown> = {}) => ({
+    _id: "call-1",
+    createdAt: 1,
+    kind: "tool_call",
+    tool: { kind: "tool", toolKind: "bash", toolName: "Bash", toolId: "tid-1", input: { command: "ls" } },
+    ...overrides,
+  }) as unknown as TranscriptEntry
+
+  const toolResult = (overrides: Record<string, unknown> = {}) => ({
+    _id: "result-1",
+    createdAt: 2,
+    kind: "tool_result",
+    toolId: "tid-1",
+    ...overrides,
+  }) as unknown as TranscriptEntry
+
+  const toolRowOf = (entries: TranscriptEntry[]) =>
+    processTranscriptMessages(entries).find((message) => message.kind === "tool") as
+      | (Extract<ReturnType<typeof processTranscriptMessages>[number], { kind: "tool" }>)
+      | undefined
+
+  test("a trimmed result still marks the call finished", () => {
+    const row = toolRowOf([toolCall(), toolResult({ trimmed: true, isError: false })])
+
+    // Finishedness is the arrival of a result entry, not of its body.
+    expect(row?.resultEntryId).toBe("result-1")
+    expect(row?.resultTrimmed).toBe(true)
+    expect(row?.isError).toBe(false)
+  })
+
+  test("a trimmed result is not hydrated from an absent body", () => {
+    const row = toolRowOf([toolCall(), toolResult({ trimmed: true })])
+
+    expect(row?.result).toBeUndefined()
+    expect(row?.rawResult).toBeUndefined()
+  })
+
+  test("an untrimmed result hydrates exactly as before", () => {
+    const row = toolRowOf([toolCall(), toolResult({ content: "output" })])
+
+    expect(row?.rawResult).toBe("output")
+    expect(row?.resultTrimmed).toBeUndefined()
+  })
+
+  test("a trimmed call is flagged so the expanded view knows to fetch", () => {
+    const row = toolRowOf([toolCall({ trimmed: true }), toolResult({ content: "out" })])
+
+    expect(row?.inputTrimmed).toBe(true)
+  })
+
+  test("entries with nothing trimmed carry no flags", () => {
+    const row = toolRowOf([toolCall(), toolResult({ content: "out" })])
+
+    expect(row?.inputTrimmed).toBeUndefined()
+    expect(row?.resultTrimmed).toBeUndefined()
   })
 })

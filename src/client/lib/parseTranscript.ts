@@ -24,11 +24,20 @@ function hydrateToolCall(entry: Extract<TranscriptEntry, { kind: "tool_call" }>)
     toolName: entry.tool.toolName,
     toolId: entry.tool.toolId,
     input: entry.tool.input as HydratedToolCall["input"],
+    inputTrimmed: entry.trimmed,
     timestamp: createTimestamp(entry.createdAt),
   } as HydratedToolCall
 }
 
-function getStructuredToolResultFromDebug(entry: Extract<TranscriptEntry, { kind: "tool_result" }>): unknown {
+/**
+ * The structured result for the two tool kinds that need it.
+ *
+ * `structuredResult` is lifted server-side out of `debugRaw`. The `debugRaw`
+ * fallback covers entries served by an older server that still shipped the raw
+ * payload inline.
+ */
+function getStructuredToolResult(entry: Extract<TranscriptEntry, { kind: "tool_result" }>): unknown {
+  if (entry.structuredResult !== undefined) return entry.structuredResult
   if (!entry.debugRaw) return undefined
 
   try {
@@ -90,16 +99,25 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
       case "tool_result": {
         const pendingCall = pendingToolCalls.get(entry.toolId)
         if (pendingCall) {
-          const rawResult = (
-            pendingCall.normalized.toolKind === "ask_user_question" ||
-            pendingCall.normalized.toolKind === "exit_plan_mode"
-          )
-            ? getStructuredToolResultFromDebug(entry) ?? entry.content
-            : entry.content
-
-          pendingCall.hydrated.result = hydrateToolResult(pendingCall.normalized, rawResult) as never
-          pendingCall.hydrated.rawResult = rawResult
+          // Recorded whether or not the body came with it: this is what marks
+          // the call finished, and what the expanded view fetches by.
           pendingCall.hydrated.isError = entry.isError
+          pendingCall.hydrated.resultEntryId = entry._id
+          pendingCall.hydrated.resultTrimmed = entry.trimmed
+
+          // A trimmed result has no body to hydrate — the expanded view fetches
+          // it and hydrates there, so nothing is derived from an absent payload.
+          if (!entry.trimmed) {
+            const rawResult = (
+              pendingCall.normalized.toolKind === "ask_user_question" ||
+              pendingCall.normalized.toolKind === "exit_plan_mode"
+            )
+              ? getStructuredToolResult(entry) ?? entry.content
+              : entry.content
+
+            pendingCall.hydrated.result = hydrateToolResult(pendingCall.normalized, rawResult) as never
+            pendingCall.hydrated.rawResult = rawResult
+          }
         }
         break
       }

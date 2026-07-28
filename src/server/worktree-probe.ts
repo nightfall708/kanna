@@ -5,16 +5,16 @@ import {
   probeWorkingTree,
   resolveWorkingTreeLocation,
   type WorkingTreeLocation,
-  DIRTY_ANCHOR_MAX_AGE_MS,
   type WorkingTreeProbe,
   type WorkingTreeScan,
 } from "./diff-store"
 
 /**
- * Tracks, per project, whether the working tree is dirty and roughly when that
- * started — the input to the sidebar's "this chat is relevant to your
- * uncommitted work" dot (`lastTurnEndedAt > dirtySinceMs`) — plus the repo name
- * and branch behind the sidebar's `repo/branch` label.
+ * Tracks, per project, whether the working tree is dirty and which paths are
+ * dirty — the input to the sidebar's "this chat is relevant to your
+ * uncommitted work" dot, which intersects these paths with the files a chat
+ * actually touched (`ChatRecord.touchedPaths`) — plus the repo name and branch
+ * behind the sidebar's `repo/branch` label.
  *
  * Entirely in-memory and derived: nothing is persisted, so a restart just
  * repopulates lazily. Reads are synchronous because the sidebar snapshot
@@ -22,21 +22,22 @@ import {
  *
  * Three update paths, none of which sweeps `git status` across projects:
  *
- * 1. **Turn end** (`refreshForProject`) — the only event that both dirties a
- *    tree and advances `lastTurnEndedAt`, so the only one that can *create* a
- *    dot. One `git status` for one project.
+ * 1. **Turn end** (`refreshForProject`) — a finished turn is the likeliest
+ *    moment for the dirty set to have changed. One `git status` for one
+ *    project.
  * 2. **The tick** (`start`) — stats `<gitDir>/index` and `<gitDir>/HEAD` per
  *    project and runs the real probe only when that stamp changed. A commit
  *    always rewrites the index and a checkout rewrites HEAD, so this catches
  *    the case that leaves dots stale: committing outside Kanna. At idle it
  *    spawns zero processes.
- * 3. **`DiffStore.onWorkingTreeProbe`** — free; `performRefresh` already stats
- *    every dirty file. Keeps the client's active project current and clears the
+ * 3. **`DiffStore.onWorkingTreeProbe`** — free; `performRefresh` already lists
+ *    every dirty path. Keeps the client's active project current and clears the
  *    dot immediately when a commit goes through Kanna's git panel.
  *
- * A plain hand edit touches no git metadata and so is missed by (2), but under
- * the dot's rule a hand edit moves `dirtySinceMs` to *now*, which can only
- * remove dots from chats whose turns predate it — never add a wrong one.
+ * A plain hand edit touches no git metadata and so is missed by (2) until the
+ * next turn ends or the client refreshes that project's diff. The dot is a
+ * hint, not a guarantee, and it errs toward being one probe stale rather than
+ * toward inventing state.
  *
  * Repo labels ride along on the same passes but cover *every* project with a
  * live chat, not just the dot candidates: the label is on screen for all of
@@ -63,10 +64,16 @@ export interface ProjectRepoLabel {
   repoName: string
   /** Absent on a detached HEAD, where there is no branch to name. */
   branchName?: string
+  /** Owner segment of the `origin` remote; absent when there is no origin. */
+  repoOwner?: string
 }
 
 function probesEqual(left: WorkingTreeProbe | undefined, right: WorkingTreeProbe) {
-  return left?.dirty === right.dirty && left?.dirtySinceMs === right.dirtySinceMs
+  if (!left || left.dirty !== right.dirty || left.paths.size !== right.paths.size) return false
+  for (const dirtyPath of right.paths) {
+    if (!left.paths.has(dirtyPath)) return false
+  }
+  return true
 }
 
 /**
@@ -85,14 +92,70 @@ async function readHeadBranch(gitDir: string) {
   return branch.length > 0 ? branch : undefined
 }
 
+/**
+ * The `url` of the `origin` remote out of a git config file. Same trade as
+ * `readHeadBranch`: one file read per project beats `git config --get` on every
+ * pass. Hand-rolled rather than a general INI parser because we want exactly
+ * one key out of one section.
+ */
+function extractOriginUrl(config: string): string | undefined {
+  let inOrigin = false
+  for (const rawLine of config.split("\n")) {
+    const line = rawLine.trim()
+    if (line.startsWith("[")) {
+      inOrigin = /^\[remote\s+"origin"\]$/u.test(line)
+      continue
+    }
+    if (!inOrigin) continue
+    const match = /^url\s*=\s*(.+)$/u.exec(line)
+    if (match?.[1]) return match[1].trim()
+  }
+  return undefined
+}
+
+/**
+ * The account/org a remote URL belongs to — the segment before the repo in
+ * `owner/repo`. Host-agnostic on purpose (GitHub, GitLab and self-hosted all
+ * shape the path the same way), but it does require a *host*: a bare local path
+ * like `/srv/git/widgets.git` has directories, not an owner, and calling one
+ * "git" would put a lie in the tooltip. No owner is always a valid answer — the
+ * label just shows the repo unqualified.
+ */
+export function extractRemoteOwner(remoteUrl: string | undefined): string | undefined {
+  if (!remoteUrl) return undefined
+  // `git@host:owner/repo.git` — scp syntax, which is not a parseable URL.
+  const scp = /^[^/@]+@[^/:]+:(?<path>.+)$/u.exec(remoteUrl)
+  let rawPath = scp?.groups?.path
+  if (rawPath === undefined) {
+    try {
+      rawPath = new URL(remoteUrl).pathname
+    } catch {
+      return undefined
+    }
+  }
+  const segments = rawPath.replace(/\.git$/u, "").split("/").filter((segment) => segment.length > 0)
+  return segments.length >= 2 ? segments[segments.length - 2] : undefined
+}
+
+/**
+ * A linked worktree's git dir holds no `config` of its own — the remotes live
+ * in the common dir it points at, named by a `commondir` file beside HEAD.
+ */
+async function resolveCommonDir(gitDir: string) {
+  const commonDir = await readFile(path.join(gitDir, "commondir"), "utf8").catch(() => null)
+  const trimmed = commonDir?.trim()
+  return trimmed ? path.resolve(gitDir, trimmed) : gitDir
+}
+
+async function readOriginOwner(gitDir: string) {
+  const configPath = path.join(await resolveCommonDir(gitDir), "config")
+  const config = await readFile(configPath, "utf8").catch(() => null)
+  return config === null ? undefined : extractRemoteOwner(extractOriginUrl(config))
+}
+
 export class WorktreeProbe {
   private readonly entries = new Map<string, ProjectProbeEntry>()
   private readonly probes = new Map<string, WorkingTreeProbe>()
-  /**
-   * projectId -> path -> when that path was first seen dirty. Sticky against
-   * mtime churn from pull/rebase/checkout; see `foldScanIntoLedger`.
-   */
-  private readonly dirtySinceByPath = new Map<string, Map<string, number>>()
   /** Absent for projects that aren't in a repo (or haven't been resolved yet). */
   private readonly repoLabels = new Map<string, ProjectRepoLabel>()
   private timer: ReturnType<typeof setInterval> | null = null
@@ -151,7 +214,7 @@ export class WorktreeProbe {
       const entry = await this.ensureEntry(projectId, project.localPath)
       if (!entry.location) {
         this.applyRepoLabel(projectId, null)
-        await this.applyProbe(projectId, { dirty: false, files: [] })
+        await this.applyProbe(projectId, { dirty: false, paths: [] })
         return
       }
       this.applyRepoLabel(projectId, await this.readRepoLabel(entry.location))
@@ -269,10 +332,14 @@ export class WorktreeProbe {
   }
 
   private async readRepoLabel(location: WorkingTreeLocation): Promise<ProjectRepoLabel> {
-    const branchName = await readHeadBranch(location.gitDir)
+    const [branchName, repoOwner] = await Promise.all([
+      readHeadBranch(location.gitDir),
+      readOriginOwner(location.gitDir),
+    ])
     return {
       repoName: path.basename(location.repoRoot),
       ...(branchName ? { branchName } : {}),
+      ...(repoOwner ? { repoOwner } : {}),
     }
   }
 
@@ -285,51 +352,22 @@ export class WorktreeProbe {
       this.notifyChanged()
       return
     }
-    if (previous?.repoName === label.repoName && previous.branchName === label.branchName) return
+    if (
+      previous?.repoName === label.repoName
+      && previous.branchName === label.branchName
+      && previous.repoOwner === label.repoOwner
+    ) return
     this.repoLabels.set(projectId, label)
     this.notifyChanged()
   }
 
-  /**
-   * Fold a raw scan into the per-path ledger and derive `dirtySinceMs`.
-   *
-   * A path keeps whatever timestamp it was *first* seen with. That's the whole
-   * point: `git pull --rebase --autostash` pops the stash and rewrites your
-   * still-dirty files, so their mtimes jump to now. Reading mtimes fresh each
-   * time made `dirtySinceMs` leap forward past chats that were correctly
-   * flagged before the pull, silently un-flagging them. A rebase, a branch
-   * switch, or a formatter sweep does the same.
-   *
-   * Paths that go clean drop out, so committing still clears the anchor. A
-   * path that goes clean and dirties again re-enters with a fresh timestamp,
-   * which is correct — that is a new episode.
-   */
-  private foldScanIntoLedger(projectId: string, scan: WorkingTreeScan): WorkingTreeProbe {
-    if (!scan.dirty) {
-      this.dirtySinceByPath.delete(projectId)
-      return { dirty: false }
-    }
-
-    const previous = this.dirtySinceByPath.get(projectId)
-    const next = new Map<string, number>()
-    for (const file of scan.files) {
-      next.set(file.path, previous?.get(file.path) ?? file.mtimeMs)
-    }
-    this.dirtySinceByPath.set(projectId, next)
-
-    const anchorFloorMs = Date.now() - DIRTY_ANCHOR_MAX_AGE_MS
-    let dirtySinceMs: number | undefined
-    for (const firstSeenMs of next.values()) {
-      if (firstSeenMs < anchorFloorMs) continue
-      if (dirtySinceMs === undefined || firstSeenMs < dirtySinceMs) {
-        dirtySinceMs = firstSeenMs
-      }
-    }
-    return dirtySinceMs === undefined ? { dirty: true } : { dirty: true, dirtySinceMs }
-  }
-
   private async applyProbe(projectId: string, scan: WorkingTreeScan) {
-    const probe = this.foldScanIntoLedger(projectId, scan)
+    // A scan *is* the probe now — the reading is a set of paths, so there is
+    // no state to carry between passes and nothing to go stale. (This used to
+    // fold scans into a per-path "first seen dirty" ledger to derive a
+    // `dirtySinceMs`; a single file left uncommitted overnight then flagged
+    // every chat that had run since, whether or not it touched that file.)
+    const probe: WorkingTreeProbe = { dirty: scan.dirty, paths: new Set(scan.paths) }
     // Publish before the stamp read so `getStates()` is correct the moment this
     // returns control — `recordExternalProbe` doesn't await us.
     const changed = !probesEqual(this.probes.get(projectId), probe)

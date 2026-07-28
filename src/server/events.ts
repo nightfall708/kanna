@@ -9,6 +9,24 @@ export interface ChatReadAnchor {
   messageId: string
   atEnd: boolean
   updatedAt: number
+  /**
+   * Width of the transcript column when this was recorded.
+   *
+   * `offsetFromMessage` is only meaningful at the same width — a narrower
+   * column rewraps text, so the same scroll position sits at a different
+   * distance into the message. Absent on anchors written before this existed.
+   */
+  transcriptWidth?: number
+  /**
+   * How far below the anchored message's own top the reader was, in pixels.
+   *
+   * Deliberately relative rather than an absolute scroll position: rows that
+   * have never been on screen stand in at an estimated height, so the absolute
+   * coordinate space shifts as they render and an absolute offset restores to
+   * the wrong place. A distance from the message survives that, and carries the
+   * within-message position that pinning the message alone would lose.
+   */
+  offsetFromMessage?: number
 }
 
 export interface ChatRecord {
@@ -37,11 +55,44 @@ export interface ChatRecord {
   pendingForkSessionToken?: string | null
   hasMessages?: boolean
   lastMessageAt?: number
+  /**
+   * When the most recent turn *started*. With `lastTurnEndedAt` this is how
+   * long the last turn took; while a turn is running it's how long it has been
+   * going. Absent on chats whose turns all predate the field.
+   */
+  lastTurnStartedAt?: number
+  /**
+   * Model id the most recent turn ran with (e.g. "opus", "gpt-5.3-codex").
+   * Recorded per turn rather than per chat because the model is picked at send
+   * time and can differ turn to turn — this is the one that actually ran, not
+   * whatever the composer happens to be set to now.
+   */
+  lastModel?: string
   /** When the last turn ended (finished/failed/cancelled) — i.e. when the last agent response was received. */
   lastTurnEndedAt?: number
+  /**
+   * When the agent last wrote to the transcript (assistant text, tool call, or
+   * tool result). Advances mid-turn, unlike `lastTurnEndedAt` — the timestamp
+   * a chat waiting on a plan or a permission prompt sorts by.
+   */
+  lastAgentMessageAt?: number
   lastUserMessagePreview?: string
   lastAgentMessagePreview?: string
+  /**
+   * When `lastAgentMessagePreview`'s entry was written — i.e. how old the
+   * agent's last *words* are, as opposed to `lastAgentMessageAt`, which any
+   * tool call advances. Compared against `lastMessageAt` to tell a reply to the
+   * current prompt from one left over from the previous turn.
+   */
+  lastAgentMessagePreviewAt?: number
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
+  /**
+   * Repo-root-relative paths this chat has changed, unioned across its turns
+   * and measured by diffing worktree snapshots at each turn boundary (see
+   * `TurnFileTracker`). Intersected with the currently-dirty paths to decide
+   * whether a chat is relevant to your uncommitted work.
+   */
+  touchedPaths?: string[]
 }
 
 export interface StoreState {
@@ -89,6 +140,14 @@ export type ChatEvent =
       chatId: string
       projectId: string
       title: string
+      /**
+       * Forks only: the source chat's `lastTurnEndedAt`, carried over so the
+       * fork inherits the conversation's recency in the sidebar. A fork has no
+       * turn events of its own, so without this it would sort by creation time
+       * as though the copied conversation never happened. Optional — absent on
+       * every plain chat_created, including old logs.
+       */
+      lastTurnEndedAt?: number
     }
   | {
       v: 2
@@ -157,6 +216,17 @@ export type ChatEvent =
       chatId: string
       messageId: string
       atEnd: boolean
+      /** See `ChatReadAnchor`. Optional — absent on pre-existing log lines. */
+      transcriptWidth?: number
+      offsetFromMessage?: number
+    }
+  | {
+      v: 2
+      type: "chat_files_touched"
+      timestamp: number
+      chatId: string
+      /** Paths one turn changed; replay unions them into `ChatRecord.touchedPaths`. */
+      paths: string[]
     }
 
 export type MessageEvent = {
@@ -189,6 +259,8 @@ export type TurnEvent =
       type: "turn_started"
       timestamp: number
       chatId: string
+      /** Model this turn runs with. Optional — absent on every pre-existing log line. */
+      model?: string
     }
   | {
       v: 2
@@ -237,4 +309,119 @@ export function createEmptyState(): StoreState {
 
 export function cloneTranscriptEntries(entries: TranscriptEntry[]): TranscriptEntry[] {
   return entries.map((entry) => ({ ...entry }))
+}
+
+/** Tool kinds whose rendered result comes from `tool_use_result`, not `content`. */
+const STRUCTURED_RESULT_TOOL_KINDS = new Set(["ask_user_question", "exit_plan_mode"])
+
+/**
+ * Tool kinds that render inline and interactively, so their payloads have to
+ * travel with the transcript rather than being fetched when a row is opened —
+ * there is no row to open. Superset of the structured-result kinds.
+ */
+const INLINE_TOOL_KINDS = new Set([...STRUCTURED_RESULT_TOOL_KINDS, "todo_write"])
+
+/** Strip the raw provider payload; it duplicates `content` and dwarfs it. */
+function withoutDebugRaw<TEntry extends TranscriptEntry>(entry: TEntry) {
+  const { debugRaw, ...rest } = entry
+  return rest as TEntry
+}
+
+/**
+ * Drop a tool call's unbounded input fields, keeping everything a collapsed
+ * row draws. Returns the entry unchanged when there was nothing to drop, so
+ * the `trimmed` marker always means "fetching will reveal more".
+ */
+function trimToolCallEntry(entry: Extract<TranscriptEntry, { kind: "tool_call" }>) {
+  const { rawInput, ...tool } = entry.tool
+  let input = tool.input as Record<string, unknown>
+  let dropped = rawInput !== undefined
+
+  // Only these five kinds carry input that can grow without bound. The other
+  // ten are already header-sized — a path, a pattern, a query — and travel
+  // whole.
+  const unbounded: Record<string, readonly string[]> = {
+    write_file: ["content"],
+    delete_file: ["content"],
+    edit_file: ["oldString", "newString"],
+    mcp_generic: ["payload"],
+    unknown_tool: ["payload"],
+  }
+
+  for (const field of unbounded[tool.toolKind] ?? []) {
+    if (input[field] === undefined) continue
+    if (!dropped || input === tool.input) input = { ...input }
+    delete input[field]
+    dropped = true
+  }
+
+  if (!dropped) return entry
+  return { ...entry, tool: { ...tool, input }, trimmed: true } as TranscriptEntry
+}
+
+/**
+ * Clone entries for the wire, leaving the bulky parts on the server.
+ *
+ * A transcript is mostly tool traffic, and a collapsed tool row draws none of
+ * it — a group of a dozen calls renders as one line reading "3 reads, 1
+ * command". Sending the payloads anyway is how a 6,000-entry chat became 24MB
+ * on the wire to paint a few hundred headers. Dropped here, the same chat is
+ * under 2MB, and the payloads are fetched by id if a row is actually opened.
+ *
+ * Two things are deliberately never dropped:
+ *
+ * - `ask_user_question` / `exit_plan_mode` / `todo_write` render inline, so
+ *   there is no expansion to fetch on. The first two additionally get
+ *   `tool_use_result` lifted out of `debugRaw` into `structuredResult`.
+ * - `isError` and the entry ids, which is everything a collapsed row and its
+ *   group label need to describe a finished call.
+ *
+ * This is the only place the reduction happens. Full-fidelity consumers —
+ * export, handoff, fork — read through `getMessages` and never pass here.
+ */
+export function cloneTranscriptEntriesForClient(entries: TranscriptEntry[]): TranscriptEntry[] {
+  const structuredToolIds = new Set<string>()
+  const inlineToolIds = new Set<string>()
+  for (const entry of entries) {
+    if (entry.kind !== "tool_call") continue
+    if (STRUCTURED_RESULT_TOOL_KINDS.has(entry.tool.toolKind)) {
+      structuredToolIds.add(entry.tool.toolId)
+    }
+    if (INLINE_TOOL_KINDS.has(entry.tool.toolKind)) {
+      inlineToolIds.add(entry.tool.toolId)
+    }
+  }
+
+  return entries.map((entry) => {
+    if (entry.kind === "tool_call") {
+      const stripped = withoutDebugRaw(entry)
+      return INLINE_TOOL_KINDS.has(stripped.tool.toolKind) ? stripped : trimToolCallEntry(stripped)
+    }
+
+    if (entry.kind === "tool_result") {
+      const structured = structuredToolIds.has(entry.toolId)
+        ? readStructuredResult(entry.debugRaw)
+        : undefined
+      const stripped = withoutDebugRaw(entry)
+      if (inlineToolIds.has(stripped.toolId)) {
+        return structured === undefined ? stripped : { ...stripped, structuredResult: structured }
+      }
+      // An orphan result — no call in this transcript — is trimmed too: the
+      // client only renders results attached to a call it saw.
+      const { content, ...rest } = stripped
+      return { ...rest, trimmed: true } as TranscriptEntry
+    }
+
+    return withoutDebugRaw(entry)
+  })
+}
+
+function readStructuredResult(debugRaw: string | undefined): unknown {
+  if (debugRaw === undefined) return undefined
+  try {
+    return (JSON.parse(debugRaw) as { tool_use_result?: unknown }).tool_use_result
+  } catch {
+    // Corrupt debugRaw is not worth failing a transcript render over.
+    return undefined
+  }
 }

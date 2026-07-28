@@ -169,29 +169,29 @@ describe("resolveRestoreTarget", () => {
   const map = buildRowIndexByMessageId(rows)
 
   test("follows the stream for an atEnd anchor", () => {
-    expect(resolveRestoreTarget(rows, { messageId: "m1", atEnd: true, distanceFromEnd: 4 }, map))
+    expect(resolveRestoreTarget(rows, { messageId: "m1", atEnd: true }, map))
       .toEqual({ kind: "end" })
   })
 
-  test("pins an in-window message anchor", () => {
-    expect(resolveRestoreTarget(rows, { messageId: "a1", atEnd: false, distanceFromEnd: 3 }, map))
-      .toEqual({ kind: "pin", index: 1 })
+  test("pins the row holding a message anchor", () => {
+    expect(resolveRestoreTarget(rows, { messageId: "a1", atEnd: false }, map))
+      .toEqual({ kind: "pin", rowId: rows[1]!.id })
   })
 
   test("resolves an anchor inside a collapsed tool group to the group row", () => {
     const groupRows = [promptRow("m1", "hi"), toolGroupRow(["t1", "t2"]), textRow("a1", "done")]
     const groupMap = buildRowIndexByMessageId(groupRows)
-    expect(resolveRestoreTarget(groupRows, { messageId: "t2", atEnd: false, distanceFromEnd: 2 }, groupMap))
-      .toEqual({ kind: "pin", index: 1 })
+    expect(resolveRestoreTarget(groupRows, { messageId: "t2", atEnd: false }, groupMap))
+      .toEqual({ kind: "pin", rowId: groupRows[1]!.id })
   })
 
-  test("falls back to the latest prompt when the anchor is out of window", () => {
-    expect(resolveRestoreTarget(rows, { messageId: "gone", atEnd: false, distanceFromEnd: 9999 }, map))
-      .toEqual({ kind: "pin", index: 2 })
+  test("falls back to the latest prompt when the anchored message is gone", () => {
+    expect(resolveRestoreTarget(rows, { messageId: "gone", atEnd: false }, map))
+      .toEqual({ kind: "pin", rowId: rows[2]!.id })
   })
 
   test("falls back to the latest prompt when there is no anchor", () => {
-    expect(resolveRestoreTarget(rows, null, map)).toEqual({ kind: "pin", index: 2 })
+    expect(resolveRestoreTarget(rows, null, map)).toEqual({ kind: "pin", rowId: rows[2]!.id })
   })
 
   test("falls back to the end when there is no prompt to pin", () => {
@@ -202,5 +202,43 @@ describe("resolveRestoreTarget", () => {
 
   test("returns the end for an empty transcript", () => {
     expect(resolveRestoreTarget([], null, new Map())).toEqual({ kind: "end" })
+  })
+})
+
+describe("resolveRestoreTarget with a recorded layout", () => {
+  const rows = [promptRow("m1", "first"), textRow("a1", "a long answer"), promptRow("m2", "second")]
+  const map = buildRowIndexByMessageId(rows)
+  const anchor = { messageId: "a1", atEnd: false, transcriptWidth: 800, offsetFromMessage: 1224 }
+
+  test("restores the exact position within the message at the same width", () => {
+    expect(resolveRestoreTarget(rows, anchor, map, 800))
+      .toEqual({ kind: "pin", rowId: rows[1]!.id, offsetFromMessage: 1224 })
+  })
+
+  test("drops the offset at a different width, since the message rewraps", () => {
+    // A narrower column makes the message a different shape, so a distance into
+    // it means nothing — putting its top back at the top is the honest answer.
+    expect(resolveRestoreTarget(rows, anchor, map, 640))
+      .toEqual({ kind: "pin", rowId: rows[1]!.id })
+  })
+
+  test("drops the offset when the current width is unknown", () => {
+    expect(resolveRestoreTarget(rows, anchor, map, undefined))
+      .toEqual({ kind: "pin", rowId: rows[1]!.id })
+  })
+
+  test("pins without an offset for anchors recorded before layout was stored", () => {
+    expect(resolveRestoreTarget(rows, { messageId: "a1", atEnd: false }, map, 800))
+      .toEqual({ kind: "pin", rowId: rows[1]!.id })
+  })
+
+  test("still follows the stream for an atEnd anchor regardless of layout", () => {
+    expect(resolveRestoreTarget(rows, { ...anchor, atEnd: true }, map, 800))
+      .toEqual({ kind: "end" })
+  })
+
+  test("falls back to the latest prompt when the anchored message is gone, offset and all", () => {
+    expect(resolveRestoreTarget(rows, { ...anchor, messageId: "gone" }, map, 800))
+      .toEqual({ kind: "pin", rowId: rows[2]!.id })
   })
 })

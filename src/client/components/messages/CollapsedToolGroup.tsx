@@ -1,6 +1,7 @@
 import { useMemo } from "react"
 import { ChevronRight } from "lucide-react"
 import { ToolCallMessage } from "./ToolCallMessage"
+import { useToolPayloadPrefetch } from "./tool-payload-context"
 import { MetaRow, MetaLabel } from "./shared"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import type { ProcessedToolCall } from "./types"
@@ -67,16 +68,30 @@ interface Props {
 export function CollapsedToolGroup({ messages, isLoading, localPath, expanded, onExpandedChange }: Props) {
   const label = useMemo(() => getToolGroupLabel(messages), [messages])
 
-  // Check if any tool in the group is still in progress
+  // In progress = no result entry has arrived yet. Deliberately not "has no
+  // result payload": a finished call may leave its payload on the server.
   const anyInProgress = messages.some(msg => {
     const processed = msg as ProcessedToolCall
-    return processed.result === undefined
+    return processed.resultEntryId === undefined
   })
 
   const showLoadingState = anyInProgress && isLoading
 
+  // One request for the whole group: expanding it mounts every member at once,
+  // so warming them individually would be a burst of round trips.
+  const prefetchPayloads = useToolPayloadPrefetch()
+  const prefetchGroupPayloads = () => {
+    const entryIds: Array<string | undefined> = []
+    for (const msg of messages) {
+      const processed = msg as ProcessedToolCall
+      if (processed.inputTrimmed) entryIds.push(processed.id)
+      if (processed.resultTrimmed) entryIds.push(processed.resultEntryId)
+    }
+    if (entryIds.length > 0) prefetchPayloads(entryIds)
+  }
+
   return (
-    <MetaRow className="w-full">
+    <MetaRow className="w-full" onPointerEnter={prefetchGroupPayloads}>
       <div className="flex flex-col w-full">
         <button
           onClick={() => onExpandedChange(!expanded)}

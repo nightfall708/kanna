@@ -287,12 +287,9 @@ describe("getActiveChatSnapshot", () => {
       },
       queuedMessages: [],
       messages: [],
-      history: {
-        hasOlder: false,
-        olderCursor: null,
-        recentLimit: 200,
-      },
       availableProviders: [],
+      readAnchor: null,
+      startIndex: 0,
     }
 
     expect(getActiveChatSnapshot(snapshot, "chat-1")).toEqual(snapshot)
@@ -314,12 +311,9 @@ describe("getActiveChatSnapshot", () => {
       },
       queuedMessages: [],
       messages: [],
-      history: {
-        hasOlder: false,
-        olderCursor: null,
-        recentLimit: 200,
-      },
       availableProviders: [],
+      readAnchor: null,
+      startIndex: 0,
     }
 
     expect(getActiveChatSnapshot(snapshot, "chat-new")).toBeNull()

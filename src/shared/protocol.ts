@@ -6,7 +6,6 @@ import type {
   ProviderAuthSnapshot,
   ChatAttachment,
   ChatDiffSnapshot,
-  ChatHistoryPage,
   ChatSnapshot,
   DiffCommitMode,
   KeybindingsSnapshot,
@@ -53,7 +52,21 @@ export type SubscriptionTopic =
   | { type: "app-settings" }
   | { type: "usage-limits" }
   | { type: "provider-auth" }
-  | { type: "chat"; chatId: string; recentLimit?: number }
+  | {
+    type: "chat"
+    chatId: string
+    /**
+     * The absolute transcript span the client already holds from its local
+     * cache, so the first push can be incremental instead of a full window.
+     * Omitted when the client has nothing cached.
+     *
+     * `endEntryId` is the `_id` of the entry at `end - 1`. The server only
+     * honours the span when that entry still matches, which keeps a cache
+     * belonging to a different machine — or one written before a transcript
+     * was rewritten — from being spliced onto unrelated history.
+     */
+    cachedSpan?: { start: number; end: number; endEntryId: string }
+  }
   | { type: "project-git"; projectId: string }
   | { type: "terminal"; terminalId: string }
 
@@ -156,9 +169,30 @@ export type ClientCommand =
    * scrolling. Deliberately ack-only: the anchor is not part of any snapshot,
    * so a scroll never triggers a sidebar or chat re-push to other sockets.
    */
-  | { type: "chat.setReadAnchor"; chatId: string; messageId: string; atEnd: boolean }
+  | {
+    type: "chat.setReadAnchor"
+    chatId: string
+    messageId: string
+    atEnd: boolean
+    /** Transcript column width and the position's distance into the message. */
+    transcriptWidth?: number
+    offsetFromMessage?: number
+  }
   /** Read back the stored anchor when opening a chat. Result: ResolvedChatReadAnchor | null. */
   | { type: "chat.getReadAnchor"; chatId: string }
+  /**
+   * Fetch one entry's raw provider payload. Snapshots omit `debugRaw` because
+   * it duplicates `content` and dominates the transcript payload, so the raw
+   * JSON debug view pulls it on demand when opened.
+   */
+  | { type: "chat.getEntryDebugRaw"; chatId: string; entryId: string }
+  /**
+   * Fetch tool entries with their payloads intact. Snapshots ship tool calls
+   * and results without their unbounded fields — a collapsed row draws none of
+   * them — so opening a row asks for the real thing. Batched: expanding a tool
+   * group wants every member at once. Result: TranscriptEntry[].
+   */
+  | { type: "chat.getToolEntries"; chatId: string; entryIds: string[] }
   | {
       type: "chat.send"
       chatId?: string
@@ -215,7 +249,6 @@ export type ClientCommand =
       theme: "light" | "dark"
       attachmentMode: StandaloneTranscriptAttachmentMode
     }
-  | { type: "chat.loadHistory"; chatId: string; beforeCursor: string; limit: number }
   | { type: "chat.respondTool"; chatId: string; toolUseId: string; result: unknown }
   | {
       type: "message.enqueue"
@@ -267,7 +300,7 @@ export type ServerSnapshot =
 export type ServerEnvelope =
   | { v: 1; type: "snapshot"; id: string; snapshot: ServerSnapshot }
   | { v: 1; type: "event"; id: string; event: TerminalEvent }
-  | { v: 1; type: "ack"; id: string; result?: unknown | ChatHistoryPage | StandaloneTranscriptExportResult }
+  | { v: 1; type: "ack"; id: string; result?: unknown | StandaloneTranscriptExportResult }
   | { v: 1; type: "error"; id?: string; message: string }
 
 export function isClientEnvelope(value: unknown): value is ClientEnvelope {

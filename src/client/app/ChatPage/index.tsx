@@ -1,5 +1,4 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type DragEvent, type ReactNode, type RefObject } from "react"
-import { type LegendListRef } from "@legendapp/list/react"
 import type { GroupImperativeHandle } from "react-resizable-panels"
 import { useOutletContext } from "react-router-dom"
 import type { ChatInputHandle } from "../../components/chat-ui/ChatInput"
@@ -20,18 +19,20 @@ import {
 } from "../../stores/rightSidebarStore"
 import { DEFAULT_PROJECT_TERMINAL_LAYOUT, useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
 import { useTerminalPreferencesStore } from "../../stores/terminalPreferencesStore"
-import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import { shouldCloseTerminalPane } from "../terminalLayoutResize"
 import { TERMINAL_TOGGLE_ANIMATION_DURATION_MS } from "../terminalToggleAnimation"
 import { useRightSidebarToggleAnimation } from "../useRightSidebarToggleAnimation"
 import { useStickyChatFocus } from "../useStickyChatFocus"
 import { useTerminalToggleAnimation } from "../useTerminalToggleAnimation"
-import type { AgentProvider, ChatSkillsSnapshot } from "../../../shared/types"
+import type { AgentProvider, ChatSkillsSnapshot, TranscriptEntry } from "../../../shared/types"
 import type { KannaState } from "../useKannaState"
 import { getNextMeasuredInputHeight, getTranscriptPaddingBottom } from "../useKannaState"
 import { ChatInputDock } from "./ChatInputDock"
 import { DefaultModelsDialog } from "../../components/DefaultModelsDialog"
-import { ChatTranscriptViewport } from "./ChatTranscriptViewport"
+import { ChatTranscriptViewport, type TranscriptScrollHandle } from "./ChatTranscriptViewport"
+import { TranscriptRenderOptionsProvider } from "../../components/messages/render-context"
+import { ToolPayloadProvider } from "../../components/messages/tool-payload-context"
+import { createToolPayloadStore } from "./toolPayloadStore"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
 import { useChatPageSidebarActions, EMPTY_DIFF_SNAPSHOT } from "./useChatPageSidebarActions"
 import {
@@ -473,7 +474,7 @@ export function ChatPage() {
   const state = useOutletContext<KannaState>()
   const dialog = useAppDialog()
   const layoutRootRef = useRef<HTMLDivElement>(null)
-  const transcriptListRef = useRef<LegendListRef | null>(null)
+  const transcriptListRef = useRef<TranscriptScrollHandle | null>(null)
   const isAtEndRef = useRef(true)
   const showScrollTimeoutRef = useRef<number | null>(null)
   const chatCardRef = useRef<HTMLDivElement>(null)
@@ -490,10 +491,10 @@ export function ChatPage() {
   const projectRightSidebarVisibility = useRightSidebarStore((store) => (projectId ? store.projects[projectId] : undefined))
   const rightSidebarVisibility = projectRightSidebarVisibility ?? DEFAULT_RIGHT_SIDEBAR_VISIBILITY_STATE
   const globalRightSidebarSize = useRightSidebarStore((store) => store.size)
-  const transcriptAutoScroll = useAppSettingsStore((store) => store.settings?.transcriptAutoScroll ?? true)
   const addTerminal = useTerminalLayoutStore((store) => store.addTerminal)
   const removeTerminal = useTerminalLayoutStore((store) => store.removeTerminal)
   const toggleVisibility = useTerminalLayoutStore((store) => store.toggleVisibility)
+  const hideTerminals = useTerminalLayoutStore((store) => store.hideTerminals)
   const resetMainSizes = useTerminalLayoutStore((store) => store.resetMainSizes)
   const setMainSizes = useTerminalLayoutStore((store) => store.setMainSizes)
   const setTerminalSizes = useTerminalLayoutStore((store) => store.setTerminalSizes)
@@ -716,9 +717,19 @@ export function ChatPage() {
   }, [state.handleOpenExternal])
 
   const handleRemoveTerminal = useCallback((currentProjectId: string, terminalId: string) => {
+    const paneCount = useTerminalLayoutStore.getState().projects[currentProjectId]?.terminals.length ?? 0
+    if (paneCount <= 1) {
+      // Closing the only pane hides the panel instead of killing the shell:
+      // the pane stays mounted, so reopening returns to the same session and
+      // scrollback with whatever was running still running.
+      hideTerminals(currentProjectId)
+      return
+    }
+
+    // A split pane is unreachable once removed, so closing it does kill it.
     void state.socket.command({ type: "terminal.close", terminalId }).catch(() => {})
     removeTerminal(currentProjectId, terminalId)
-  }, [removeTerminal, state.socket])
+  }, [hideTerminals, removeTerminal, state.socket])
 
   const clearShowScrollTimeout = useCallback(() => {
     if (showScrollTimeoutRef.current !== null) {
@@ -743,18 +754,11 @@ export function ChatPage() {
     }, 150)
   }, [clearShowScrollTimeout])
 
-  const syncIsAtEndFromList = useCallback(() => {
-    const state = transcriptListRef.current?.getState?.()
-    if (state) {
-      onIsAtEndChange(state.isAtEnd)
-    }
-  }, [onIsAtEndChange])
-
-  const scrollToTranscriptEnd = useCallback(async (animated = true) => {
+  const scrollToTranscriptEnd = useCallback(() => {
     isAtEndRef.current = true
     clearShowScrollTimeout()
     setShowScrollToBottom(false)
-    await transcriptListRef.current?.scrollToEnd?.({ animated })
+    transcriptListRef.current?.scrollToEnd()
   }, [clearShowScrollTimeout])
 
   const handleChatSubmit = useCallback(async (
@@ -775,6 +779,36 @@ export function ChatPage() {
         projectId: projectId ?? undefined,
       }),
     [state.socket, state.activeChatId, projectId]
+  )
+
+  // Snapshots omit `debugRaw` (it duplicates `content` and dominated the
+  // payload), so the raw JSON view pulls one entry's payload when expanded.
+  const loadEntryDebugRaw = useCallback(
+    async (entryId: string) => {
+      if (!state.activeChatId) return null
+      return await state.socket.command<string | null>({
+        type: "chat.getEntryDebugRaw",
+        chatId: state.activeChatId,
+        entryId,
+      })
+    },
+    [state.socket, state.activeChatId]
+  )
+
+  const transcriptRenderOptions = useMemo(() => ({ loadEntryDebugRaw }), [loadEntryDebugRaw])
+
+  // One cache per chat: entry ids are chat-scoped, and leaving a chat should
+  // not keep its payloads resident.
+  const toolPayloadStore = useMemo(
+    () => createToolPayloadStore(async (entryIds) => {
+      if (!state.activeChatId) return []
+      return await state.socket.command<TranscriptEntry[]>({
+        type: "chat.getToolEntries",
+        chatId: state.activeChatId,
+        entryIds,
+      }) ?? []
+    }),
+    [state.socket, state.activeChatId]
   )
 
   useEffect(() => {
@@ -824,28 +858,9 @@ export function ChatPage() {
     return () => window.removeEventListener("keydown", handleGlobalKeydown)
   }, [addTerminal, handleToggleEmbeddedTerminal, handleToggleGitPanel, projectId, resolvedKeybindings, state.handleOpenExternal])
 
-  useEffect(() => {
-    const frameId = window.requestAnimationFrame(() => {
-      syncIsAtEndFromList()
-    })
-    const timeoutId = window.setTimeout(() => {
-      syncIsAtEndFromList()
-    }, TERMINAL_TOGGLE_ANIMATION_DURATION_MS)
-
-    return () => {
-      window.cancelAnimationFrame(frameId)
-      window.clearTimeout(timeoutId)
-    }
-  }, [shouldRenderTerminalLayout, showTerminalPane, syncIsAtEndFromList])
-
-  useEffect(() => {
-    function handleResize() {
-      syncIsAtEndFromList()
-    }
-
-    window.addEventListener("resize", handleResize)
-    return () => window.removeEventListener("resize", handleResize)
-  }, [syncIsAtEndFromList])
+  // Re-checking "is the reader at the end" after a terminal toggle or a window
+  // resize used to live here. The transcript observes its own element now, so
+  // it sees those the moment they change the scroll box.
 
   useEffect(() => {
     if (!showRightSidebar || !isMobileRightSidebarOverlay) return
@@ -870,34 +885,12 @@ export function ChatPage() {
     return () => window.removeEventListener("keydown", handleEscape)
   }, [handleCloseRightSidebar, isMobileRightSidebarOverlay, showRightSidebar])
 
-  useEffect(() => {
-    if (!transcriptAutoScroll || !isAtEndRef.current) {
-      return
-    }
-
-    let secondFrame: number | null = null
-    const firstFrame = window.requestAnimationFrame(() => {
-      void transcriptListRef.current?.scrollToEnd?.({ animated: false })
-      secondFrame = window.requestAnimationFrame(() => {
-        void transcriptListRef.current?.scrollToEnd?.({ animated: false })
-      })
-    })
-
-    return () => {
-      window.cancelAnimationFrame(firstFrame)
-      if (secondFrame !== null) {
-        window.cancelAnimationFrame(secondFrame)
-      }
-    }
-  }, [
-    transcriptAutoScroll,
-    state.commandError,
-    state.isDraining,
-    state.isProcessing,
-    state.messages.length,
-    state.queuedMessages.length,
-    state.runtimeStatus,
-  ])
+  // Following the stream is the list's job, via `maintainScrollAtEnd`. This
+  // used to also force two `scrollToEnd`s per frame on message/status churn,
+  // which meant three actors could move the scroll position in the same frame
+  // — the list on item layout, this effect on state change, and the restore
+  // pass on open. They disagreed about what counted as "at the end", so the
+  // losing ones fought the winner and the result read as jitter.
 
   useLayoutEffect(() => {
     if (!showRightSidebar || isMobileRightSidebarOverlay || layoutWidth <= 0 || isRightSidebarAnimating.current) {
@@ -961,6 +954,8 @@ export function ChatPage() {
           hasGitRepo={state.chatDiffSnapshot?.status !== "no_repo"}
           gitStatus={state.chatDiffSnapshot?.status}
         />
+        <TranscriptRenderOptionsProvider value={transcriptRenderOptions}>
+        <ToolPayloadProvider store={toolPayloadStore}>
         <ChatTranscriptViewport
           activeChatId={state.activeChatId}
           listRef={transcriptListRef}
@@ -969,13 +964,10 @@ export function ChatPage() {
           transcriptPaddingBottom={transcriptPaddingBottom}
           localPath={state.runtime?.localPath}
           latestToolIds={state.latestToolIds}
-          isHistoryLoading={state.isHistoryLoading}
-          hasOlderHistory={state.hasOlderHistory}
           isProcessing={state.isProcessing}
           runtimeStatus={state.runtimeStatus}
           isDraining={state.isDraining}
           commandError={state.commandError}
-          loadOlderHistory={state.loadOlderHistory}
           onStopDraining={state.handleStopDraining}
           onSteerQueuedMessage={state.handleSteerQueuedMessage}
           onRemoveQueuedMessage={state.handleRemoveQueuedMessage}
@@ -989,7 +981,7 @@ export function ChatPage() {
           onIsAtEndChange={onIsAtEndChange}
           readAnchorState={state.readAnchorState}
           onReportReadAnchor={state.reportReadAnchor}
-          scrollToBottom={() => scrollToTranscriptEnd(true)}
+          scrollToBottom={scrollToTranscriptEnd}
           typedEmptyStateText={typedEmptyStateText}
           isEmptyStateTypingComplete={isEmptyStateTypingComplete}
           isPageFileDragActive={isPageFileDragActive}
@@ -998,6 +990,8 @@ export function ChatPage() {
           emptyStateProjectPath={state.navbarLocalPath}
           onOpenProjectExternal={handleOpenExternal}
         />
+        </ToolPayloadProvider>
+        </TranscriptRenderOptionsProvider>
       </CardContent>
 
       <ChatInputDock

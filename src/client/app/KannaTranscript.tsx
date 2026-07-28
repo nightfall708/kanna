@@ -158,15 +158,12 @@ function getTranscriptMessageRenderState(
 
 function buildTranscriptMessageRenderStates(
   messages: HydratedTranscriptMessage[],
-  latestToolIds: Record<string, string | null>,
-  hasOlderHistory: boolean
+  latestToolIds: Record<string, string | null>
 ) {
-  // When older history hasn't been loaded, the window may start mid-transcript,
-  // so nothing in it can be proven to be the chat's true first system/account
-  // row — treat none as first rather than rendering a mid-transcript
-  // initial harness label. Self-heals as older pages load.
-  const firstSystemIndex = hasOlderHistory ? -1 : messages.findIndex((entry) => entry.kind === "system_init")
-  const firstAccountIndex = hasOlderHistory ? -1 : messages.findIndex((entry) => entry.kind === "account_info")
+  // The transcript always arrives whole, so the first system/account row here
+  // is genuinely the chat's first.
+  const firstSystemIndex = messages.findIndex((entry) => entry.kind === "system_init")
+  const firstAccountIndex = messages.findIndex((entry) => entry.kind === "account_info")
 
   // Timestamp of the next visible user prompt after each message (undefined when none follows).
   const nextPromptTimestamps = new Array<string | undefined>(messages.length)
@@ -277,13 +274,22 @@ export function buildTranscriptRenderItems(
   return result
 }
 
+/**
+ * Row identity, keyed on the first message either way.
+ *
+ * A lone tool call becomes a group the moment a second one arrives, and the
+ * group keeps growing after that. Distinguishing the two shapes in the key
+ * would retire a key and mint a new one mid-turn, which costs the virtualized
+ * list the row's measured height and remounts its subtree — visible as a jump
+ * on essentially every multi-tool turn. Keying on the first message means the
+ * row keeps its identity as it absorbs later calls.
+ */
 function getTranscriptRenderItemId(item: TranscriptRenderItem) {
   if (item.type === "single") {
     return item.message.id
   }
 
-  const firstId = item.messages[0]?.id ?? item.startIndex
-  return `tool-group:${firstId}`
+  return String(item.messages[0]?.id ?? item.startIndex)
 }
 
 function sameStringArray(left: string[] | undefined, right: string[] | undefined) {
@@ -339,9 +345,12 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
         && left.toolName === right.toolName
         && left.toolId === right.toolId
         && left.isError === right.isError
-        && JSON.stringify(left.input) === JSON.stringify(right.input)
-        && JSON.stringify(left.result) === JSON.stringify(right.result)
-        && JSON.stringify(left.rawResult) === JSON.stringify(right.rawResult)
+        // `left.id` (compared above) pins the tool_call entry and therefore
+        // `input`; `resultEntryId` pins the tool_result entry and therefore
+        // `result`/`rawResult`. Both entries are immutable once written, so
+        // this is exact — and O(1) rather than stringifying every tool result
+        // in the window on each snapshot push.
+        && left.resultEntryId === right.resultEntryId
     case "result":
       return right.kind === "result"
         && left.success === right.success
@@ -374,8 +383,15 @@ function isResolvedTranscriptRowUnchanged(left: ResolvedTranscriptRow, right: Re
   if (left.kind !== right.kind || left.id !== right.id) return false
 
   if (left.kind === "single" && right.kind === "single") {
-    return left.index === right.index
-      && left.isLoading === right.isLoading
+    // `index` is deliberately not compared. It is the row's position in the
+    // messages array, so prepending a page of older history shifts it for every
+    // row — invalidating rows whose content is identical, forcing a re-render
+    // and re-measure of the whole mounted set in the same commit the list is
+    // trying to anchor through. That is what makes scrolling up jump further
+    // than you scrolled. Nothing reads it except a `data-index` attribute, and
+    // everything it feeds (isFirstSystem, isModelChange, ...) is compared below.
+    return (
+      left.isLoading === right.isLoading
       && left.localPath === right.localPath
       && left.isFirstSystem === right.isFirstSystem
       && left.isModelChange === right.isModelChange
@@ -389,6 +405,7 @@ function isResolvedTranscriptRowUnchanged(left: ResolvedTranscriptRow, right: Re
       && left.isFinalStatus === right.isFinalStatus
       && left.nextPromptTimestamp === right.nextPromptTimestamp
       && sameMessage(left.message, right.message)
+    )
   }
 
   if (left.kind === "tool-group" && right.kind === "tool-group") {
@@ -572,8 +589,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
     </div>
   )
 }, (prev, next) => (
-  prev.index === next.index
-  && prev.isLoading === next.isLoading
+  prev.isLoading === next.isLoading
   && prev.localPath === next.localPath
   && prev.isFirstSystem === next.isFirstSystem
   && prev.isModelChange === next.isModelChange
@@ -626,7 +642,6 @@ const TranscriptToolGroup = memo(function TranscriptToolGroup({
   )
 }, (prev, next) => (
   prev.id === next.id
-  && prev.startIndex === next.startIndex
   && prev.isLoading === next.isLoading
   && prev.localPath === next.localPath
   && prev.expanded === next.expanded
@@ -641,16 +656,14 @@ export function buildResolvedTranscriptRows(
     isLoading,
     localPath,
     latestToolIds,
-    hasOlderHistory = false,
   }: {
     isLoading: boolean
     localPath?: string
     latestToolIds: Record<string, string | null>
     /** True when the loaded window may not include the start of the transcript. */
-    hasOlderHistory?: boolean
   }
 ): ResolvedTranscriptRow[] {
-  const renderStates = buildTranscriptMessageRenderStates(messages, latestToolIds, hasOlderHistory)
+  const renderStates = buildTranscriptMessageRenderStates(messages, latestToolIds)
   const renderItems = buildTranscriptRenderItems(messages, renderStates)
   const rows: ResolvedTranscriptRow[] = []
 
@@ -661,7 +674,7 @@ export function buildResolvedTranscriptRows(
         id: getTranscriptRenderItemId(item),
         startIndex: item.startIndex,
         messages: item.messages,
-        isLoading: isLoading && item.messages.some((message) => message.kind === "tool" && message.result === undefined),
+        isLoading: isLoading && item.messages.some((message) => message.kind === "tool" && message.resultEntryId === undefined),
         localPath,
       })
       continue
@@ -674,7 +687,7 @@ export function buildResolvedTranscriptRows(
       id: getTranscriptRenderItemId(item),
       message: item.message,
       index: item.index,
-      isLoading: item.message.kind === "tool" && item.message.result === undefined && isLoading,
+      isLoading: item.message.kind === "tool" && item.message.resultEntryId === undefined && isLoading,
       localPath,
       isFirstSystem: renderState.isFirstSystem,
       isModelChange: renderState.isModelChange,
@@ -762,16 +775,16 @@ export const KannaTranscriptRow = memo(function KannaTranscriptRow({
   if (prev.row.kind === "tool-group" && next.row.kind === "tool-group") {
     const previousRow = prev.row
     const nextRow = next.row
-    return previousRow.startIndex === nextRow.startIndex
-      && previousRow.isLoading === nextRow.isLoading
+    // `startIndex` omitted for the same reason as `index` on single rows: a
+    // prepend shifts it without changing anything rendered.
+    return previousRow.isLoading === nextRow.isLoading
       && previousRow.localPath === nextRow.localPath
       && previousRow.messages.length === nextRow.messages.length
       && previousRow.messages.every((message, index) => sameMessage(message, nextRow.messages[index]!))
   }
 
   if (prev.row.kind === "single" && next.row.kind === "single") {
-    return prev.row.index === next.row.index
-      && prev.row.isLoading === next.row.isLoading
+    return prev.row.isLoading === next.row.isLoading
       && prev.row.localPath === next.row.localPath
       && prev.row.isFirstSystem === next.row.isFirstSystem
       && prev.row.isModelChange === next.row.isModelChange

@@ -26,17 +26,29 @@ import type { UpdateManager } from "./update-manager"
 import type { UsageLimitsManager } from "./usage-limits"
 import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveSidebarData } from "./read-models"
 import type {
+  ChatSnapshot,
   LlmProviderSnapshot,
   LlmProviderValidationResult,
   UsageLimitsSnapshot,
 } from "../shared/types"
 
-const DEFAULT_CHAT_RECENT_LIMIT = 200
 
+/**
+ * Cap on ids per `chat.getToolEntries`. The largest honest request is one tool
+ * group's members; beyond that something is walking the transcript.
+ */
+const MAX_TOOL_ENTRY_REQUEST = 256
 
 export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
   snapshotSignatures: Map<string, string>
+  /**
+   * Absolute transcript span last sent per chat subscription, so the next push
+   * can carry only the entries past it. Reset whenever the subscription is
+   * (re)created, which is also what makes reconnect safe: a fresh id has no
+   * span and therefore gets a full window.
+   */
+  chatEntrySpans?: Map<string, { start: number; end: number }>
   protectedDraftChatIds?: Set<string>
 }
 
@@ -92,8 +104,15 @@ interface SnapshotComputationCache {
     data: ReturnType<typeof deriveSidebarData>
     signature: string
   }
-  /** Serialized chat snapshots keyed by `chatId:recentLimit`, shared across sockets in one broadcast. */
-  chat?: Map<string, string>
+  /**
+   * Derived chat snapshots keyed by chat, shared across sockets in one
+   * broadcast.
+   *
+   * The derive is shared but the serialization is not: each socket is at its
+   * own point in the transcript, so the body it needs differs. Deriving once
+   * is the expensive half; serializing an incremental body is cheap.
+   */
+  chat?: Map<string, ChatSnapshot | null>
 }
 
 function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
@@ -108,6 +127,14 @@ function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
  */
 function sendSerializedSnapshot(ws: ServerWebSocket<ClientState>, id: string, snapshotJson: string) {
   ws.send(`{"v":${PROTOCOL_VERSION},"type":"snapshot","id":${JSON.stringify(id)},"snapshot":${snapshotJson}}`)
+}
+
+function ensureChatEntrySpans(ws: ServerWebSocket<ClientState>) {
+  if (!ws.data.chatEntrySpans) {
+    ws.data.chatEntrySpans = new Map()
+  }
+
+  return ws.data.chatEntrySpans
 }
 
 function ensureSnapshotSignatures(ws: ServerWebSocket<ClientState>) {
@@ -413,15 +440,14 @@ export function createWsRouter({
           agent.getActiveStatuses(),
           agent.getDrainingChatIds(),
           topic.chatId,
-          (chatId) => store.getRecentChatHistory(chatId, topic.recentLimit ?? DEFAULT_CHAT_RECENT_LIMIT)
+          (chatId) => store.getClientTranscript(chatId)
         ),
       },
     }
   }
 
-  function getChatSnapshotJson(chatId: string, recentLimit: number | undefined, cache?: SnapshotComputationCache) {
-    const limit = recentLimit ?? DEFAULT_CHAT_RECENT_LIMIT
-    const key = `${chatId}:${limit}`
+  function getChatSnapshotData(chatId: string, cache?: SnapshotComputationCache) {
+    const key = chatId
     const existing = cache?.chat?.get(key)
     if (existing !== undefined) {
       return existing
@@ -431,13 +457,65 @@ export function createWsRouter({
       agent.getActiveStatuses(),
       agent.getDrainingChatIds(),
       chatId,
-      (id) => store.getRecentChatHistory(id, limit)
+      (id) => store.getClientTranscript(id)
     )
-    const snapshotJson = JSON.stringify({ type: "chat", data })
     if (cache) {
-      (cache.chat ??= new Map()).set(key, snapshotJson)
+      (cache.chat ??= new Map()).set(key, data)
     }
-    return snapshotJson
+    return data
+  }
+
+  /**
+   * Narrow a chat snapshot to the entries a socket has not seen.
+   *
+   * Only contiguous forward movement qualifies. If the window slid backwards
+   * (a widened read-anchor window) or forwards past the socket's position (a
+   * missed push), the client would end up with a hole it cannot detect, so the
+   * full window is sent instead.
+   */
+  function toSocketChatSnapshot(data: ChatSnapshot | null, previous: { start: number; end: number } | undefined) {
+    if (!data || !previous) return data
+    const end = data.startIndex + data.messages.length
+    const isContiguous = data.startIndex >= previous.start
+      && data.startIndex <= previous.end
+      && previous.end <= end
+    if (!isContiguous) return data
+    return {
+      ...data,
+      messages: data.messages.slice(previous.end - data.startIndex),
+      startIndex: previous.end,
+      incremental: true,
+    }
+  }
+
+  /**
+   * Adopt a client's cached transcript position so its first push is
+   * incremental.
+   *
+   * Honoured only when the entry at the boundary still matches what this
+   * machine has — a cache from another machine, or from before a transcript
+   * was rewritten, would otherwise be spliced onto unrelated history. Any
+   * doubt (unverifiable index, mismatched id) falls through to a full window,
+   * which is always correct and only costs bytes.
+   */
+  function seedChatEntrySpanFromClient(
+    ws: ServerWebSocket<ClientState>,
+    subscriptionId: string,
+    topic: SubscriptionTopic
+  ) {
+    if (topic.type !== "chat") return
+    const span = topic.cachedSpan
+    if (!span || span.end <= 0 || span.start < 0 || span.start > span.end) return
+    // A client can hold a cache for a chat this machine has since pruned.
+    // Reading it would throw, and this runs outside the command try/catch on a
+    // handler nobody awaits — so an unhandled rejection rather than the empty
+    // snapshot the client is meant to get.
+    if (!store.getChat(topic.chatId)) return
+    // Populates the transcript cache as a side effect, which is what makes the
+    // boundary entry visible to `getEntryIdAt`.
+    store.getClientTranscript(topic.chatId)
+    if (store.getEntryIdAt(topic.chatId, span.end - 1) !== span.endEntryId) return
+    ensureChatEntrySpans(ws).set(subscriptionId, { start: span.start, end: span.end })
   }
 
   async function pushSnapshots(
@@ -466,11 +544,20 @@ export function createWsRouter({
         continue
       }
       if (topic.type === "chat") {
-        const snapshotJson = getChatSnapshotJson(topic.chatId, topic.recentLimit, options?.cache)
+        const data = getChatSnapshotData(topic.chatId, options?.cache)
+        const spans = ensureChatEntrySpans(ws)
+        const snapshotJson = JSON.stringify({ type: "chat", data: toSocketChatSnapshot(data, spans.get(id)) })
         if (snapshotSignatures.get(id) === snapshotJson) {
           continue
         }
         snapshotSignatures.set(id, snapshotJson)
+        // Record the full span, not the slice that went out — it is what this
+        // socket now holds, and what the next push measures against.
+        if (data) {
+          spans.set(id, { start: data.startIndex, end: data.startIndex + data.messages.length })
+        } else {
+          spans.delete(id)
+        }
         sendSerializedSnapshot(ws, id, snapshotJson)
         continue
       }
@@ -1140,12 +1227,30 @@ export function createWsRouter({
           // No broadcast on purpose. The anchor is not part of any snapshot,
           // so scrolling stays free of fan-out, and a device sitting on an
           // open chat never gets its viewport yanked by another device.
-          await store.setChatReadAnchor(command.chatId, command.messageId, command.atEnd)
+          await store.setChatReadAnchor(command.chatId, command.messageId, command.atEnd, {
+            transcriptWidth: command.transcriptWidth,
+            offsetFromMessage: command.offsetFromMessage,
+          })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           return
         }
         case "chat.getReadAnchor": {
           const result = store.getChatReadAnchor(command.chatId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "chat.getEntryDebugRaw": {
+          const result = store.getEntryDebugRaw(command.chatId, command.entryId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "chat.getToolEntries": {
+          // Bounded so a malformed client cannot ask for the whole transcript
+          // one id at a time; the largest real request is one tool group.
+          if (command.entryIds.length > MAX_TOOL_ENTRY_REQUEST) {
+            throw new Error(`Too many entry ids (max ${MAX_TOOL_ENTRY_REQUEST})`)
+          }
+          const result = store.getEntriesById(command.chatId, command.entryIds)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
@@ -1338,13 +1443,6 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
-        case "chat.loadHistory": {
-          const chat = store.getChat(command.chatId)
-          if (!chat) throw new Error("Chat not found")
-          const page = store.getMessagesPageBefore(command.chatId, command.beforeCursor, command.limit)
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: page })
-          return
-        }
         case "chat.respondTool": {
           await agent.respondTool(command)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
@@ -1452,6 +1550,9 @@ export function createWsRouter({
         const snapshotSignatures = ensureSnapshotSignatures(ws)
         ws.data.subscriptions.set(parsed.id, parsed.topic)
         snapshotSignatures.delete(parsed.id)
+        // A (re)subscribe starts from nothing, so the next push sends a full window.
+        ws.data.chatEntrySpans?.delete(parsed.id)
+        seedChatEntrySpanFromClient(ws, parsed.id, parsed.topic)
         if (parsed.topic.type === "local-projects") {
           void refreshDiscovery().then(() => {
             if (ws.data.subscriptions.has(parsed.id)) {
@@ -1478,6 +1579,8 @@ export function createWsRouter({
         const snapshotSignatures = ensureSnapshotSignatures(ws)
         ws.data.subscriptions.delete(parsed.id)
         snapshotSignatures.delete(parsed.id)
+        // A (re)subscribe starts from nothing, so the next push sends a full window.
+        ws.data.chatEntrySpans?.delete(parsed.id)
         send(ws, { v: PROTOCOL_VERSION, type: "ack", id: parsed.id })
         return
       }
