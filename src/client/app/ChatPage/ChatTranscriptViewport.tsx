@@ -162,6 +162,7 @@ interface ChatTranscriptViewportProps {
   readAnchorState?: ChatReadAnchorState
   /** Reports the message at the top of the viewport as the user scrolls. */
   onReportReadAnchor?: (messageId: string, atEnd: boolean, layout?: ReadAnchorLayout) => void
+  autoScroll?: boolean
 }
 
 /**
@@ -170,7 +171,7 @@ interface ChatTranscriptViewportProps {
  */
 export const ChatTranscriptViewport = memo(function ChatTranscriptViewport(props: ChatTranscriptViewportProps) {
   return (
-    <MessageScrollerProvider autoScroll scrollEdgeThreshold={AT_END_THRESHOLD_PX}>
+    <MessageScrollerProvider autoScroll={props.autoScroll ?? true} scrollEdgeThreshold={AT_END_THRESHOLD_PX}>
       <TranscriptScrollerBody {...props} />
     </MessageScrollerProvider>
   )
