@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import type { SidebarChatRow } from "../../../../shared/types"
+import type { ChatJumpRole } from "../../../lib/chat-navigation"
 import type { SidebarThread } from "../../../lib/thread-sections"
 import { ChatHoverCardContent } from "./ChatHoverCard"
 
@@ -50,9 +51,18 @@ function render(
   overrides: Partial<SidebarChatRow> = {},
   label?: SidebarThread["projectLabel"],
   draft?: string,
+  onSelectMessage?: (role: ChatJumpRole) => void,
 ) {
-  return renderToStaticMarkup(<ChatHoverCardContent thread={thread(overrides, label)} draft={draft} />)
+  return renderToStaticMarkup(
+    <ChatHoverCardContent
+      thread={thread(overrides, label)}
+      draft={draft}
+      onSelectMessage={onSelectMessage}
+    />
+  )
 }
+
+const JUMPS = () => undefined
 
 describe("ChatHoverCardContent", () => {
   test("carries what the row could not: the project, the prompt, the reply", () => {
@@ -63,6 +73,14 @@ describe("ChatHoverCardContent", () => {
     expect(html).toContain("Done — the branch moved into the hover card.")
     // The project heads the card; the exchange follows it.
     expect(html.indexOf("jakemor/kanna")).toBeLessThan(html.indexOf("make the sidebar"))
+  })
+
+  test("leads the header with the branch and anchors the repo right", () => {
+    // Down a list of chats the branch is what differs; the repo is the same
+    // one over and over. The varying fact reads down the left edge.
+    const html = render()
+
+    expect(html.indexOf("feat/hover-card")).toBeLessThan(html.indexOf("jakemor/kanna"))
   })
 
   test("names the branch on the project line, `main` included", () => {
@@ -91,6 +109,42 @@ describe("ChatHoverCardContent", () => {
     expect(detached).not.toContain("lucide-git-branch")
   })
 
+  test("offers Setup Git in the branch's slot when the project isn't a repo", () => {
+    const html = renderToStaticMarkup(
+      <ChatHoverCardContent
+        thread={thread({}, { name: "scratch", hasGitRepo: false, text: "scratch" })}
+        onSetupGit={JUMPS}
+      />
+    )
+
+    expect(html).toContain("Setup Git")
+    // Where the branch would have been — ahead of the project name opposite it.
+    expect(html.indexOf("Setup Git")).toBeLessThan(html.indexOf("scratch"))
+  })
+
+  test("says nothing about git until the server has actually looked", () => {
+    // An unresolved project reads the same as one with no repo if you go by
+    // the missing branch alone, and every repo in the sidebar is unresolved
+    // for the first probe pass after boot.
+    const html = renderToStaticMarkup(
+      <ChatHoverCardContent
+        thread={thread({}, { name: "scratch", text: "scratch" })}
+        onSetupGit={JUMPS}
+      />
+    )
+
+    expect(html).not.toContain("Setup Git")
+  })
+
+  test("a repo keeps its branch — Setup Git never displaces one", () => {
+    const html = renderToStaticMarkup(
+      <ChatHoverCardContent thread={thread()} onSetupGit={JUMPS} />
+    )
+
+    expect(html).toContain("feat/hover-card")
+    expect(html).not.toContain("Setup Git")
+  })
+
   test("drops a reply the current prompt hasn't earned", () => {
     // Sent again and still waiting: pairing the new question with the old
     // answer would read as though it had already come back.
@@ -110,34 +164,23 @@ describe("ChatHoverCardContent", () => {
     expect(html).toContain("Done — the branch moved into the hover card.")
   })
 
-  test("times a live turn from its start, not from the last message", () => {
-    const html = render({
-      status: "running",
-      lastTurnStartedAt: NOW - 65_000,
-      lastMessageAt: NOW - 5_000,
-    })
-
-    expect(html).toContain("1m 5s")
+  test("sizes the whole chat rather than timing its last turn", () => {
+    // How far a conversation has gone is what a row can't show and what you'd
+    // want before opening it; the last turn's duration says nothing about that,
+    // and the minimap already reports it per turn.
+    expect(render({ turnCount: 24 })).toContain("24 turns")
+    expect(render({ turnCount: 1 })).toContain("1 turn")
   })
 
-  test("a finished turn reports how long it ran, in the transcript's format", () => {
-    const html = render({
-      lastTurnStartedAt: NOW - 5 * 60_000,
-      lastTurnEndedAt: NOW - 3 * 60_000,
-    })
-
-    expect(html).toContain("2m")
-  })
-
-  test("anchors duration and landing time together at the right edge", () => {
+  test("anchors the turn count and landing time together at the right edge", () => {
     const endedAt = NOW - 60_000
     const time = new Date(endedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
-    const html = render({ lastTurnStartedAt: NOW - 2 * 60_000, lastTurnEndedAt: endedAt })
+    const html = render({ turnCount: 8, lastTurnEndedAt: endedAt })
 
     const anchored = html.slice(html.indexOf("ml-auto"))
-    expect(anchored).toContain("1m")
+    expect(anchored).toContain("8 turns")
     expect(anchored).toContain(time)
-    expect(anchored.indexOf("1m")).toBeLessThan(anchored.indexOf(time))
+    expect(anchored.indexOf("8 turns")).toBeLessThan(anchored.indexOf(time))
   })
 
   test("a live turn shows no end time — the only one on hand is the previous turn's", () => {
@@ -145,16 +188,17 @@ describe("ChatHoverCardContent", () => {
     const time = new Date(endedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
     const html = render({
       status: "running",
+      turnCount: 3,
       lastTurnEndedAt: endedAt,
       lastTurnStartedAt: NOW - 60_000,
     })
 
-    expect(html).toContain("1m")
+    expect(html).toContain("3 turns")
     expect(html).not.toContain(time)
   })
 
   test("names the harness with its glyph, and nothing between them", () => {
-    const html = render({ provider: "codex", lastTurnStartedAt: NOW - 60_000, lastTurnEndedAt: NOW })
+    const html = render({ provider: "codex", turnCount: 2, lastTurnEndedAt: NOW })
 
     expect(html).toContain("viewBox=\"0 0 158.7128 157.296\"")
     expect(html).toContain("Codex")
@@ -173,13 +217,14 @@ describe("ChatHoverCardContent", () => {
     expect(html).not.toContain("•")
   })
 
-  test("a chat that has never run a turn simply has no duration", () => {
-    // Old chats predate turn-start recording; they lose the chip rather than
-    // showing a duration measured from something that isn't the turn.
-    const html = render({ lastTurnEndedAt: NOW - 1000 })
+  test("a chat whose turns predate the counter says nothing rather than zero", () => {
+    // The landing time still stands alone; only the count is dropped.
+    const endedAt = NOW - 1000
+    const time = new Date(endedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    const html = render({ turnCount: undefined, lastTurnEndedAt: endedAt })
 
-    // No start time means no duration; the landing time still stands alone.
-    expect(html).not.toContain("ml-auto shrink-0 pl-2\"><span>")
+    expect(html).not.toContain("0 turns")
+    expect(html).toContain(time)
   })
 
   test("an unsent draft ends the card and takes the sent prompt's place", () => {
@@ -214,6 +259,87 @@ describe("ChatHoverCardContent", () => {
 
     expect(html).toContain("make the sidebar labels shorter")
     expect(html).not.toContain("lucide-pencil-line")
+  })
+
+  test("both messages are targets wherever the card can navigate", () => {
+    // No per-chat condition: the card shows a chat's latest prompt and latest
+    // reply by definition, and the transcript resolves those itself.
+    const html = render({}, undefined, undefined, JUMPS)
+
+    expect(html).toContain("Jump to this prompt")
+    expect(html).toContain("Jump to this reply")
+    expect(html).toContain("<button")
+  })
+
+  test("stays plain text on a card with nowhere to send you", () => {
+    // Archived rows pass no handler — the card is a read-only peek there, and
+    // a hover fill on text that does nothing would lie.
+    expect(render()).not.toContain("<button")
+  })
+
+  test("a reply carried over from the previous turn is neither shown nor clickable", () => {
+    // The prompt is newer than the reply, so the answer on hand isn't to it.
+    const html = render(
+      { lastMessageAt: NOW, lastAgentMessagePreviewAt: NOW - 60_000 },
+      undefined,
+      undefined,
+      JUMPS,
+    )
+
+    expect(html).not.toContain("Done — the branch moved into the hover card.")
+    expect(html).not.toContain("Jump to this reply")
+    expect(html).toContain("Jump to this prompt")
+  })
+
+  test("a draft leaves only the reply to click, since it replaced the prompt", () => {
+    const html = render({}, undefined, "half a thought", JUMPS)
+
+    expect(html).not.toContain("Jump to this prompt")
+    expect(html).toContain("Jump to this reply")
+  })
+
+  test("a draft opens the chat rather than aiming at a message", () => {
+    // It was never sent, so there is no message to land on — the composer is
+    // already holding it.
+    const html = renderToStaticMarkup(
+      <ChatHoverCardContent
+        thread={thread()}
+        draft="half a thought"
+        onSelectChat={() => undefined}
+      />
+    )
+
+    expect(html).toContain("Open this chat")
+    expect(html).toContain("half a thought")
+  })
+
+  test("the repo name is the link to the repo, named after its host", () => {
+    const html = renderToStaticMarkup(
+      <ChatHoverCardContent
+        thread={thread({}, {
+          name: "kanna",
+          repoPath: "jakemor/kanna",
+          hasOwner: true,
+          repoUrl: "https://github.com/jakemor/kanna",
+          text: "kanna",
+        })}
+        onOpenRepo={() => undefined}
+      />
+    )
+
+    expect(html).toContain("Open on GitHub")
+    expect(html).toContain("jakemor/kanna")
+  })
+
+  test("a project with no forge page keeps a plain repo line", () => {
+    // No origin, or a remote that resolves to no page — nothing should suggest
+    // a click that goes nowhere.
+    const html = renderToStaticMarkup(
+      <ChatHoverCardContent thread={thread()} onOpenRepo={() => undefined} />
+    )
+
+    expect(html).not.toContain("Open on")
+    expect(html).toContain("jakemor/kanna")
   })
 
   test("falls back to the chat title when there is no prompt yet", () => {

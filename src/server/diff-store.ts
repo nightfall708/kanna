@@ -25,6 +25,7 @@ import type {
   SelectedBranch,
   UpstreamStatus,
 } from "../shared/types"
+import { buildKannaCommitAttribution } from "./attribution"
 import { generateCommitMessageDetailed } from "./generate-commit-message"
 import { getGhAuthInfo } from "./github"
 import { resolveCommandPath } from "./process-utils"
@@ -537,7 +538,10 @@ export function extractGitHubRepoSlug(remoteUrl: string | null | undefined) {
     return `${sshProtocolMatch.groups.owner}/${sshProtocolMatch.groups.repo}`
   }
 
-  const httpsMatch = /^https?:\/\/github\.com\/(?<owner>[^/]+)\/(?<repo>[^/]+?)(?:\.git)?$/u.exec(remoteUrl)
+  // Credentials in the remote are common — `gh auth setup-git` and CI checkouts
+  // both write `https://<token>@github.com/owner/repo`. The userinfo is part of
+  // the transport, not the address, so it must not stop us naming the repo.
+  const httpsMatch = /^https?:\/\/(?:[^/@]+@)?github\.com\/(?<owner>[^/]+)\/(?<repo>[^/]+?)(?:\.git)?$/u.exec(remoteUrl)
   if (httpsMatch?.groups?.owner && httpsMatch.groups.repo) {
     return `${httpsMatch.groups.owner}/${httpsMatch.groups.repo}`
   }
@@ -2372,6 +2376,14 @@ export class DiffStore {
     const commitArgs = ["commit", "--only", "-m", summary]
     if (description) {
       commitArgs.push("-m", description)
+    }
+    // Kanna's own attribution, as its own -m paragraph (git joins them with a
+    // blank line, which is exactly the placement git wants for a trailer
+    // block). Each part is skipped if the author already typed it, so it never
+    // doubles up.
+    const attribution = buildKannaCommitAttribution([summary, description].filter(Boolean).join("\n\n"))
+    if (attribution) {
+      commitArgs.push("-m", attribution)
     }
     commitArgs.push("--pathspec-from-file=-", "--pathspec-file-nul")
 

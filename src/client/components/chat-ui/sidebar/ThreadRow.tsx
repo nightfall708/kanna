@@ -1,5 +1,6 @@
 import type { ReactNode } from "react"
 import { Archive, RotateCcw, Split } from "lucide-react"
+import type { ChatJumpRole } from "../../../lib/chat-navigation"
 import type { SidebarThread } from "../../../lib/thread-sections"
 import { cn, normalizeChatId } from "../../../lib/utils"
 import { Button } from "../../ui/button"
@@ -24,6 +25,8 @@ export function ThreadRow({
   detailLabel,
   dimIdleTitles = true,
   onSelect,
+  onSelectMessage,
+  onSetupGit,
   onCreateChat,
   onRenameChat,
   onShareChat,
@@ -50,6 +53,18 @@ export function ThreadRow({
    */
   dimIdleTitles?: boolean
   onSelect: (chatId: string) => void
+  /**
+   * Opens the chat at one end of its last exchange — what the hover card's
+   * prompt and reply do when clicked. Optional: without it those previews are
+   * inert text (the archived list passes nothing).
+   */
+  onSelectMessage?: (chatId: string, role: ChatJumpRole) => void
+  /**
+   * Prompts to `git init` the chat's project — offered by the hover card when
+   * the project turns out not to be a repo. Optional on the same terms as
+   * `onSelectMessage`: the archived list passes nothing.
+   */
+  onSetupGit?: (chatId: string) => void
   onCreateChat: (projectId: string) => void
   onRenameChat: (chat: SidebarThread["row"]) => void
   onShareChat: (chatId: string) => void
@@ -68,7 +83,7 @@ export function ThreadRow({
     <Button
       variant="ghost"
       size="icon"
-      className="h-6 w-6 cursor-pointer rounded-sm hover:!bg-transparent !border-0"
+      className="h-6 w-6 shrink-0 cursor-pointer rounded-sm hover:!bg-transparent !border-0"
       onClick={(event) => {
         event.stopPropagation()
         onRestoreChat(thread.row.chatId)
@@ -83,7 +98,7 @@ export function ThreadRow({
         <Button
           variant="ghost"
           size="icon"
-          className="h-6 w-6 cursor-pointer rounded-sm hover:!bg-transparent !border-0"
+          className="h-6 w-6 shrink-0 cursor-pointer rounded-sm hover:!bg-transparent !border-0"
           onClick={(event) => {
             event.stopPropagation()
             onForkChat(thread.row)
@@ -96,7 +111,7 @@ export function ThreadRow({
       <Button
         variant="ghost"
         size="icon"
-        className="h-6 w-6 cursor-pointer rounded-sm hover:!bg-transparent !border-0"
+        className="h-6 w-6 shrink-0 cursor-pointer rounded-sm hover:!bg-transparent !border-0"
         onClick={(event) => {
           event.stopPropagation()
           onArchiveChat(thread.row)
@@ -113,6 +128,7 @@ export function ThreadRow({
       canFork={thread.row.canFork}
       archived={archived}
       editorLabel={editorLabel}
+      repoUrl={thread.projectLabel.repoUrl}
       onNewChat={() => onCreateChat(thread.projectId)}
       onRestore={archived ? () => onRestoreChat(thread.row.chatId) : undefined}
       onRename={() => onRenameChat(thread.row)}
@@ -127,7 +143,13 @@ export function ThreadRow({
     >
       {/* Sidebar rows only: the palette renders `ThreadRowContent` directly and
           gets no card — it's already a detail view you opened on purpose. */}
-      <ChatHoverCard thread={thread} draft={draft}>
+      <ChatHoverCard
+        thread={thread}
+        draft={draft}
+        onSelectMessage={onSelectMessage}
+        onSelectChat={onSelect}
+        onSetupGit={onSetupGit}
+      >
         <div
           // The marker the sidebar's scroll-to-active querySelector looks for.
           // When the Chats tab renders above the project groups, its copy is

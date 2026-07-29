@@ -6,6 +6,7 @@ import {
   getLatestUserPrompt,
   getRowAnchorMessageId,
   isOptimisticMessageId,
+  resolveJumpTarget,
   resolveRestoreTarget,
   shouldPinForNewPrompt,
 } from "./transcriptScrollAnchors"
@@ -76,6 +77,35 @@ describe("isOptimisticMessageId", () => {
   test("recognises the optimistic prefix", () => {
     expect(isOptimisticMessageId("optimistic:abc")).toBe(true)
     expect(isOptimisticMessageId("abc")).toBe(false)
+  })
+})
+
+describe("resolveJumpTarget", () => {
+  const rows = [promptRow("m1", "hi"), toolGroupRow(["t1", "t2"]), textRow("a1", "done")]
+
+  test("resolves each role against the transcript, not against an id it was handed", () => {
+    // The sidebar names a role because it only has preview strings; the rows
+    // are the only thing that knows which message is which.
+    expect(resolveJumpTarget(rows, "prompt")).toEqual({ kind: "pin", rowId: rows[0]!.id })
+    expect(resolveJumpTarget(rows, "reply")).toEqual({ kind: "pin", rowId: rows[2]!.id })
+  })
+
+  test("takes the latest of each, not the first", () => {
+    const longer = [
+      promptRow("m1", "hi"),
+      textRow("a1", "first answer"),
+      promptRow("m2", "again"),
+      textRow("a2", "second answer"),
+    ]
+
+    expect(resolveJumpTarget(longer, "prompt")).toEqual({ kind: "pin", rowId: longer[2]!.id })
+    expect(resolveJumpTarget(longer, "reply")).toEqual({ kind: "pin", rowId: longer[3]!.id })
+  })
+
+  test("gives up when the transcript has no such message", () => {
+    // The caller falls back to the stored read position rather than guessing.
+    expect(resolveJumpTarget([promptRow("m1", "hi")], "reply")).toBeNull()
+    expect(resolveJumpTarget([], "prompt")).toBeNull()
   })
 })
 

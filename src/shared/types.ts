@@ -879,6 +879,12 @@ export interface SidebarChatRow {
   /** When the last turn ended (agent response received). Drives Review/In Progress ordering. */
   lastTurnEndedAt?: number
   /**
+   * How many turns the chat has run in total — the size of the conversation,
+   * as against `lastTurn*`, which describe only the most recent one. Absent on
+   * chats whose turns all predate the counter.
+   */
+  turnCount?: number
+  /**
    * When the agent last produced something — assistant text, a tool call, or a
    * tool result. Unlike `lastTurnEndedAt` this advances *during* a turn, so a
    * chat parked mid-turn (plan mode / a permission prompt, which end no turn)
@@ -921,6 +927,13 @@ export interface SidebarProjectGroup {
    * label; best-effort, so treat "absent" as "not known yet", not "not a repo".
    */
   repoName?: string
+  /**
+   * Whether the project is in a git repo at all, once we've looked. Absent
+   * means "not looked yet" — the thing `repoName` alone can't distinguish, and
+   * the reason this exists: only a definite `false` should offer to `git init`
+   * the folder.
+   */
+  hasGitRepo?: boolean
   /** Current branch of `repoName`'s repo; absent on a detached HEAD. */
   branchName?: string
   /**
@@ -930,6 +943,14 @@ export interface SidebarProjectGroup {
    * degrades to the bare `repoName`, never to an error.
    */
   repoOwner?: string
+  /**
+   * The `origin` remote as a browsable https page (`https://host/owner/repo`),
+   * absent when there's no origin or it doesn't resolve to one. Carries the
+   * *host*, which is the part `repoOwner` throws away and the client can't
+   * reconstruct — this is what "Open on GitHub" opens, and what tells a GitLab
+   * repo apart from a GitHub one.
+   */
+  repoUrl?: string
   localPath: string
   chats: SidebarChatRow[]
   previewChats: SidebarChatRow[]

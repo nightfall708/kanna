@@ -3,6 +3,7 @@ import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir, LOG_PREFIX } from "../shared/branding"
+import { toMessagePreview } from "../shared/message-preview"
 import type { AgentProvider, QueuedChatMessage, ResolvedChatReadAnchor, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
@@ -37,12 +38,25 @@ const TOUCHED_PATHS_LIMIT = 500
 // How much of each transcript tail is scanned at boot to rebuild chat metadata
 // (lastMessageAt, previews) that only lives in snapshots between compactions.
 const TRANSCRIPT_METADATA_TAIL_BYTES = 256 * 1024
+/**
+ * A message reduced to the one line the sidebar's hover card shows.
+ *
+ * The markdown has to come off *here*, not where it's rendered: half of what
+ * `toMessagePreview` strips — headings, list markers, quotes, rules — is
+ * anchored to the start of a line, and this is the last place the lines still
+ * exist. A preview that has already been flattened to one string carries its
+ * `##` and `- ` into the middle of the text, where no line-start rule can see
+ * them and no client-side pass can recover.
+ *
+ * Stripping before the truncation also means the 160 characters are spent on
+ * words rather than syntax.
+ */
 function buildChatMessagePreview(text: string) {
-  const collapsed = text.replace(/\s+/g, " ").trim()
-  if (!collapsed) return undefined
-  return collapsed.length > CHAT_MESSAGE_PREVIEW_MAX_LENGTH
-    ? `${collapsed.slice(0, CHAT_MESSAGE_PREVIEW_MAX_LENGTH)}…`
-    : collapsed
+  const preview = toMessagePreview(text)
+  if (!preview) return undefined
+  return preview.length > CHAT_MESSAGE_PREVIEW_MAX_LENGTH
+    ? `${preview.slice(0, CHAT_MESSAGE_PREVIEW_MAX_LENGTH)}…`
+    : preview
 }
 
 /**
@@ -672,6 +686,7 @@ export class EventStore {
         if (!chat) break
         chat.updatedAt = event.timestamp
         chat.lastTurnStartedAt = event.timestamp
+        chat.turnCount = (chat.turnCount ?? 0) + 1
         // Kept from the previous turn when this one didn't name a model, so a
         // resumed background turn doesn't blank what the chat last ran with.
         if (event.model) chat.lastModel = event.model
@@ -968,6 +983,10 @@ export class EventStore {
           if (lastEntryAt != null) {
             chat.lastMessageAt = Math.max(chat.lastMessageAt ?? 0, lastEntryAt)
           }
+          // The fork's conversation *is* the source's, so it inherits its turns
+          // too — a fork of a twenty-turn chat has twenty turns behind it, and
+          // starting the count from zero would read as a fresh chat.
+          if (sourceChat.turnCount) chat.turnCount = sourceChat.turnCount
           if (sourceChat.lastUserMessagePreview) chat.lastUserMessagePreview = sourceChat.lastUserMessagePreview
           if (sourceChat.lastAgentMessagePreview) {
             chat.lastAgentMessagePreview = sourceChat.lastAgentMessagePreview

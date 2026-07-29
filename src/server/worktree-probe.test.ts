@@ -328,6 +328,37 @@ describe("WorktreeProbe integration", () => {
     expect(probe.getRepoLabels().get("project-1")?.repoOwner).toBe("acme")
   })
 
+  test("resolves the origin to a browsable page, host and all", async () => {
+    // The client never sees the remote URL, and the host is the part it can't
+    // reconstruct from `owner/repo` — so "Open on GitHub" is only correct
+    // because this ran.
+    const repoRoot = await createRepo()
+    const state = createState(repoRoot, { lastTurnEndedAt: 1 })
+    const probe = new WorktreeProbe(() => state, () => {})
+
+    await probe.refreshForChat("chat-1")
+    expect(probe.getRepoLabels().get("project-1")?.repoUrl).toBeUndefined()
+
+    await run(["git", "remote", "add", "origin", "git@github.com:acme/widgets.git"], repoRoot)
+    await probe.refreshForChat("chat-1")
+
+    expect(probe.getRepoLabels().get("project-1")?.repoUrl).toBe("https://github.com/acme/widgets")
+  })
+
+  test("leaves a local-path remote without a page, rather than inventing one", async () => {
+    const repoRoot = await createRepo()
+    const state = createState(repoRoot, { lastTurnEndedAt: 1 })
+    const probe = new WorktreeProbe(() => state, () => {})
+
+    await run(["git", "remote", "add", "origin", "/srv/git/widgets.git"], repoRoot)
+    await probe.refreshForChat("chat-1")
+
+    const label = probe.getRepoLabels().get("project-1")
+    expect(label?.repoUrl).toBeUndefined()
+    // And the rest of the label is undisturbed by the remote it couldn't use.
+    expect(label?.repoName).toBe(path.basename(repoRoot))
+  })
+
   test("the tick labels projects with no finished turn, without running git status", async () => {
     const repoRoot = await createRepo()
     // No lastTurnEndedAt: this project can never show the dot, but its label is
@@ -351,6 +382,29 @@ describe("WorktreeProbe integration", () => {
     expect(probe.getRepoLabels().get("project-1")?.branchName).toBe("main")
 
     await run(["git", "checkout", "-b", "feature/side-quest"], repoRoot)
+    await tick(probe)
+
+    expect(probe.getRepoLabels().get("project-1")?.branchName).toBe("feature/side-quest")
+  })
+
+  test("a probe supplied from outside doesn't freeze the branch label", async () => {
+    // The git panel's refresh hands us a scan for free (`recordExternalProbe`),
+    // which banks a fresh stamp so the tick doesn't redo the same scan. That
+    // stamp must not also count as a *label* read: a checkout followed by a
+    // panel refresh would otherwise leave the sidebar naming the old branch
+    // until some unrelated commit moved the index — while the git panel, which
+    // reads the branch itself, showed the new one.
+    const repoRoot = await createRepo()
+    const state = createState(repoRoot, { lastTurnEndedAt: 1 })
+    const probe = new WorktreeProbe(() => state, () => {})
+
+    await tick(probe)
+    expect(probe.getRepoLabels().get("project-1")?.branchName).toBe("main")
+
+    await run(["git", "checkout", "-b", "feature/side-quest"], repoRoot)
+    probe.recordExternalProbe("project-1", { dirty: false, paths: [] })
+    // Fire-and-forget by design; let its stamp write land before the tick.
+    await new Promise((resolve) => setTimeout(resolve, 20))
     await tick(probe)
 
     expect(probe.getRepoLabels().get("project-1")?.branchName).toBe("feature/side-quest")
@@ -390,6 +444,37 @@ describe("WorktreeProbe integration", () => {
     await probe.refreshForChat("chat-1")
 
     expect(probe.getRepoLabels().get("project-1")).toBeUndefined()
+    // A missing label alone can't say this — it also covers every project the
+    // probe hasn't reached yet — so the answer is tracked separately.
+    expect(probe.getProjectsWithoutRepo().has("project-1")).toBe(true)
+  })
+
+  test("nothing is claimed about a project the probe has not looked at", async () => {
+    const repoRoot = await createRepo()
+    const state = createState(repoRoot, { lastTurnEndedAt: 1 })
+    const probe = new WorktreeProbe(() => state, () => {})
+
+    expect(probe.getProjectsWithoutRepo().has("project-1")).toBe(false)
+
+    await probe.refreshForChat("chat-1")
+
+    expect(probe.getProjectsWithoutRepo().has("project-1")).toBe(false)
+  })
+
+  test("learning a folder is not a repo is itself a broadcast", async () => {
+    // There is no label to drop, so the repo-label path stays quiet — but the
+    // sidebar has just learned it can offer to initialize the folder.
+    const plainDir = await mkdtemp(path.join(tmpdir(), "kanna-worktree-probe-plain-"))
+    tempDirs.push(plainDir)
+    const state = createState(plainDir, { lastTurnEndedAt: 1 })
+    let changes = 0
+    const probe = new WorktreeProbe(() => state, () => {
+      changes += 1
+    })
+
+    await probe.refreshForChat("chat-1")
+
+    expect(changes).toBe(1)
   })
 
   test("one refresh is one broadcast even when label and dirty state both change", async () => {
@@ -421,6 +506,28 @@ describe("WorktreeProbe integration", () => {
 
     expect(sidebar.projectGroups[0]?.repoName).toBe(path.basename(repoRoot))
     expect(sidebar.projectGroups[0]?.branchName).toBe("main")
+    expect(sidebar.projectGroups[0]?.hasGitRepo).toBe(true)
+  })
+
+  test("the sidebar snapshot states a folder is not a repo, but only once probed", async () => {
+    const plainDir = await mkdtemp(path.join(tmpdir(), "kanna-worktree-probe-plain-"))
+    tempDirs.push(plainDir)
+    const state = createState(plainDir, { lastTurnEndedAt: 1 })
+    const probe = new WorktreeProbe(() => state, () => {})
+
+    const unprobed = deriveSidebarData(state, new Map(), {
+      repoLabels: probe.getRepoLabels(),
+      projectsWithoutRepo: probe.getProjectsWithoutRepo(),
+    })
+    expect(unprobed.projectGroups[0]?.hasGitRepo).toBeUndefined()
+
+    await probe.refreshForChat("chat-1")
+
+    const probed = deriveSidebarData(state, new Map(), {
+      repoLabels: probe.getRepoLabels(),
+      projectsWithoutRepo: probe.getProjectsWithoutRepo(),
+    })
+    expect(probed.projectGroups[0]?.hasGitRepo).toBe(false)
   })
 })
 

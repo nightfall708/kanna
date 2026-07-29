@@ -1,5 +1,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { formatDuration, formatPromptTimestamp } from "../../components/messages/ResultMessage"
+import { toMessagePreview } from "../../../shared/message-preview"
+import type { ChatJumpRole } from "../../lib/chat-navigation"
+import { TurnCardMessage, TurnCardTimingRow } from "../../components/ui/turn-card"
 import {
   getMagnifyFalloff,
   getMinimapCapacity,
@@ -100,7 +103,8 @@ interface TranscriptMinimapProps {
   bottomPx: number
   /** Width of the scroll pane, used to decide whether there is room at all. */
   containerWidthPx: number
-  onSelectTurn: (turn: TranscriptTurn) => void
+  /** Jump to one end of a turn — its prompt, or where its answer landed. */
+  onSelectTurn: (turn: TranscriptTurn, role: ChatJumpRole) => void
 }
 
 /**
@@ -123,8 +127,18 @@ export const TranscriptMinimap = memo(function TranscriptMinimap({
   onSelectTurn,
 }: TranscriptMinimapProps) {
   const wrapperRef = useRef<HTMLDivElement | null>(null)
+  const cardRef = useRef<HTMLDivElement | null>(null)
   const [wrapperHeight, setWrapperHeight] = useState(0)
   const [pointerY, setPointerY] = useState<number | null>(null)
+  /**
+   * The turn the card keeps describing once the cursor has walked onto the card
+   * itself and off the strip that chose it.
+   *
+   * Held as the turn rather than an index so the hold survives the tick list
+   * changing under it: a turn that is no longer on the strip has no tick to sit
+   * beside, and the card drops rather than pointing at a neighbour.
+   */
+  const [heldTurn, setHeldTurn] = useState<TranscriptTurn | null>(null)
   const hasFinePointer = useHasFinePointer()
 
   useLayoutEffect(() => {
@@ -171,32 +185,62 @@ export const TranscriptMinimap = memo(function TranscriptMinimap({
     const bounds = event.currentTarget.getBoundingClientRect()
     const offsetY = event.clientY - bounds.top
     cancelPointerFrame()
+    // Back on the strip, so the strip is choosing again. Functional so a resting
+    // hold is the only thing this re-renders for, not every sample.
+    setHeldTurn((current) => (current ? null : current))
     pointerFrameRef.current = window.requestAnimationFrame(() => {
       pointerFrameRef.current = null
       setPointerY(offsetY)
     })
   }, [cancelPointerFrame])
 
-  const handlePointerLeave = useCallback(() => {
+  /** The turn under the cursor, readable from an event handler a render later. */
+  const focusedTurnRef = useRef<TranscriptTurn | null>(null)
+
+  const handlePointerLeave = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     cancelPointerFrame()
+    // Crossing onto the card is not leaving. The card is a click target now, so
+    // the turn it describes has to survive the walk over to it — but only for
+    // that one exit: `relatedTarget` names what the pointer actually entered,
+    // so leaving the strip any other way still clears, and no card is ever
+    // stranded over the transcript waiting for a pointerleave that can't come.
+    //
+    // The walk needs no bridge because the card already overlaps the strip's
+    // right edge, so there is no dead gap between them to fall into.
+    const entered = event.relatedTarget
+    const enteredCard = entered instanceof Node && (cardRef.current?.contains(entered) ?? false)
+    setHeldTurn(enteredCard ? focusedTurnRef.current : null)
     setPointerY(null)
   }, [cancelPointerFrame])
+
+  const handleCardPointerLeave = useCallback(() => setHeldTurn(null), [])
+
+  // Dismiss on the way out: the pointer is still over the card afterwards, and
+  // a card left standing would hang over the transcript it just took you to.
+  const handleSelect = useCallback((turn: TranscriptTurn, role: ChatJumpRole) => {
+    cancelPointerFrame()
+    setHeldTurn(null)
+    setPointerY(null)
+    onSelectTurn(turn, role)
+  }, [cancelPointerFrame, onSelectTurn])
 
   // Reset on anything that can move ticks out from under a resting cursor.
   useEffect(() => {
     setPointerY(null)
+    setHeldTurn(null)
   }, [capacity, hasRoom, transcriptOverflows])
 
   /**
-   * Whether the strip earns its place. A single tick maps nothing — there is
-   * nowhere else to jump to — so it would be pure decoration.
+   * Whether the strip earns its place. Scrollable content is the test, not the
+   * turn count: one turn long enough to scroll through still has a top to jump
+   * back to, and its tick still tracks where in it you are.
    *
    * Note this only gates the strip's *contents*: the wrapper below always
    * renders, because it is what the ResizeObserver measures, and remounting it
    * whenever a resize crosses the threshold would cost a frame of stale height
    * every time the strip reappears.
    */
-  const isVisible = hasFinePointer && hasRoom && transcriptOverflows && ticks.length > 1
+  const isVisible = hasFinePointer && hasRoom && transcriptOverflows && ticks.length > 0
 
   const stripHeight = ticks.length * TICK_PITCH_PX
   const stripTop = Math.max(0, (wrapperHeight - stripHeight) / 2)
@@ -221,15 +265,30 @@ export const TranscriptMinimap = memo(function TranscriptMinimap({
   const sizeDurationMs = focusedIndex >= 0 ? SIZE_ENTER_DURATION_MS : SIZE_EXIT_DURATION_MS
 
   const focusedTurn = focusedIndex >= 0 ? ticks[focusedIndex] : null
-  const focusedMeta = focusedTurn
-    ? [
-        focusedTurn.timestamp ? formatPromptTimestamp(focusedTurn.timestamp) : null,
-        focusedTurn.durationMs === null ? null : formatDuration(focusedTurn.durationMs),
-      ].filter(Boolean).join(" · ")
-    : ""
-  const cardCenterY = focusedIndex >= 0
+  useEffect(() => {
+    focusedTurnRef.current = focusedTurn
+  }, [focusedTurn])
+
+  /**
+   * The tick the card belongs to — chosen by the cursor while it's on the
+   * strip, then held while the cursor is on the card. Everything the card and
+   * the highlight read comes from this one index, so a held card keeps both its
+   * position and its tick instead of sliding to the top with nothing lit.
+   */
+  // Gated on `isVisible` like the cursor-driven index already is: a hold is only
+  // as alive as the strip that granted it, so a strip that goes away (the pane
+  // narrows, the transcript stops overflowing) takes its card with it.
+  const heldIndex = isVisible && heldTurn ? ticks.findIndex((tick) => tick.id === heldTurn.id) : -1
+  const activeIndex = focusedIndex >= 0 ? focusedIndex : heldIndex
+  const activeTurn = activeIndex >= 0 ? ticks[activeIndex] : null
+
+  const cardDuration = activeTurn && activeTurn.durationMs !== null
+    ? formatDuration(activeTurn.durationMs)
+    : null
+  const cardTimestamp = activeTurn?.timestamp ? formatPromptTimestamp(activeTurn.timestamp) : null
+  const cardCenterY = activeIndex >= 0
     ? clamp(
-        hitTop + tickCenterY(focusedIndex),
+        hitTop + tickCenterY(activeIndex),
         CARD_ESTIMATED_HEIGHT_PX / 2,
         Math.max(CARD_ESTIMATED_HEIGHT_PX / 2, wrapperHeight - CARD_ESTIMATED_HEIGHT_PX / 2),
       )
@@ -255,8 +314,8 @@ export const TranscriptMinimap = memo(function TranscriptMinimap({
           // a tick is picked out, every other tick sits at the floor.
           const isGrowing = falloff > 0
 
-          const inView = focusedIndex < 0 && isTurnInView(turn, visibleStart, visibleEnd)
-          const opacity = index === focusedIndex
+          const inView = activeIndex < 0 && isTurnInView(turn, visibleStart, visibleEnd)
+          const opacity = index === activeIndex
             ? TICK_OPACITY_FOCUSED
             : inView ? TICK_OPACITY_ON_SCREEN : TICK_OPACITY_OFF_SCREEN
 
@@ -267,8 +326,8 @@ export const TranscriptMinimap = memo(function TranscriptMinimap({
             <button
               key={turn.id}
               type="button"
-              onClick={() => onSelectTurn(turn)}
-              aria-label={`Jump to: ${turn.prompt.slice(0, 80)}`}
+              onClick={() => handleSelect(turn, "prompt")}
+              aria-label={`Jump to: ${toMessagePreview(turn.prompt).slice(0, 80)}`}
               className="absolute left-0 flex cursor-pointer items-center bg-transparent p-0"
               style={{
                 top: centerY,
@@ -307,10 +366,16 @@ export const TranscriptMinimap = memo(function TranscriptMinimap({
       </div>
       )}
 
-      {focusedTurn ? (
+      {activeTurn ? (
+        // Interactive, and so overlapping the strip's right edge by design —
+        // that overlap is what lets the cursor reach the card without crossing
+        // dead space (see `handlePointerLeave`). `px-1.5` rather than the
+        // `px-3` this looks like: the other half of the inset lives on each
+        // row, so a message's hover fill can run wider than its text.
         <div
-          aria-hidden
-          className="pointer-events-none absolute animate-fade-in rounded-lg border border-border bg-popover/95 px-3 py-2 shadow-xl backdrop-blur-sm transition-[top] duration-150 ease-out"
+          ref={cardRef}
+          onPointerLeave={handleCardPointerLeave}
+          className="pointer-events-auto absolute animate-fade-in rounded-lg border border-border bg-popover/95 px-1.5 py-2 shadow-xl backdrop-blur-sm transition-[top] duration-150 ease-out"
           style={{
             left: STRIP_INSET_PX + TICK_MAX_WIDTH_PX + CARD_GAP_PX,
             top: cardCenterY,
@@ -318,25 +383,52 @@ export const TranscriptMinimap = memo(function TranscriptMinimap({
             transform: "translateY(-50%)",
           }}
         >
-          <div className="line-clamp-2 text-sm font-medium text-popover-foreground">
-            {focusedTurn.prompt || "Empty message"}
+          {/* The two messages are the two places in this turn you'd want to be,
+              so both are targets: the prompt lands on the question, the reply
+              on where the answer ended up. Same as the sidebar's chat card —
+              which is this card, applied to the other list of turns you scan. */}
+          <div className="space-y-1">
+            <TurnCardMessage
+              className="line-clamp-2 text-sm font-medium text-popover-foreground"
+              label="Jump to this prompt"
+              onSelect={() => handleSelect(activeTurn, "prompt")}
+            >
+              {toMessagePreview(activeTurn.prompt) || "Empty message"}
+            </TurnCardMessage>
+            {activeTurn.error ? (
+              // Not put through the preview pass: a failure is a diagnostic the
+              // provider wrote, not authored markdown, and its punctuation is
+              // more likely to be part of the message than markup.
+              //
+              // Clickable on the same footing as a reply: it sits in the reply's
+              // slot and it's the turn's outcome, so it lands where the turn
+              // ended — which is exactly where you'd go to read the failure.
+              <TurnCardMessage
+                className="line-clamp-3 text-sm text-destructive"
+                label="Jump to this failure"
+                onSelect={() => handleSelect(activeTurn, "reply")}
+              >
+                {activeTurn.error}
+              </TurnCardMessage>
+            ) : activeTurn.response ? (
+              <TurnCardMessage
+                className="line-clamp-3 text-sm text-muted-foreground"
+                label="Jump to this reply"
+                onSelect={() => handleSelect(activeTurn, "reply")}
+              >
+                {toMessagePreview(activeTurn.response)}
+              </TurnCardMessage>
+            ) : null}
           </div>
-          {focusedTurn.error ? (
-            <div className="mt-1 line-clamp-3 text-sm text-destructive">
-              {focusedTurn.error}
-            </div>
-          ) : focusedTurn.response ? (
-            <div className="mt-1 line-clamp-3 text-sm text-muted-foreground">
-              {focusedTurn.response}
-            </div>
-          ) : null}
-          {/* Same treatment as the turn-boundary dividers in the transcript,
-              so the two readings of the same facts look like one thing. */}
-          {focusedMeta ? (
-            <div className="mt-1.5 text-[12px] tracking-wide text-muted-foreground/60">
-              {focusedMeta}
-            </div>
-          ) : null}
+          <TurnCardTimingRow
+            detail={cardDuration}
+            timestamp={cardTimestamp}
+            // What the sidebar's card spends this slot on the harness for: the
+            // one fact about the turn that the two lines above it don't carry.
+            // A prompt and a closing sentence look the same whether the agent
+            // answered in one breath or ran forty tools to get there.
+            leading={activeTurn.agentMessageCount > 0 ? formatAgentMessageCount(activeTurn.agentMessageCount) : null}
+          />
         </div>
       ) : null}
     </div>
@@ -345,6 +437,11 @@ export const TranscriptMinimap = memo(function TranscriptMinimap({
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
+}
+
+/** "1 message" / "12 messages" — the agent's own text and tool calls. */
+function formatAgentMessageCount(count: number) {
+  return `${count} message${count === 1 ? "" : "s"}`
 }
 
 /**

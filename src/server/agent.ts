@@ -36,6 +36,12 @@ import {
   scanCursorSkills,
 } from "./harness-skills"
 import {
+  buildKannaAgentCorrection,
+  buildKannaAgentId,
+  buildKannaAttributionInstructions,
+  buildKannaAttributionSystemMessage,
+} from "./attribution"
+import {
   applyClaudeSdkModels,
   applyCursorModels,
   type ClaudeSdkModelInfo,
@@ -144,6 +150,13 @@ interface ClaudeSessionState {
   session: ClaudeSessionHandle
   localPath: string
   model: string
+  /**
+   * The agent id baked into this session's system-prompt append. Frozen at
+   * query() time — unlike `model`, which setModel() updates in place — so a
+   * mismatch against the turn's model is exactly the drift the per-turn
+   * correction exists to cover.
+   */
+  promptAgentId: string
   effort?: string
   serviceTier?: "fast"
   planMode: boolean
@@ -726,6 +739,13 @@ async function startClaudeSession(args: {
       canUseTool,
       tools: claudeToolset(args.autoPlan),
       settingSources: ["user", "project", "local"],
+      // Append-only: the claude_code preset stays intact, Kanna's git
+      // attribution rides on the end of it (see attribution.ts).
+      systemPrompt: {
+        type: "preset",
+        preset: "claude_code",
+        append: buildKannaAttributionInstructions(buildKannaAgentId("claude", args.model)),
+      },
       // fastMode must go through the flag-settings layer: the CLI only allows
       // fast mode in Agent SDK sessions when flagSettings.fastMode is true,
       // and an explicit false keeps a user-level settings.json from silently
@@ -1380,6 +1400,12 @@ export class AgentCoordinator {
           cursorContent = appendSystemMessageBlock(cursorContent, buildSkillSystemMessage(match.path))
         }
       }
+      // Cursor builds its system prompt server-side and exposes no append hook,
+      // so its share of the git attribution rides the user-text path instead.
+      cursorContent = appendSystemMessageBlock(
+        cursorContent,
+        buildKannaAttributionSystemMessage(buildKannaAgentId("cursor", args.model))
+      )
       // Cursor cannot fork (see canForkChat), so a turn always resumes its own session.
       turn = await this.cursorManager.startTurn({
         cwd: project.localPath,
@@ -1483,7 +1509,17 @@ export class AgentCoordinator {
         contentPreview: wireContent.slice(0, 160),
         pendingPromptSeqs: [...session.pendingPromptSeqs],
       })
-      await session.session.sendPrompt(buildPromptText(wireContent, args.attachments))
+      // setModel() swaps the model on the live session without restarting it,
+      // so the agent id in the session prompt can be stale. Re-state it on the
+      // turn text (wire-only — the transcript stores args.content) from the
+      // drift onward.
+      const claudeAgentId = buildKannaAgentId("claude", args.model)
+      const claudePrompt = buildPromptText(wireContent, args.attachments)
+      await session.session.sendPrompt(
+        session.promptAgentId === claudeAgentId
+          ? claudePrompt
+          : appendSystemMessageBlock(claudePrompt, buildKannaAgentCorrection(claudeAgentId))
+      )
       return
     }
 
@@ -1540,6 +1576,7 @@ export class AgentCoordinator {
         session: started,
         localPath: args.localPath,
         model: args.model,
+        promptAgentId: buildKannaAgentId("claude", args.model),
         effort: args.effort,
         serviceTier: args.serviceTier,
         planMode: args.planMode,

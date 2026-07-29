@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises"
 import path from "node:path"
+import { buildRepoBrowseUrl } from "../shared/git-url"
 import type { StoreState } from "./events"
 import {
   probeWorkingTree,
@@ -53,6 +54,24 @@ interface ProjectProbeEntry {
   location: WorkingTreeLocation | null
   /** Combined mtime of the git dir's `index` and `HEAD`; "" when unreadable. */
   stamp: string
+  /**
+   * Mtime of `HEAD` as of the last repo-label read; "" when unreadable.
+   *
+   * Gated separately from `stamp` because the two go stale on different events
+   * and `stamp` is banked at a moment that would strand the label:
+   *
+   * - `git status` rewrites the index as a side effect (its stat cache), so
+   *   `applyProbe` re-reads `stamp` *after* probing to keep a probe from
+   *   re-triggering itself. Anyone who supplies a probe from outside
+   *   (`recordExternalProbe`) banks a stamp for a label read that never
+   *   happened — a checkout followed by a git-panel refresh would then leave
+   *   the sidebar naming the old branch until the next unrelated commit.
+   * - `git status` never touches HEAD, so this half is stable at idle and can
+   *   safely be banked from *before* the label read: if HEAD moves while we're
+   *   reading it, the cost is one redundant re-read next tick rather than a
+   *   label frozen at the wrong branch forever.
+   */
+  labelStamp: string
 }
 
 /** Identity of the repo a project sits in, for the sidebar's `repo/branch` label. */
@@ -66,6 +85,14 @@ export interface ProjectRepoLabel {
   branchName?: string
   /** Owner segment of the `origin` remote; absent when there is no origin. */
   repoOwner?: string
+  /**
+   * Where `origin` lives as a browsable https page, when it resolves to one.
+   * Derived here rather than client-side because the client never sees the
+   * remote URL, and the *host* is the part that can't be guessed from
+   * `owner/repo` — assuming github.com would send half the world's repos to a
+   * 404.
+   */
+  repoUrl?: string
 }
 
 function probesEqual(left: WorkingTreeProbe | undefined, right: WorkingTreeProbe) {
@@ -147,10 +174,16 @@ async function resolveCommonDir(gitDir: string) {
   return trimmed ? path.resolve(gitDir, trimmed) : gitDir
 }
 
-async function readOriginOwner(gitDir: string) {
+/** One config read, both readings of `origin` — the owner and the browse URL. */
+async function readOrigin(gitDir: string): Promise<{ repoOwner?: string, repoUrl?: string }> {
   const configPath = path.join(await resolveCommonDir(gitDir), "config")
   const config = await readFile(configPath, "utf8").catch(() => null)
-  return config === null ? undefined : extractRemoteOwner(extractOriginUrl(config))
+  if (config === null) return {}
+  const originUrl = extractOriginUrl(config)
+  return {
+    repoOwner: extractRemoteOwner(originUrl),
+    repoUrl: buildRepoBrowseUrl(originUrl)?.url,
+  }
 }
 
 export class WorktreeProbe {
@@ -158,6 +191,15 @@ export class WorktreeProbe {
   private readonly probes = new Map<string, WorkingTreeProbe>()
   /** Absent for projects that aren't in a repo (or haven't been resolved yet). */
   private readonly repoLabels = new Map<string, ProjectRepoLabel>()
+  /**
+   * Projects a resolution pass has looked at and found *not* to be in a repo.
+   *
+   * A missing repo label can't say this on its own — it also covers every
+   * project we haven't reached yet — and the difference matters to anything
+   * that would offer to `git init` a folder: doing it off "no label" would
+   * flash the offer at every repo in the sidebar for the first pass after boot.
+   */
+  private readonly noRepoProjects = new Set<string>()
   private timer: ReturnType<typeof setInterval> | null = null
   private ticking = false
   private batchDepth = 0
@@ -176,6 +218,11 @@ export class WorktreeProbe {
   /** Synchronous snapshot for the sidebar builder. */
   getRepoLabels(): ReadonlyMap<string, ProjectRepoLabel> {
     return this.repoLabels
+  }
+
+  /** Synchronous snapshot for the sidebar builder — see `noRepoProjects`. */
+  getProjectsWithoutRepo(): ReadonlySet<string> {
+    return this.noRepoProjects
   }
 
   start() {
@@ -217,6 +264,8 @@ export class WorktreeProbe {
         await this.applyProbe(projectId, { dirty: false, paths: [] })
         return
       }
+      // Banked before the read, never after — see `labelStamp`.
+      entry.labelStamp = (await this.readStamp(entry.location.gitDir)).head
       this.applyRepoLabel(projectId, await this.readRepoLabel(entry.location))
       await this.applyProbe(projectId, await probeWorkingTree(entry.location.repoRoot))
     })
@@ -244,18 +293,20 @@ export class WorktreeProbe {
           }
 
           const stamp = await this.readStamp(entry.location.gitDir)
-          // An unreadable stamp falls through to a full probe rather than being
-          // skipped — better one wasted `git status` than a silently stuck dot.
-          const changed = stamp === "" || stamp !== entry.stamp
-          // A checkout rewrites HEAD, so `changed` covers every branch switch.
-          if (changed || !this.repoLabels.has(projectId)) {
+          // A checkout rewrites HEAD, so this covers every branch switch.
+          if (stamp.head === "" || stamp.head !== entry.labelStamp || !this.repoLabels.has(projectId)) {
+            // Banked before the read, never after — see `labelStamp`.
+            entry.labelStamp = stamp.head
             this.applyRepoLabel(projectId, await this.readRepoLabel(entry.location))
           }
 
+          // An unreadable stamp falls through to a full probe rather than being
+          // skipped — better one wasted `git status` than a silently stuck dot.
+          const changed = stamp.combined === "" || stamp.combined !== entry.stamp
           if (!changed || !dirtyCandidates.has(projectId)) {
             // Label-only projects never reach `applyProbe`, so bank the stamp
             // here or every tick would re-read a HEAD that hasn't moved.
-            entry.stamp = stamp
+            entry.stamp = stamp.combined
             return
           }
 
@@ -299,8 +350,17 @@ export class WorktreeProbe {
     const entry: ProjectProbeEntry = {
       location: await resolveWorkingTreeLocation(localPath),
       stamp: existing?.stamp ?? "",
+      labelStamp: existing?.labelStamp ?? "",
     }
     this.entries.set(projectId, entry)
+    // Notified separately from the repo label: a folder that has never been a
+    // repo has no label to drop, so `applyRepoLabel(null)` sees nothing change
+    // and stays quiet — but the sidebar has just learned something about it.
+    if (this.noRepoProjects.has(projectId) !== !entry.location) {
+      if (entry.location) this.noRepoProjects.delete(projectId)
+      else this.noRepoProjects.add(projectId)
+      this.notifyChanged()
+    }
     return entry
   }
 
@@ -332,14 +392,15 @@ export class WorktreeProbe {
   }
 
   private async readRepoLabel(location: WorkingTreeLocation): Promise<ProjectRepoLabel> {
-    const [branchName, repoOwner] = await Promise.all([
+    const [branchName, origin] = await Promise.all([
       readHeadBranch(location.gitDir),
-      readOriginOwner(location.gitDir),
+      readOrigin(location.gitDir),
     ])
     return {
       repoName: path.basename(location.repoRoot),
       ...(branchName ? { branchName } : {}),
-      ...(repoOwner ? { repoOwner } : {}),
+      ...(origin.repoOwner ? { repoOwner: origin.repoOwner } : {}),
+      ...(origin.repoUrl ? { repoUrl: origin.repoUrl } : {}),
     }
   }
 
@@ -356,6 +417,7 @@ export class WorktreeProbe {
       previous?.repoName === label.repoName
       && previous.branchName === label.branchName
       && previous.repoOwner === label.repoOwner
+      && previous.repoUrl === label.repoUrl
     ) return
     this.repoLabels.set(projectId, label)
     this.notifyChanged()
@@ -377,18 +439,29 @@ export class WorktreeProbe {
     }
 
     // Re-read *after* probing so a probe can never trigger itself next tick.
+    // Deliberately leaves `labelStamp` alone: this runs for probes computed
+    // elsewhere too, and banking HEAD here would tell the tick a label had been
+    // read that never was.
     const entry = this.entries.get(projectId)
     if (entry?.location) {
-      entry.stamp = await this.readStamp(entry.location.gitDir)
+      entry.stamp = (await this.readStamp(entry.location.gitDir)).combined
     }
   }
 
-  private async readStamp(gitDir: string) {
+  /**
+   * Both readings of the git dir's mtimes in one pair of stats: `combined`
+   * gates the dirty probe, `head` gates the repo label. See `labelStamp` for
+   * why the label can't ride on the combined one. `""` means unreadable, which
+   * every caller treats as "assume changed".
+   */
+  private async readStamp(gitDir: string): Promise<{ combined: string, head: string }> {
     const [index, head] = await Promise.all([
       stat(path.join(gitDir, "index")).then((info) => info.mtimeMs).catch(() => null),
       stat(path.join(gitDir, "HEAD")).then((info) => info.mtimeMs).catch(() => null),
     ])
-    if (index === null && head === null) return ""
-    return `${index ?? ""}:${head ?? ""}`
+    return {
+      combined: index === null && head === null ? "" : `${index ?? ""}:${head ?? ""}`,
+      head: head === null ? "" : String(head),
+    }
   }
 }

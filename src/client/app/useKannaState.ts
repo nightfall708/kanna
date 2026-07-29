@@ -7,16 +7,18 @@ import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
 import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
 import { useChatInputStore } from "../stores/chatInputStore"
-import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
+import type { BranchActionFailure, BranchActionSuccess, ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
 import type { AskUserQuestionItem } from "../components/messages/types"
 import type { OpenLocalLinkTarget } from "../components/messages/shared"
 import { useAppDialog } from "../components/ui/app-dialog"
 import { useTheme } from "../hooks/useTheme"
 import { processTranscriptMessages } from "../lib/parseTranscript"
+import { formatProjectRepoBranch } from "../lib/project-label"
 import { canCancelStatus, getLatestToolIds, isProcessingStatus } from "./derived"
 import {
   applySidebarProjectOrder,
   getActiveChatSnapshot,
+  getMostRecentlyActiveProjectId,
   getNewestRemainingChatId,
   getPreviousPrompt,
   getProjectIdForChat,
@@ -60,6 +62,7 @@ export {
   applySidebarProjectOrder,
   countMatchingUserPrompts,
   getActiveChatSnapshot,
+  getMostRecentlyActiveProjectId,
   getNewestRemainingChatId,
   getNextMeasuredInputHeight,
   getPreviousPrompt,
@@ -174,6 +177,12 @@ export interface KannaState {
   standaloneShareUrl: string | null
   standaloneShareComplete: boolean
   navbarLocalPath?: string
+  /**
+   * `repo/branch` for the project `navbarLocalPath` points at, null when that
+   * folder isn't in a repo (or hasn't been probed) — the composer placeholder
+   * names the checkout when there is one and the path when there isn't.
+   */
+  navbarRepoLabel: string | null
   editorLabel: string
   hasSelectedProject: boolean
   openSidebar: () => void
@@ -207,6 +216,7 @@ export interface KannaState {
   handleOpenArchivedChat: (chatId: string) => Promise<void>
   handleRestoreChat: (chatId: string) => Promise<void>
   handleDeleteChat: (chat: SidebarChatRow) => Promise<void>
+  handleSetupGit: (chatId: string) => Promise<void>
   handleHideProject: (projectId: string) => Promise<void>
   handleReorderProjectGroups: (projectIds: string[]) => Promise<void>
   handleCopyPath: (localPath: string) => Promise<void>
@@ -394,9 +404,9 @@ export function useKannaState(activeChatId: string | null): KannaState {
 
   useEffect(() => {
     if (selectedProjectId) return
-    const firstGroup = sidebarProjectGroups[0]
-    if (firstGroup) {
-      setSelectedProjectId(firstGroup.groupKey)
+    const seed = getMostRecentlyActiveProjectId(sidebarProjectGroups)
+    if (seed) {
+      setSelectedProjectId(seed)
     }
   }, [selectedProjectId, sidebarProjectGroups])
 
@@ -555,6 +565,13 @@ export function useKannaState(activeChatId: string | null): KannaState {
     runtime?.localPath
     ?? fallbackLocalProjectPath
     ?? sidebarProjectGroups[0]?.localPath
+  // The composer names the project the way the sidebar does — `repo/branch` —
+  // so the id is matched first and the path only stands in when there's no
+  // active project (the new-chat composer falling back to a local project).
+  const navbarProjectGroup =
+    sidebarProjectGroups.find((group) => group.groupKey === activeProjectId)
+    ?? sidebarProjectGroups.find((group) => group.localPath === navbarLocalPath)
+  const navbarRepoLabel = navbarProjectGroup ? formatProjectRepoBranch(navbarProjectGroup) : null
   const hasSelectedProject = Boolean(
     selectedProjectId
     ?? runtime?.projectId
@@ -774,6 +791,46 @@ export function useKannaState(activeChatId: string | null): KannaState {
     }
   }, [socket])
 
+  /**
+   * "Setup Git" from a sidebar hover card: the same confirm-then-`git init` the
+   * chat navbar's branch slot runs, for a chat that isn't necessarily the one
+   * you have open. The server resolves the project from the chat, and
+   * `chat.initGit` is a no-op success on a folder that turns out to already be
+   * a repo — so a stale snapshot costs nothing.
+   *
+   * Unlike the navbar's copy this doesn't open the git panel afterwards: you
+   * were pointing at a row in the sidebar, not asking to go anywhere.
+   */
+  const handleSetupGit = useCallback(async (chatId: string) => {
+    const confirmed = await dialog.confirm({
+      title: "Initialize Git?",
+      description: "Initialize a local git repository in this project?",
+      confirmLabel: "Init Git",
+      cancelLabel: "Cancel",
+    })
+    if (!confirmed) return
+
+    try {
+      const result = await socket.command<BranchActionSuccess | BranchActionFailure>({
+        type: "chat.initGit",
+        chatId,
+      })
+      if (!result.ok) {
+        await dialog.alert({
+          title: result.title,
+          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+          closeLabel: "OK",
+        })
+      }
+    } catch (error) {
+      await dialog.alert({
+        title: "Initialize git failed",
+        description: error instanceof Error ? error.message : String(error),
+        closeLabel: "OK",
+      })
+    }
+  }, [dialog, socket])
+
   const handleHideProject = useCallback(async (projectId: string) => {
     try {
       await socket.command({ type: "project.remove", projectId })
@@ -834,7 +891,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
   const handleCompose = useCallback(() => {
     const intent = resolveComposeIntent({
       selectedProjectId,
-      sidebarProjectId: sidebarProjectGroups[0]?.groupKey,
+      sidebarProjectId: getMostRecentlyActiveProjectId(sidebarProjectGroups),
       fallbackLocalProjectPath,
     })
     if (intent) {
@@ -885,6 +942,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     standaloneShareUrl,
     standaloneShareComplete,
     navbarLocalPath,
+    navbarRepoLabel,
     editorLabel,
     hasSelectedProject,
     openSidebar,
@@ -918,6 +976,7 @@ export function useKannaState(activeChatId: string | null): KannaState {
     handleOpenArchivedChat,
     handleRestoreChat,
     handleDeleteChat,
+    handleSetupGit,
     handleHideProject,
     handleReorderProjectGroups,
     handleCopyPath,
