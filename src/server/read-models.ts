@@ -3,6 +3,8 @@ import process from "node:process"
 import type {
   ChatRuntime,
   ChatSnapshot,
+  ChatTouchedFile,
+  ChatTouchedFilesResult,
   KannaStatus,
   LocalProjectsSnapshot,
   SidebarChatRow,
@@ -11,7 +13,7 @@ import type {
 } from "../shared/types"
 import type { WorkingTreeProbe } from "./diff-store"
 import type { ProjectRepoLabel } from "./worktree-probe"
-import type { ChatRecord, StoreState } from "./events"
+import type { ChatRecord, StoreState, TouchedFile } from "./events"
 import { resolveLocalPath } from "./paths"
 import { SERVER_PROVIDERS } from "./provider-catalog"
 
@@ -76,6 +78,84 @@ function getSidebarChatBuckets(chats: SidebarChatRow[], nowMs: number) {
   }
 }
 
+/**
+ * Does this chat still have a live claim on one of the dirty paths?
+ *
+ * Two questions, both answered without a clock: is the path dirty at all, and
+ * is the committed content it was changed *from* still what `HEAD` holds. The
+ * second is what stops a chat being resurrected by someone else's later edit —
+ * once chat A's work is committed, `HEAD` moves to that content, so when chat B
+ * dirties the same file five hours on, only chat B (which recorded the *new*
+ * commit as its base) matches. Without it, `touchedFiles` is a union that only
+ * grows and every chat that ever edited a hot file lights up together.
+ *
+ * Unknown on either side — a claim recorded before base blobs, or a probe that
+ * couldn't read `HEAD` — counts as live: that's the pre-existing behaviour, and
+ * a stale dot beats silently hiding work you have not committed.
+ */
+export function isTouchLive(file: TouchedFile, dirtyTree: WorkingTreeProbe) {
+  if (!dirtyTree.paths.has(file.path)) return false
+  if (file.baseBlob === undefined) return true
+  if (!dirtyTree.headBlobs.has(file.path)) return true
+  return dirtyTree.headBlobs.get(file.path) === file.baseBlob
+}
+
+/** How many files the hover card lists before falling back to "N more". */
+export const CHAT_TOUCHED_FILES_LIMIT = 8
+
+/**
+ * Can this file say how much the chat changed in it?
+ *
+ * Rows without a number are dropped rather than listed bare. Three kinds have
+ * none — paths recorded before turn-level counts existed, binary files (numstat
+ * reports `-` for them), and mode-only changes (`0 0`) — and on screen all
+ * three are the same thing: a filename claiming the chat did something, with no
+ * evidence of what. The list is worth more as "here is what it changed, and by
+ * how much" than as a longer list half of which can't answer the second half.
+ *
+ * The bare rows heal on their own: any turn that touches the path again records
+ * its numstat, and the row comes back with a count.
+ */
+function hasLineCounts(file: TouchedFile) {
+  return (file.additions ?? 0) + (file.deletions ?? 0) > 0
+}
+
+/**
+ * Why this chat is in Relevant — the files whose claims are still live, which
+ * is exactly what `uncommittedWork` is computed from.
+ *
+ * Deliberately the *same* predicate as the sidebar dot rather than the chat's
+ * whole history: the card is the evidence for the flag, so a chat the sidebar
+ * calls relevant can always show you why, and a chat it doesn't shows nothing.
+ * Listing files the chat had committed would make the two disagree — a list of
+ * changes sitting under a row that says there are none reads as a stale cache,
+ * which is precisely what this data is not.
+ *
+ * Ordered by size, since with every row live the question left is "which of
+ * these is the substantial one". Ties break on path so the list holds still
+ * between renders rather than reshuffling as counts change.
+ *
+ * Capped, with the full size returned alongside: a chat can hold hundreds of
+ * touched paths, and a hover card is not a place to scroll.
+ */
+export function deriveChatTouchedFiles(
+  chat: ChatRecord,
+  workingTree: WorkingTreeProbe | undefined,
+  limit = CHAT_TOUCHED_FILES_LIMIT
+): ChatTouchedFilesResult {
+  const dirtyTree = workingTree?.dirty ? workingTree : undefined
+  const files = !dirtyTree ? [] : (chat.touchedFiles ?? [])
+    .filter((file) => hasLineCounts(file) && isTouchLive(file, dirtyTree))
+    .map((file) => ({
+      path: file.path,
+      ...(file.additions == null ? {} : { additions: file.additions }),
+      ...(file.deletions == null ? {} : { deletions: file.deletions }),
+    }))
+  const churn = (file: ChatTouchedFile) => (file.additions ?? 0) + (file.deletions ?? 0)
+  files.sort((left, right) => churn(right) - churn(left) || left.path.localeCompare(right.path))
+  return { files: files.slice(0, limit), totalCount: files.length }
+}
+
 export function deriveSidebarData(
   state: StoreState,
   activeStatuses: Map<string, KannaStatus>,
@@ -132,10 +212,10 @@ export function deriveSidebarData(
   function toSidebarChatRows(project: NonNullable<typeof projects[number]>, projectChats: ChatRecord[]) {
     const workingTree = options?.workingTrees?.get(project.id)
     // Authorship, not recency: a chat is relevant because a file it actually
-    // changed is still uncommitted. `touchedPaths` comes from diffing worktree
+    // changed is still uncommitted. `touchedFiles` comes from diffing worktree
     // snapshots at each turn boundary, so it covers edits made through any
     // tool — including a Bash command we never parsed.
-    const dirtyPaths = workingTree?.dirty ? workingTree.paths : undefined
+    const dirtyTree = workingTree?.dirty ? workingTree : undefined
     return projectChats
       .sort((a, b) => getSidebarChatSortTimestamp(b) - getSidebarChatSortTimestamp(a))
       .map((chat) => {
@@ -143,8 +223,8 @@ export function deriveSidebarData(
         // Chats that predate file tracking have no paths and so are never
         // flagged — the safe direction: they simply sit in their date bucket
         // until their next turn records something.
-        const uncommittedWork = dirtyPaths != null
-          && (chat.touchedPaths?.some((touched) => dirtyPaths.has(touched)) ?? false)
+        const uncommittedWork = dirtyTree != null
+          && (chat.touchedFiles?.some((file) => isTouchLive(file, dirtyTree)) ?? false)
         return {
           _id: chat.id,
           _creationTime: chat.createdAt,

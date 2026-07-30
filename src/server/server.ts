@@ -1,16 +1,19 @@
 import path from "node:path"
 import { stat } from "node:fs/promises"
-import { APP_NAME, getRuntimeProfile } from "../shared/branding"
+import { APP_NAME, getRuntimeProfile, LOG_PREFIX } from "../shared/branding"
 import type { ChatAttachment } from "../shared/types"
 import type { ShareMode } from "../shared/share"
 import {
   CLOUD_BROWSER_PATH_PREFIX,
+  CLOUD_PAIR_SESSION_PATH,
   CLOUD_WS_ENDPOINT_PATH,
   type CloudWsEndpointResponse,
 } from "../shared/cloud-api"
 import { createAuthManager } from "./auth"
 import { classifyCloudRequest, isAllowedCloudWsUpgrade, type CloudRequestClass } from "./cloud/guard"
-import type { CloudRuntime } from "./cloud"
+import { createCloudRuntime, type CloudRuntime } from "./cloud"
+import { writeCloudIdentity } from "./cloud/identity"
+import { createPairSessionManager, type PairSessionSnapshot } from "./cloud/pair-session"
 import { EventStore } from "./event-store"
 import { AgentCoordinator } from "./agent"
 import { CodexAppServerManager } from "./codex-app-server"
@@ -20,6 +23,7 @@ import { UsageLimitsManager } from "./usage-limits"
 import { DiffStore } from "./diff-store"
 import { WorktreeProbe } from "./worktree-probe"
 import { TurnFileTracker } from "./worktree-snapshot"
+import { backfillTouchedFileBases } from "./touched-file-backfill"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
 import { clearGitHubRepoCache } from "./github"
@@ -101,6 +105,12 @@ export interface StartKannaServerOptions {
    */
   cloud?: CloudRuntime | null
   /**
+   * Offer device-code pairing from the sidebar (`/api/cloud/pair-session`).
+   * Set by the CLI when this run could host a cloud machine but isn't paired
+   * yet; claiming attaches the runtime in place, with no restart.
+   */
+  allowCloudPairing?: boolean
+  /**
    * This machine is a cloud dev-box (`kanna --cloud`). Surfaced to the client
    * through the app-settings snapshot to unlock dev-box-only UI.
    */
@@ -123,6 +133,11 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const store = new EventStore(options.dataDir)
   const diffStore = new DiffStore(store.dataDir)
   const machineDisplayName = getMachineDisplayName()
+  // Mutable: device-code pairing can attach a cloud runtime mid-flight, and
+  // every request path below reads the current value.
+  let cloud: CloudRuntime | null = options.cloud ?? null
+  /** Only set when *this* process paired; the CLI owns a handed-in runtime. */
+  let selfPairedCloud: CloudRuntime | null = null
   await store.initialize()
   await diffStore.initialize()
   await store.migrateLegacyTranscripts(options.onMigrationProgress)
@@ -160,7 +175,7 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
       const project = chat ? store.state.projectsById.get(chat.projectId) : undefined
       return project?.localPath ?? null
     },
-    recordPaths: (chatId, paths) => store.recordFilesTouched(chatId, paths),
+    recordFiles: (chatId, files) => store.recordFilesTouched(chatId, files),
   })
   store.onTurnStarted = (chatId) => {
     turnFiles.beginTurn(chatId)
@@ -323,11 +338,51 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   const staleChatAutoArchiveInterval = setInterval(runAutoArchiveStaleChats, STALE_CHAT_AUTO_ARCHIVE_INTERVAL_MS)
   const staleChatDeleteInterval = setInterval(runDeleteStaleChats, STALE_CHAT_DELETE_INTERVAL_MS)
   worktreeProbe.start()
+  // Claims recorded before base blobs never expire on their own, so a chat
+  // whose work shipped months ago keeps returning to Relevant on someone
+  // else's edit. Dating them is two git calls per affected chat and only
+  // happens once, so it runs in the background rather than delaying boot.
+  void backfillTouchedFileBases(store, { onProgress: (message) => console.log(message) })
+    .then((result) => {
+      if (result.chats > 0) void router.broadcastSidebar()
+    })
+    .catch((error) => {
+      console.warn(`${LOG_PREFIX} touched-file backfill failed:`, error)
+    })
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
 
   const MAX_PORT_ATTEMPTS = 20
   let actualPort = port
+
+  // One-click cloud setup: the sidebar asks for a claim URL, the user opens
+  // it (or scans it) on any device, and pairing lands back here — credentials
+  // to ~/.kanna/cloud.json and the tunnel up, without restarting kanna.
+  const pairSession =
+    options.allowCloudPairing && !cloud
+      ? createPairSessionManager({
+          machineName: machineDisplayName,
+          log: (message) => console.log(`${LOG_PREFIX} ${message}`),
+          warn: (message) => console.warn(`${LOG_PREFIX} ${message}`),
+          onPaired: async (identity) => {
+            await writeCloudIdentity(identity)
+            const runtime = createCloudRuntime(identity)
+            cloud = runtime
+            selfPairedCloud = runtime
+            runtime.start({
+              // Byte-identical to the CLI's launch URL for a paired machine
+              // (cli-runtime builds `http://localhost:<port>`; pairing is only
+              // offered when we're bound to 127.0.0.1). The control plane
+              // re-syncs the tunnel's remote ingress whenever the reported
+              // local service changes, so a different spelling here would cost
+              // a pointless Cloudflare round-trip on the next boot.
+              localUrl: `http://localhost:${actualPort}`,
+              log: (message) => console.log(`${LOG_PREFIX} ${message}`),
+              warn: (message) => console.warn(`${LOG_PREFIX} ${message}`),
+            })
+          },
+        })
+      : null
 
   for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS; attempt++) {
     try {
@@ -336,7 +391,6 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
         hostname,
         async fetch(req, serverInstance) {
           const url = new URL(req.url)
-          const cloud = options.cloud ?? null
           const requestClass: CloudRequestClass = cloud
             ? classifyCloudRequest(req, cloud.identity.proxySecret)
             : "local"
@@ -440,6 +494,30 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
             return Response.json({ ok: true, port: actualPort, instance: instanceFingerprint(store.dataDir) })
           }
 
+          if (url.pathname === CLOUD_PAIR_SESSION_PATH) {
+            // Local requests only: claiming a machine is something you do at
+            // the keyboard, never through the proxy or the raw tunnel.
+            if (requestClass !== "local") {
+              return Response.json({ error: "Not found" }, { status: 404 })
+            }
+            const respond = (snapshot: PairSessionSnapshot | { status: "unsupported" }) =>
+              Response.json(snapshot, { headers: { "Cache-Control": "no-store" } })
+
+            if (cloud) {
+              return respond({ status: "paired", appOrigin: cloud.identity.appOrigin })
+            }
+            if (!pairSession) {
+              return respond({ status: "unsupported" })
+            }
+            if (req.method === "POST") {
+              return respond(await pairSession.start())
+            }
+            if (req.method === "GET") {
+              return respond(pairSession.status())
+            }
+            return new Response(null, { status: 405, headers: { Allow: "GET, POST" } })
+          }
+
           if (url.pathname === CLOUD_WS_ENDPOINT_PATH) {
             if (req.method !== "GET") {
               return new Response(null, { status: 405, headers: { Allow: "GET" } })
@@ -518,6 +596,10 @@ export async function startKannaServer(options: StartKannaServerOptions = {}) {
   })
 
   const shutdown = async () => {
+    pairSession?.stop()
+    // A runtime handed in by the CLI is stopped by the CLI; one this process
+    // attached at pair time is ours to take down.
+    await selfPairedCloud?.stop()
     clearInterval(staleEmptyChatPruneInterval)
     clearInterval(staleChatAutoArchiveInterval)
     clearInterval(staleChatDeleteInterval)

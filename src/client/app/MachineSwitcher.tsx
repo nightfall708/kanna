@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { ChevronDown, Cloud, ExternalLink, LaptopMinimal } from "lucide-react"
 import {
   Dialog,
@@ -8,14 +8,22 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../components/ui/dialog"
+import { CloudPairPanel } from "../components/cloud/CloudPairPanel"
+import { useCloudPairSession } from "../components/cloud/useCloudPairSession"
 import { InputPopover, PopoverMenuItem } from "../components/chat-ui/ChatPreferenceControls"
 import { findCurrentMachine, useConnectionStore } from "../stores/connectionStore"
+import { displayClaimUrl } from "../lib/pairSession"
 import { cn } from "../lib/utils"
 
 const MANAGE_MACHINES_URL = "https://kanna.sh/machines"
 
 /** Shared trigger padding: borderless, but keeps the same net inset as before. */
 const TRIGGER_CLASS = "w-full justify-between py-1.5 rounded-md hover:bg-transparent"
+
+const SIDEBAR_BUTTON_CLASS = cn(
+  "flex items-center gap-1.5 px-[10px] text-sm text-muted-foreground [&>svg]:shrink-0 [&>span]:whitespace-nowrap",
+  TRIGGER_CLASS
+)
 
 /** Wrapper for the sidebar footer: sits just above the Settings button. */
 function MachineSection({ children }: { children: ReactNode }) {
@@ -31,47 +39,19 @@ function OnlineDot({ online }: { online: boolean }) {
   )
 }
 
-function PairInstructionsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Use this machine from anywhere</DialogTitle>
-          <DialogDescription>
-            Get a personal URL that works from any browser, 100% free.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogBody>
-          <ol className="list-decimal space-y-2 pl-5 text-sm">
-            <li>
-              Sign in at{" "}
-              <a href={MANAGE_MACHINES_URL} target="_blank" rel="noreferrer" className="font-medium underline underline-offset-2">
-                kanna.sh/machines
-              </a>{" "}
-              and add a machine.
-            </li>
-            <li>
-              Run{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">bunx kanna pair &lt;code&gt;</code>{" "}
-              in a terminal on this machine.
-            </li>
-          </ol>
-        </DialogBody>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 /**
- * Sidebar machine switcher. Local mode offers pairing instructions; cloud
- * mode lists the account's machines and navigates between their subdomains.
- * Mode comes from connectionStore's /__cloud/machines feature detection.
+ * Sidebar machine switcher. Cloud mode lists the account's machines and
+ * navigates between their subdomains (mode comes from connectionStore's
+ * /__cloud/machines feature detection); local mode offers one-click pairing,
+ * or a shortcut to the hosted URL once this machine has one.
  */
 export function MachineSwitcher() {
   const mode = useConnectionStore((state) => state.mode)
   const machines = useConnectionStore((state) => state.machines)
   const load = useConnectionStore((state) => state.load)
   const [pairDialogOpen, setPairDialogOpen] = useState(false)
+  const { session, starting, begin } = useCloudPairSession({ enabled: mode === "local" })
+  const startedRef = useRef(false)
 
   useEffect(() => {
     if (mode === "unknown") {
@@ -79,28 +59,53 @@ export function MachineSwitcher() {
     }
   }, [mode, load])
 
+  // Mint a claim URL the first time the dialog opens; the server reuses a
+  // live session, so reopening never burns a code.
+  useEffect(() => {
+    if (!pairDialogOpen || startedRef.current) return
+    if (session.status === "paired" || session.status === "unsupported") return
+    startedRef.current = true
+    begin()
+  }, [pairDialogOpen, session.status, begin])
+
   if (mode === "unknown") {
     return null
   }
 
   if (mode === "local") {
+    const pairedOrigin = session.status === "paired" ? session.appOrigin : null
     return (
       <MachineSection>
-        <button
-          type="button"
-          onClick={() => setPairDialogOpen(true)}
-          className={cn(
-            "flex items-center gap-1.5 px-[10px] text-sm text-muted-foreground [&>svg]:shrink-0 [&>span]:whitespace-nowrap",
-            TRIGGER_CLASS
-          )}
-        >
-          <span className="flex min-w-0 items-center gap-2">
-            <Cloud className="ml-[1px] size-4 shrink-0" />
-            <span className="truncate text-xs font-medium">Setup Kanna Cloud</span>
-          </span>
-          <ExternalLink className="size-3.5 shrink-0 opacity-60" />
-        </button>
-        <PairInstructionsDialog open={pairDialogOpen} onOpenChange={setPairDialogOpen} />
+        {pairedOrigin ? (
+          <a href={pairedOrigin} target="_blank" rel="noreferrer" className={SIDEBAR_BUTTON_CLASS}>
+            <span className="flex min-w-0 items-center gap-2">
+              <Cloud className="ml-[1px] size-4 shrink-0" />
+              <span className="truncate text-xs font-medium">{displayClaimUrl(pairedOrigin)}</span>
+            </span>
+            <ExternalLink className="size-3.5 shrink-0 opacity-60" />
+          </a>
+        ) : (
+          <button type="button" onClick={() => setPairDialogOpen(true)} className={SIDEBAR_BUTTON_CLASS}>
+            <span className="flex min-w-0 items-center gap-2">
+              <Cloud className="ml-[1px] size-4 shrink-0" />
+              <span className="truncate text-xs font-medium">Setup Kanna Cloud</span>
+            </span>
+            <ExternalLink className="size-3.5 shrink-0 opacity-60" />
+          </button>
+        )}
+        <Dialog open={pairDialogOpen} onOpenChange={setPairDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Use this machine from anywhere</DialogTitle>
+              <DialogDescription>
+                Get a personal URL that works from any browser, 100% free.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogBody>
+              <CloudPairPanel session={session} starting={starting} onRetry={begin} />
+            </DialogBody>
+          </DialogContent>
+        </Dialog>
       </MachineSection>
     )
   }
