@@ -12,12 +12,18 @@ import {
   type TranscriptTurn,
 } from "./transcriptTurns"
 
-/** Transcript column geometry the strip has to stay clear of. */
+/** Transcript column geometry the strip lives beside. */
 const TRANSCRIPT_COLUMN_MAX_WIDTH_PX = 800
 const TRANSCRIPT_COLUMN_PADDING_PX = 24
 
-/** Narrowest gutter that still fits a fully magnified tick without crowding the column. */
-const MIN_GUTTER_PX = 88
+/** Narrowest pane, padding included, the strip earns its place beside. */
+const MIN_TRANSCRIPT_WIDTH_PX = 855
+
+/**
+ * The gutter that leaves either side of the column — a hair under what a fully
+ * magnified tick wants, so at the low end the swell just grazes the column edge.
+ */
+const MIN_GUTTER_PX = (MIN_TRANSCRIPT_WIDTH_PX - TRANSCRIPT_COLUMN_MAX_WIDTH_PX) / 2
 
 /** Inset from the left edge of the chat pane. */
 const STRIP_INSET_PX = 15
